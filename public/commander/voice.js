@@ -65,7 +65,7 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
 
   function reportReady() {
     if (ctx?.state === 'suspended') onStatus('Click anywhere to turn the mic on', 'pending');
-    else onStatus(listening ? 'Listening: just talk' : 'Mic ready: listens during matches', 'ok');
+    else onStatus(listening ? 'Listening' : 'Mic ready', 'ok');
   }
 
   async function enable(terms) {

@@ -63,11 +63,9 @@ const watched = () => ownUnits().find(u => u.id === watchedId && u.alive) ?? nul
 function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
-  $('toggle3d').setAttribute('aria-pressed', String(is3d));
-  $('toggle3d').textContent = `3D: ${is3d ? 'On' : 'Off'}`;
   $('hint').textContent = is3d
-    ? 'Watching this agent. Every order here is for them alone. ←/→, point or swipe: switch agent · Tab or pinch: map.'
-    : 'Click the map (or point straight up at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.';
+    ? 'Orders here go to this agent. ←/→ or point: switch agent. Tab or pinch: map.'
+    : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -108,7 +106,7 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenDevices', 'screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
+  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
     $(id).hidden = id !== name;
   }
 }
@@ -137,7 +135,6 @@ $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
   showScreen('screenOnline');
 };
-$('toggle3d').onclick = () => setView(!is3d);
 $('onlineBack').onclick = goToMenu;
 $('lobbyLeave').onclick = goToMenu;
 $('resultMenu').onclick = goToMenu;
@@ -178,28 +175,33 @@ function saveDevices(patch) {
   }
 }
 
-async function chooseDevices({ mic, camera }) {
-  setStatus('devicesStatus', 'Waiting for your browser\u2019s permission…');
-  saveDevices({ asked: true, mic, camera });
-  if (mic) await ensureMic();
-  if (camera) await startCamera();
-  showScreen('screenMenu');
-}
-
-$('devicesBoth').onclick = () => chooseDevices({ mic: true, camera: true });
-$('devicesMic').onclick = () => chooseDevices({ mic: true, camera: false });
-$('devicesSkip').onclick = () => {
-  saveDevices({ asked: true, mic: false, camera: false });
-  showScreen('screenMenu');
+$('permsBtn').onclick = async () => {
+  setStatus('permsStatus', 'Waiting for your browser…');
+  saveDevices({ asked: true, mic: true, camera: true });
+  await ensureMic();
+  await startCamera();
+  syncPerms();
 };
+
+// The card stays out of the way once both are running.
+function syncPerms() {
+  const on = voice.enabled && Boolean(gestures);
+  $('permsCard').hidden = on || !window.isSecureContext;
+  if (!on) {
+    const missing = [voice.enabled ? null : 'mic', gestures ? null : 'camera'].filter(Boolean);
+    setStatus('permsStatus', `Needed for voice orders and hand signals (${missing.join(' and ')}).`);
+  }
+}
 
 // On later visits, turn back on whatever was wanted last time. The browser only reopens the
 // devices without a click because it already granted this page permission.
 async function restoreDevices() {
   const devices = readDevices();
-  if (!devices.asked || !window.isSecureContext) return;
-  if (devices.mic) await ensureMic();
-  if (devices.camera) await startCamera();
+  if (devices.asked && window.isSecureContext) {
+    if (devices.mic) await ensureMic();
+    if (devices.camera) await startCamera();
+  }
+  syncPerms();
 }
 
 // ---------- vs bots ----------
@@ -414,7 +416,7 @@ function sendCommand(request) {
 }
 
 function addLogEntry(source, text, gesture) {
-  const icon = { voice: '🎙', text: '⌨️', hand: gesture?.emoji ?? '✋' }[source];
+  const icon = { voice: 'Voice', text: 'Typed', hand: 'Sign' }[source];
   const entry = el('div', { className: 'entry' }, [
     el('div', { className: 'said' }, [el('span', { className: 'src', textContent: icon }), text]),
     el('div', { className: 'plan', textContent: 'Jev is reading the order…' }),
@@ -455,8 +457,12 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder }) {
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
 
+// Hand tracking keeps running while a menu is up (so the preview still works), but nothing it
+// sees should reach the match behind the overlay.
+const matchActive = () => Boolean(session && view && !view.result && $('overlay').hidden);
+
 function handleSignal(name) {
-  if (!session) return;
+  if (!matchActive()) return;
   if (is3d && SQUAD_ONLY_SIGNALS[name]) {
     showSign(`${SQUAD_ONLY_SIGNALS[name]}: map view only`);
     return;
@@ -538,8 +544,8 @@ function updateTeamUi() {
   $('teamBadge').className = `badge ${team ?? ''}`;
   $('teamBadge').textContent = team ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}` : '';
   $('textInput').placeholder = team === 'defend'
-    ? 'Or type an order, e.g. “Echo, Foxtrot hold A. Golf rotate B”'
-    : 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”';
+    ? 'e.g. “Echo hold A, Golf rotate B”'
+    : 'e.g. “Alpha and Bravo push B”';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
   if (!team) $('opponentCard').hidden = true;
@@ -738,13 +744,13 @@ async function ensureMic() {
 function syncListening() {
   const inMatch = Boolean(session && view && !view.result);
   voice.setListening(inMatch && !micMuted);
-  const label = !voice.enabled ? '🎙 Mic off'
-    : micMuted ? '🔇 Muted: click to unmute'
-    : inMatch ? '🎙 Listening: just talk'
-    : '🎙 Mic on: listens during matches';
+  const label = !voice.enabled ? 'Mic off'
+    : micMuted ? 'Muted'
+    : inMatch ? 'Listening'
+    : 'Mic on';
   if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
   $('listen').classList.toggle('live', voice.listening);
-  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
+  $('micBtn').textContent = !voice.enabled ? 'Mic on' : micMuted ? 'Unmute' : 'Mute';
 }
 
 async function toggleMic() {
@@ -752,6 +758,7 @@ async function toggleMic() {
     micMuted = false;
     await ensureMic();
     saveDevices({ asked: true, mic: true });
+    syncPerms();
   } else {
     micMuted = !micMuted;
   }
@@ -779,7 +786,7 @@ povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
 
 const typing = () => document.activeElement?.tagName === 'INPUT';
 document.addEventListener('keydown', e => {
-  if (typing() || !session) return;
+  if (typing() || !matchActive()) return;
   if (e.code === 'Tab') {
     e.preventDefault();
     setView(!is3d);
@@ -803,13 +810,14 @@ $('camBtn').onclick = async () => {
   if (wanted) await startCamera();
   else stopCamera();
   saveDevices({ asked: true, camera: wanted });
+  syncPerms();
 };
 
 function stopCamera() {
   {
     gestures.stop();
     gestures = null;
-    $('camBtn').textContent = 'Enable camera';
+    $('camBtn').textContent = 'Camera on';
     $('camOff').hidden = false;
     $('cam').hidden = true;
     $('previewBtn').hidden = true;
@@ -835,7 +843,7 @@ async function startCamera() {
           $('sign').textContent = label;
           $('lastSign').textContent = label;
         }
-        if (!p || is3d) return; // aiming is map-view only
+        if (!p || is3d || !matchActive()) return; // aiming is map-view only
         // Use the middle of the camera frame so you don't have to reach the edges.
         const nx = Math.min(1, Math.max(0, (p.x - 0.15) / 0.7));
         const ny = Math.min(1, Math.max(0, (p.y - 0.15) / 0.7));
@@ -843,18 +851,22 @@ async function startCamera() {
       },
       onSignal: handleSignal,
       onSwipe: dir => {
+        if (!matchActive()) return;
         // Swiping drags the bar like a carousel: hand to the right brings the agent on the left.
         showSign(dir > 0 ? '👉 Previous agent' : '👈 Next agent');
         cycleAgent(-dir);
       },
       // Pointing sideways picks the agent you point at; pinch still switches map/first-person.
-      onPointDirection: dir => cycleAgent(dir),
+      onPointDirection: dir => {
+        if (matchActive()) cycleAgent(dir);
+      },
       onPinch: () => {
+        if (!matchActive()) return;
         showSign(is3d ? '🤏 Map' : '🤏 First-person');
         setView(!is3d);
       },
     });
-    $('camBtn').textContent = 'Disable camera';
+    $('camBtn').textContent = 'Camera off';
     $('previewBtn').hidden = false;
     $('previewBtn').textContent = 'Hide preview';
     $('cam').hidden = false;
@@ -886,7 +898,7 @@ $('signs').replaceChildren(
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
 if (!window.isSecureContext) {
-  const why = 'needs HTTPS or localhost. Type orders and click the map instead.';
+  const why = 'needs HTTPS or localhost. Type orders instead.';
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
@@ -913,12 +925,10 @@ const joinCode = new URLSearchParams(location.search).get('join');
 if (joinCode) {
   $('joinCode').value = joinCode.toUpperCase();
   connectOnline(joinCode.toUpperCase());
-} else if (readDevices().asked || !window.isSecureContext) {
-  showScreen('screenMenu');
-  restoreDevices();
 } else {
-  showScreen('screenDevices');
+  showScreen('screenMenu');
 }
+restoreDevices();
 requestAnimationFrame(frame);
 
 // Handy for debugging and scripted demos in the console.

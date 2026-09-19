@@ -102,10 +102,10 @@ their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their
 keeps both full squads on screen all match, in one strip: a red cross once you know they're down,
 and dimmed while nobody on your team can see them.
 
-**Mic and camera.** The first time you open Commander it asks whether you want the mic and the
-camera, and remembers your answer on that machine (in `localStorage`), so later visits turn them
-back on without asking. Toggling them in the side panel updates what gets restored. The mic only
-listens during matches, and the camera never leaves the browser. Left alone,
+**Mic and camera.** The side panel has one **Allow mic and camera** button. Your answer is
+remembered on that machine (in `localStorage`), so later visits turn them back on without asking,
+and the button disappears once both are running. The mic only listens during matches, the camera
+never leaves the browser, and hand signals are ignored while a menu is open. Left alone,
 attackers rush the nearer site and shoot what they meet; defenders hold their posts.
 
 **How Jev is used.** Two layers, both plain typed questions:
