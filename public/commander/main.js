@@ -598,21 +598,22 @@ function smoothPositions(dt) {
 
 function updateTeamUi() {
   const team = session?.team;
-  $('matchCard').hidden = !team;
-  $('teamBadge').hidden = !team;
+  // The card keeps its place between matches; only what it says changes.
   $('teamBadge').className = `badge ${team ?? ''}`;
-  $('teamBadge').textContent = team ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}` : '';
+  $('teamBadge').textContent = team
+    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}`
+    : 'No match';
   $('textInput').placeholder = team === 'defend'
     ? 'e.g. “Echo hold A, Golf rotate B”'
     : 'e.g. “Alpha and Bravo push B”';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
-  if (!team) $('opponentCard').hidden = true;
   if (!team) {
+    $('opponentCard').hidden = true;
     $('squad').replaceChildren();
     $('scoreClock').textContent = '–';
     $('roundLabel').textContent = '';
-    $('jevStats').textContent = '';
+    $('jevStats').textContent = '—';
   }
 }
 
@@ -627,9 +628,8 @@ function buildScorebar() {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
-      // Just the initial and a health bar: the name lives in the tooltip and on their card,
-      // which keeps the bar one line high.
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
+      el('span', { className: 'who', textContent: u.name }),
       el('span', { className: 'bar' }, [el('i')]),
     ]);
     node.dataset.id = u.id;

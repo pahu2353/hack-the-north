@@ -222,16 +222,26 @@
     display: grid; place-items: center; min-width: 76px; padding: 0 12px; font: 700 20px system-ui, sans-serif;
     background: rgba(8, 10, 14, 0.92); border: 1px solid var(--border); border-left: 0; border-right: 0;
   }
+  /* Initial, name, and a health bar under both: one row, so the strip stays one line high. */
   .portrait {
-    display: grid; grid-template-rows: 30px 4px; gap: 3px; align-content: center; justify-items: center;
+    display: grid; grid-template-columns: auto auto; grid-template-rows: 30px 4px;
+    grid-template-areas: "face name" "bar bar"; gap: 3px 6px; align-content: center; align-items: center;
     pointer-events: auto; cursor: pointer; background: none; border: 0; padding: 0;
   }
+  .portrait .face { grid-area: face; }
+  .portrait .who {
+    grid-area: name; padding-right: 4px; font: 700 11px/1 system-ui, sans-serif; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--ink-2); white-space: nowrap;
+  }
+  .portrait .bar { grid-area: bar; }
+  .portrait.active .who { color: var(--gold); }
+  .portrait.down .who { color: var(--muted); text-decoration: line-through; }
   .portrait .face {
     position: relative; width: 32px; height: 30px; display: grid; place-items: center;
     font: 800 15px/1 system-ui, sans-serif; background: var(--agent); color: #08131f; border: 2px solid transparent;
   }
   .enemy .portrait { cursor: default; }
-  .portrait .bar { width: 32px; height: 4px; background: rgba(0, 0, 0, 0.45); overflow: hidden; }
+  .portrait .bar { height: 4px; background: rgba(0, 0, 0, 0.45); overflow: hidden; }
   .portrait .bar i { display: block; height: 100%; width: 100%; background: var(--agent); }
   .portrait.active .face { border-color: var(--gold); box-shadow: 0 0 10px rgba(255, 210, 74, 0.5); }
   .portrait.active .bar i { background: var(--gold); }
@@ -272,7 +282,12 @@
   /* Leave room for the minimap on narrower screens. */
   @media (max-width: 1300px) {
     .arena[data-view="pov"] .scorebar { left: calc(clamp(140px, 20vw, 250px) + 20px); transform: none; }
-    .portrait .face, .portrait .bar { width: 26px; }
+    .portrait .face { width: 28px; }
+  }
+
+  /* Only when the strip would otherwise overflow: initials alone. */
+  @media (max-width: 1080px) {
+    .portrait .who { display: none; }
   }
 
   @media (max-width: 900px) {
@@ -384,14 +399,9 @@
   </section>
 
   <aside class="side">
-    <div class="card" id="matchCard" hidden>
-      <div class="card-head"><span class="badge" id="teamBadge" hidden></span><span id="roundLabel"></span></div>
-      <div class="status" id="jevStats"></div>
-    </div>
-    <div class="card" id="permsCard" hidden>
-      <div class="card-head">Permissions</div>
-      <button id="permsBtn" class="primary" type="button">Allow mic and camera</button>
-      <div class="status" id="permsStatus">Voice orders and hand signals need access.</div>
+    <div class="card" id="matchCard">
+      <div class="card-head"><span class="badge" id="teamBadge">No match</span><span id="roundLabel"></span></div>
+      <div class="status" id="jevStats">—</div>
     </div>
     <div class="card">
       <div class="card-head">Signals
@@ -427,6 +437,11 @@
         <p id="opponentSummary"></p>
         <div id="opponentOrders"></div>
       </details>
+    </div>
+    <div class="card" id="permsCard" hidden>
+      <div class="card-head">Permissions</div>
+      <button id="permsBtn" class="primary" type="button">Allow mic and camera</button>
+      <div class="status" id="permsStatus">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
       <div class="card-head">Orders</div>
