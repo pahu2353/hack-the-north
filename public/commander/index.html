@@ -108,6 +108,13 @@
   .seat .who { color: var(--muted); }
   .seat.filled .who { color: var(--ok); }
   .note { font-size: 12px; color: var(--muted); }
+  .toggles { display: grid; gap: 6px; width: min(360px, 100%); }
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    border: 1px solid var(--border); padding: 8px 10px; text-align: left;
+  }
+  .toggle-row > span { color: var(--ink-2); }
+  .toggle-row button { min-width: 54px; }
   .overlay .status { min-height: 18px; }
   .overlay .status.error { color: var(--enemy); }
 
@@ -158,7 +165,13 @@
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  .squad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
+  footer.squad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  /* Optional HUD pieces, switched in Settings. */
+  body:not([data-cards="on"]) footer.squad { display: none; }
+  body:not([data-feed="on"]) .feed { display: none; }
+  body:not([data-hints="on"]) .hint { display: none; }
+  body:not([data-stats="on"]) #jevStats, body:not([data-stats="on"]) .agent .probs { display: none; }
+  body:not([data-minimap="on"]) #minimap, body:not([data-minimap="on"]) .pov-zone { display: none; }
   .agent {
     background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--agent);
     padding: 8px 10px; display: grid; gap: 4px; min-width: 0; cursor: pointer;
@@ -267,7 +280,7 @@
     .layout { grid-template-columns: 1fr; }
     .arena { height: 60vh; }
     .side { border-left: 0; }
-    .squad { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    footer.squad { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -299,6 +312,7 @@
           <button id="playBots" class="primary big" type="button">Vs bots<small>Four scripted or AI defenders</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
         </div>
+        <button id="menuSettings" class="link" type="button">Settings</button>
       </section>
 
       <section id="screenBots" hidden>
@@ -343,11 +357,20 @@
 
       <section id="screenPause" hidden>
         <h2>Paused</h2>
+        <p></p>
         <div class="choices">
           <button id="resume" class="primary big" type="button">Resume</button>
           <button id="pauseMenu" class="big" type="button">Main menu</button>
         </div>
+        <button id="pauseSettings" class="link" type="button">Settings</button>
         <div class="note">Esc closes this.</div>
+      </section>
+
+      <section id="screenSettings" hidden>
+        <h2>Settings</h2>
+        <p>What to show on screen.</p>
+        <div class="toggles" id="toggles"></div>
+        <button id="settingsBack" class="link" type="button">← Back</button>
       </section>
 
       <section id="screenResult" hidden>

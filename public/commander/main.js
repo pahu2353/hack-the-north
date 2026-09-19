@@ -106,7 +106,7 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenResult']) {
+  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenSettings', 'screenResult']) {
     $(id).hidden = id !== name;
   }
 }
@@ -140,6 +140,62 @@ $('lobbyLeave').onclick = goToMenu;
 $('resultMenu').onclick = goToMenu;
 $('pauseMenu').onclick = goToMenu;
 $('resume').onclick = () => showScreen(null);
+
+// ---------- settings ----------
+
+// What each toggle shows, and what it defaults to. Stored per machine.
+const SETTINGS = [
+  ['cards', 'Agent cards', false],
+  ['feed', 'Kill feed', true],
+  ['minimap', 'Minimap and zone name', true],
+  ['stats', 'Jev numbers', true],
+  ['hints', 'Control hints', true],
+];
+const SETTINGS_KEY = 'commander:settings';
+let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
+
+function readJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? {};
+  } catch {
+    return {}; // private windows and blocked storage
+  }
+}
+
+function applySettings() {
+  for (const [key] of SETTINGS) document.body.dataset[key] = settings[key] ? 'on' : 'off';
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Not remembering is not worth interrupting anyone over.
+  }
+}
+
+function buildSettings() {
+  $('toggles').replaceChildren(...SETTINGS.map(([key, label]) => {
+    const button = el('button', {
+      type: 'button', className: 'toggle', textContent: settings[key] ? 'On' : 'Off',
+      onclick: () => {
+        settings[key] = !settings[key];
+        applySettings();
+        buildSettings();
+      },
+    });
+    button.setAttribute('aria-pressed', String(Boolean(settings[key])));
+    return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), button]);
+  }));
+}
+
+let settingsFrom = 'screenMenu';
+const openSettings = from => {
+  settingsFrom = from;
+  buildSettings();
+  showScreen('screenSettings');
+};
+$('menuSettings').onclick = () => openSettings('screenMenu');
+$('pauseSettings').onclick = () => openSettings('screenPause');
+$('settingsBack').onclick = () => showScreen(settingsFrom);
+applySettings();
 $('createRoom').onclick = () => connectOnline(null);
 $('joinForm').onsubmit = e => {
   e.preventDefault();
@@ -478,7 +534,7 @@ function handleSignal(name) {
 
 // ---------- frame loop ----------
 
-const paused = () => !$('screenPause').hidden;
+const paused = () => !$('screenPause').hidden || !$('screenSettings').hidden;
 let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
@@ -806,7 +862,8 @@ document.addEventListener('keydown', e => {
   // Escape is the way back to the menu now that there's no header.
   if (e.code === 'Escape' && session && view && !view.result) {
     e.preventDefault();
-    showScreen($('overlay').hidden ? 'screenPause' : null);
+    if (!$('screenSettings').hidden) showScreen(settingsFrom);
+    else showScreen($('overlay').hidden ? 'screenPause' : null);
     return;
   }
   if (!matchActive()) return;

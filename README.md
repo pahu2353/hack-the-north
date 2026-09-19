@@ -93,6 +93,7 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | Switching agents | Point your index finger left or right (hold it to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar or their card. |
 | Switching views | Pinch your thumb and index finger, or press <kbd>Tab</kbd>. |
 | Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
+| Settings | From the menu or the pause screen: agent cards (off by default), kill feed, minimap, Jev numbers, control hints. Remembered per machine. |
 
 **First-person view.** The map is the default view. Switch to first-person and you watch over one
 agent's shoulder: their view of the map drawn in 3D, a minimap, and the top bar showing who is
