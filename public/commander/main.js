@@ -1,4 +1,4 @@
-// Jev Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
+// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
 // Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
@@ -63,11 +63,9 @@ const watched = () => ownUnits().find(u => u.id === watchedId && u.alive) ?? nul
 function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
-  $('toggle3d').setAttribute('aria-pressed', String(is3d));
-  $('toggle3d').textContent = `3D: ${is3d ? 'On' : 'Off'}`;
   $('hint').textContent = is3d
-    ? 'Watching this agent. Every order here is for them alone. ←/→, point or swipe: switch agent · Tab or pinch: map.'
-    : 'Click the map (or point straight up at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.';
+    ? 'Orders here go to this agent. ←/→ or thumb: switch agent. Tab or pinch: map.'
+    : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -108,7 +106,7 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenDevices', 'screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
+  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenSettings', 'screenResult']) {
     $(id).hidden = id !== name;
   }
 }
@@ -137,11 +135,67 @@ $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
   showScreen('screenOnline');
 };
-$('toggle3d').onclick = () => setView(!is3d);
 $('onlineBack').onclick = goToMenu;
 $('lobbyLeave').onclick = goToMenu;
 $('resultMenu').onclick = goToMenu;
-$('menuBtn').onclick = goToMenu;
+$('pauseMenu').onclick = goToMenu;
+$('resume').onclick = () => showScreen(null);
+
+// ---------- settings ----------
+
+// What each toggle shows, and what it defaults to. Stored per machine.
+const SETTINGS = [
+  ['cards', 'Agent cards', false],
+  ['feed', 'Kill feed', true],
+  ['minimap', 'Minimap and zone name', true],
+  ['stats', 'Jev numbers', true],
+  ['hints', 'Control hints', true],
+];
+const SETTINGS_KEY = 'commander:settings';
+let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
+
+function readJson(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? {};
+  } catch {
+    return {}; // private windows and blocked storage
+  }
+}
+
+function applySettings() {
+  for (const [key] of SETTINGS) document.body.dataset[key] = settings[key] ? 'on' : 'off';
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Not remembering is not worth interrupting anyone over.
+  }
+}
+
+function buildSettings() {
+  $('toggles').replaceChildren(...SETTINGS.map(([key, label]) => {
+    const button = el('button', {
+      type: 'button', className: 'toggle', textContent: settings[key] ? 'On' : 'Off',
+      onclick: () => {
+        settings[key] = !settings[key];
+        applySettings();
+        buildSettings();
+      },
+    });
+    button.setAttribute('aria-pressed', String(Boolean(settings[key])));
+    return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), button]);
+  }));
+}
+
+let settingsFrom = 'screenMenu';
+const openSettings = from => {
+  settingsFrom = from;
+  buildSettings();
+  showScreen('screenSettings');
+};
+$('menuSettings').onclick = () => openSettings('screenMenu');
+$('pauseSettings').onclick = () => openSettings('screenPause');
+$('settingsBack').onclick = () => showScreen(settingsFrom);
+applySettings();
 $('createRoom').onclick = () => connectOnline(null);
 $('joinForm').onsubmit = e => {
   e.preventDefault();
@@ -178,28 +232,42 @@ function saveDevices(patch) {
   }
 }
 
-async function chooseDevices({ mic, camera }) {
-  setStatus('devicesStatus', 'Waiting for your browser\u2019s permission…');
-  saveDevices({ asked: true, mic, camera });
-  if (mic) await ensureMic();
-  if (camera) await startCamera();
-  showScreen('screenMenu');
+$('permsBtn').onclick = async () => {
+  setStatus('permsStatus', 'Waiting for your browser…');
+  saveDevices({ asked: true, mic: true, camera: true });
+  await ensureMic();
+  await startCamera();
+  syncPerms();
+};
+
+// The card stays out of the way once both are running, and nothing can start without them:
+// you command the squad by voice and hand signal, so half the controls is not a game.
+function syncPerms() {
+  const ready = playable();
+  $('permsCard').hidden = ready || !window.isSecureContext;
+  if (!ready) {
+    const missing = [voice.enabled ? null : 'mic', gestures ? null : 'camera'].filter(Boolean);
+    setStatus('permsStatus', `Needed to play (${missing.join(' and ')}).`);
+  }
+  const blocked = !ready && window.isSecureContext;
+  for (const id of ['playBots', 'playOnline', 'botsScripted', 'botsOpenAI', 'createRoom']) $(id).disabled = blocked;
+  $('joinCode').disabled = blocked;
+  $('joinForm').querySelector('button').disabled = blocked;
+  $('menuNote').textContent = blocked ? 'Allow the mic and camera to play.' : '';
 }
 
-$('devicesBoth').onclick = () => chooseDevices({ mic: true, camera: true });
-$('devicesMic').onclick = () => chooseDevices({ mic: true, camera: false });
-$('devicesSkip').onclick = () => {
-  saveDevices({ asked: true, mic: false, camera: false });
-  showScreen('screenMenu');
-};
+// Without a secure page the browser won't give us either, so don't lock someone out entirely.
+const playable = () => (voice.enabled && Boolean(gestures)) || !window.isSecureContext;
 
 // On later visits, turn back on whatever was wanted last time. The browser only reopens the
 // devices without a click because it already granted this page permission.
 async function restoreDevices() {
   const devices = readDevices();
-  if (!devices.asked || !window.isSecureContext) return;
-  if (devices.mic) await ensureMic();
-  if (devices.camera) await startCamera();
+  if (devices.asked && window.isSecureContext) {
+    if (devices.mic) await ensureMic();
+    if (devices.camera) await startCamera();
+  }
+  syncPerms();
 }
 
 // ---------- vs bots ----------
@@ -457,7 +525,7 @@ async function onFinalTranscript(text) {
   if (utterances.length > 20) utterances.shift();
 }
 
-const canCommand = () => Boolean(session && view && !view.result);
+const canCommand = () => matchActive();
 // First-person is one agent's view, so every order given there is for them alone.
 const commandTarget = () => (is3d ? watched()?.name : undefined);
 const interpret = request => (session.kind === 'bots'
@@ -508,7 +576,7 @@ function setEntryText(entry, text, mark) {
 }
 
 function addLogEntry(source, text, gesture, early = false) {
-  const icon = { voice: '🎙', text: '⌨️', hand: gesture?.emoji ?? '✋' }[source];
+  const icon = { voice: 'Voice', text: 'Typed', hand: 'Sign' }[source];
   const entry = el('div', { className: `entry${early ? ' early' : ''}` }, [
     el('div', { className: 'said' }, [el('span', { className: 'src', textContent: icon }), text]),
     el('div', { className: 'plan', textContent: 'Jev is reading the order…' }),
@@ -554,8 +622,12 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
 
+// Hand tracking keeps running while a menu is up (so the preview still works), but nothing it
+// sees should reach the match behind the overlay.
+const matchActive = () => Boolean(session && view && !view.result && $('overlay').hidden);
+
 function handleSignal(name) {
-  if (!session) return;
+  if (!matchActive()) return;
   if (is3d && SQUAD_ONLY_SIGNALS[name]) {
     showSign(`${SQUAD_ONLY_SIGNALS[name]}: map view only`);
     return;
@@ -570,6 +642,7 @@ function handleSignal(name) {
 
 // ---------- frame loop ----------
 
+const paused = () => !$('screenPause').hidden || !$('screenSettings').hidden;
 let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
@@ -577,7 +650,7 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (session?.kind === 'bots' && game) {
-    if (!game.result) {
+    if (!game.result && !paused()) {
       accumulator += dt;
       while (accumulator >= STEP) {
         stepGame(game, STEP);
@@ -633,20 +706,22 @@ function smoothPositions(dt) {
 
 function updateTeamUi() {
   const team = session?.team;
-  $('teamBadge').hidden = !team;
+  // The card keeps its place between matches; only what it says changes.
   $('teamBadge').className = `badge ${team ?? ''}`;
-  $('teamBadge').textContent = team ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}` : '';
+  $('teamBadge').textContent = team
+    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}`
+    : 'No match';
   $('textInput').placeholder = team === 'defend'
-    ? 'Or type an order, e.g. “Echo, Foxtrot hold A. Golf rotate B”'
-    : 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”';
+    ? 'e.g. “Echo hold A, Golf rotate B”'
+    : 'e.g. “Alpha and Bravo push B”';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
-  if (!team) $('opponentCard').hidden = true;
   if (!team) {
+    $('opponentCard').hidden = true;
     $('squad').replaceChildren();
     $('scoreClock').textContent = '–';
     $('roundLabel').textContent = '';
-    $('jevStats').textContent = '';
+    $('jevStats').textContent = '—';
   }
 }
 
@@ -661,8 +736,8 @@ function buildScorebar() {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
-      // Just the initial and a health bar: the name lives in the tooltip and on their card,
-      // which keeps the bar one line high.
+      // Initial only: the same letter is drawn inside the agent's dot on the map, and the
+      // full name sits under it there.
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
       el('span', { className: 'bar' }, [el('i')]),
     ]);
@@ -751,6 +826,18 @@ function updateOpponentHud() {
   }
 }
 
+// Kill-feed lines name agents, so each name is drawn in that agent's own colour.
+function colorizeNames(text) {
+  const colors = new Map();
+  for (const u of [...(view.units ?? []), ...(view.roster ?? [])]) if (u.color) colors.set(u.name, u.color);
+  const names = [...colors.keys()].sort((a, b) => b.length - a.length);
+  if (!names.length) return [text];
+  const parts = text.split(new RegExp(`\\b(${names.join('|')})\\b`, 'g'));
+  return parts.map(part => (colors.has(part)
+    ? el('b', { textContent: part, style: `color:${colors.get(part)}` })
+    : part));
+}
+
 // Who an agent is shooting at, when Jev picked a target.
 function enemyName(u) {
   const target = u.decision?.target;
@@ -797,7 +884,8 @@ function updateHud() {
     ] : []));
   });
 
-  $('feed').replaceChildren(...view.feed.map(f => el('div', { className: f.team === session.team ? 'own' : 'other', textContent: f.text })));
+  $('feed').replaceChildren(...view.feed.map(f =>
+    el('div', { className: f.team === session.team ? 'own' : 'other' }, colorizeNames(f.text))));
 
   updateScorebar();
   const watching = watched();
@@ -834,13 +922,13 @@ async function ensureMic() {
 function syncListening() {
   const inMatch = Boolean(session && view && !view.result);
   voice.setListening(inMatch && !micMuted);
-  const label = !voice.enabled ? '🎙 Mic off'
-    : micMuted ? '🔇 Muted: click to unmute'
-    : inMatch ? '🎙 Listening: just talk'
-    : '🎙 Mic on: listens during matches';
+  const label = !voice.enabled ? 'Mic off'
+    : micMuted ? 'Muted'
+    : inMatch ? 'Listening'
+    : 'Mic on';
   if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
   $('listen').classList.toggle('live', voice.listening);
-  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
+  $('micBtn').textContent = !voice.enabled ? 'Mic on' : micMuted ? 'Unmute' : 'Mute';
 }
 
 async function toggleMic() {
@@ -848,6 +936,7 @@ async function toggleMic() {
     micMuted = false;
     await ensureMic();
     saveDevices({ asked: true, mic: true });
+    syncPerms();
   } else {
     micMuted = !micMuted;
   }
@@ -875,7 +964,15 @@ povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
 
 const typing = () => document.activeElement?.tagName === 'INPUT';
 document.addEventListener('keydown', e => {
-  if (typing() || !session) return;
+  if (typing()) return;
+  // Escape is the way back to the menu now that there's no header.
+  if (e.code === 'Escape' && session && view && !view.result) {
+    e.preventDefault();
+    if (!$('screenSettings').hidden) showScreen(settingsFrom);
+    else showScreen($('overlay').hidden ? 'screenPause' : null);
+    return;
+  }
+  if (!matchActive()) return;
   if (e.code === 'Tab') {
     e.preventDefault();
     setView(!is3d);
@@ -899,17 +996,17 @@ $('camBtn').onclick = async () => {
   if (wanted) await startCamera();
   else stopCamera();
   saveDevices({ asked: true, camera: wanted });
+  syncPerms();
 };
 
 function stopCamera() {
   {
     gestures.stop();
     gestures = null;
-    $('camBtn').textContent = 'Enable camera';
+    $('camBtn').textContent = 'Camera on';
     $('camOff').hidden = false;
     $('cam').hidden = true;
     $('previewBtn').hidden = true;
-    $('lastSign').textContent = '';
     $('sign').hidden = true;
     setStatus('camStatus', 'Camera off');
   }
@@ -925,13 +1022,12 @@ async function startCamera() {
       onStatus: (text, kind) => setStatus('camStatus', text, kind),
       onPointer: (p, name) => {
         if (!signTimer) {
-          const labels = { Pointing_Up: '☝️ Aiming', Point_Left: '👈 Previous agent', Point_Right: '👉 Next agent' };
+          const labels = { Pointing_Up: '☝️ Aiming', Thumb_Left: '👈 Previous agent', Thumb_Right: '👉 Next agent' };
           const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
           $('sign').hidden = name === 'None';
           $('sign').textContent = label;
-          $('lastSign').textContent = label;
         }
-        if (!p || is3d) return; // aiming is map-view only
+        if (!p || is3d || !matchActive()) return; // aiming is map-view only
         // Use the middle of the camera frame so you don't have to reach the edges.
         const nx = Math.min(1, Math.max(0, (p.x - 0.15) / 0.7));
         const ny = Math.min(1, Math.max(0, (p.y - 0.15) / 0.7));
@@ -939,18 +1035,22 @@ async function startCamera() {
       },
       onSignal: handleSignal,
       onSwipe: dir => {
+        if (!matchActive()) return;
         // Swiping drags the bar like a carousel: hand to the right brings the agent on the left.
         showSign(dir > 0 ? '👉 Previous agent' : '👈 Next agent');
         cycleAgent(-dir);
       },
-      // Pointing sideways picks the agent you point at; pinch still switches map/first-person.
-      onPointDirection: dir => cycleAgent(dir),
+      // A thumb out sideways picks the agent on that side; pinch still switches map/first-person.
+      onPointDirection: dir => {
+        if (matchActive()) cycleAgent(dir);
+      },
       onPinch: () => {
+        if (!matchActive()) return;
         showSign(is3d ? '🤏 Map' : '🤏 First-person');
         setView(!is3d);
       },
     });
-    $('camBtn').textContent = 'Disable camera';
+    $('camBtn').textContent = 'Camera off';
     $('previewBtn').hidden = false;
     $('previewBtn').textContent = 'Hide preview';
     $('cam').hidden = false;
@@ -966,14 +1066,13 @@ let signTimer = null;
 function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
-  $('lastSign').textContent = text;
   clearTimeout(signTimer);
   signTimer = setTimeout(() => { signTimer = null; }, 1200);
 }
 
 $('signs').replaceChildren(
   el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
-  el('span', { textContent: '👈👉 agent', title: 'Point left or right (or swipe) to switch agents' }),
+  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right to keep stepping through the squad' }),
   el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
   ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
     textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,
@@ -982,7 +1081,7 @@ $('signs').replaceChildren(
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
 if (!window.isSecureContext) {
-  const why = 'needs HTTPS or localhost. Type orders and click the map instead.';
+  const why = 'needs HTTPS or localhost. Type orders instead.';
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
@@ -1009,12 +1108,10 @@ const joinCode = new URLSearchParams(location.search).get('join');
 if (joinCode) {
   $('joinCode').value = joinCode.toUpperCase();
   connectOnline(joinCode.toUpperCase());
-} else if (readDevices().asked || !window.isSecureContext) {
-  showScreen('screenMenu');
-  restoreDevices();
 } else {
-  showScreen('screenDevices');
+  showScreen('screenMenu');
 }
+restoreDevices();
 requestAnimationFrame(frame);
 
 // Handy for debugging and scripted demos in the console.

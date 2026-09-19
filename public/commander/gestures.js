@@ -10,9 +10,12 @@ const SWIPE_DIST = 0.15;
 const SWIPE_MS = 450;
 // Pinch: thumb and index fingertip closing together, like zooming on a phone. It fires once
 // when they meet and rearms when the hand opens again.
-// Pointing sideways: held this long to switch agent, then repeats while you keep holding it.
-const POINT_HOLD_MS = 300;
-const POINT_REPEAT_MS = 900;
+// Thumb out sideways: held this long to switch agent, then repeats while you keep holding it,
+// speeding up like a held arrow key so running along the squad doesn't take four separate poses.
+const POINT_HOLD_MS = 260;
+const POINT_REPEAT_MS = 700;
+const POINT_REPEAT_MIN_MS = 260;
+const POINT_REPEAT_STEP_MS = 110;
 const PINCH_MS = 110; // fingertips have to stay together this long
 const PINCH_CLOSED = 0.45; // gap counting as closed, relative to hand size
 const PINCH_OPEN = 0.6; // and the gap that rearms it
@@ -36,13 +39,26 @@ function isPointing(hand) {
   return extended(8, 6) && !extended(12, 10) && !extended(16, 14) && !extended(20, 18);
 }
 
-// Where the index finger points: straight up aims at the map, sideways picks an agent.
-// The camera image is mirrored, so +x is the direction the person feels as their right.
+// Aiming is an index finger pointing up, and nothing else: a finger held sideways or down
+// used to drag the map marker around. The image is mirrored, so +x is the person's right.
 export function pointDirection(hand) {
   if (!isPointing(hand)) return null;
-  const dx = hand[5].x - hand[8].x; // mirrored: tip further right than the knuckle
+  const dx = hand[5].x - hand[8].x;
   const dy = hand[5].y - hand[8].y; // image y grows downward, so up is positive
-  if (Math.abs(dy) > Math.abs(dx)) return dy > 0 ? 'up' : null; // pointing down means nothing
+  return Math.abs(dy) > Math.abs(dx) && dy > 0 ? 'up' : null;
+}
+
+// A thumb held out sideways, hitchhiker style, picks the agent on that side. The other four
+// fingers have to be curled, which separates it from an open hand drifting past the camera,
+// and the thumb has to be more sideways than upright, which leaves 👍 and 👎 alone.
+export function thumbDirection(hand) {
+  const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
+  const extended = (tip, pip) => d(tip, 0) > d(pip, 0) * 1.15;
+  if (!extended(4, 3)) return null;
+  if (extended(8, 6) || extended(12, 10) || extended(16, 14) || extended(20, 18)) return null;
+  const dx = hand[2].x - hand[4].x; // mirrored: +x is the person's right
+  const dy = hand[2].y - hand[4].y;
+  if (Math.abs(dx) < Math.abs(dy) * 1.2) return null; // upright enough to be a thumbs up or down
   return dx > 0 ? 'right' : 'left';
 }
 
@@ -57,6 +73,12 @@ function pinchGap(hand) {
 function pinchClosed(hand) {
   const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
   return pinchGap(hand) < PINCH_CLOSED && d(8, 0) > d(5, 0) * 1.1 && d(12, 0) > d(9, 0) * 1.1;
+}
+
+// How long to wait before the next agent while the thumb stays out: quicker each time, so a
+// held thumb runs along the squad instead of plodding.
+export function repeatDelay(steps) {
+  return Math.max(POINT_REPEAT_MIN_MS, POINT_REPEAT_MS - steps * POINT_REPEAT_STEP_MS);
 }
 
 export async function createGestures({
@@ -98,6 +120,7 @@ export async function createGestures({
   let pointing = null;
   let pointingSince = 0;
   let pointingFiredAt = -Infinity;
+  let pointingSteps = 0;
 
   function motion(now) {
     quietUntil = now + MOTION_QUIET_MS;
@@ -131,25 +154,32 @@ export async function createGestures({
     let name = top && top.score > SCORE ? top.categoryName : 'None';
     // Our own reading of the finger wins: MediaPipe calls any point "Pointing_Up", but only a
     // finger that really points up aims, and a sideways one switches agents.
-    const direction = pointDirection(hand);
-    if (direction) name = { up: 'Pointing_Up', left: 'Point_Left', right: 'Point_Right' }[direction];
+    const aiming = pointDirection(hand) === 'up';
+    const thumb = thumbDirection(hand);
+    if (aiming) name = 'Pointing_Up';
+    else if (thumb) name = thumb === 'right' ? 'Thumb_Right' : 'Thumb_Left';
     else if (name === 'Pointing_Up') name = 'None';
     // The preview is mirrored, so flip x to make pointing feel natural.
     onPointer(name === 'Pointing_Up' ? { x: 1 - hand[8].x, y: hand[8].y } : null, name);
 
-    // Point sideways to step through the squad; keep holding to keep stepping.
-    if (name === 'Point_Left' || name === 'Point_Right') {
+    // Hold the thumb out to step through the squad; keep holding to keep stepping.
+    if (name === 'Thumb_Left' || name === 'Thumb_Right') {
       if (name !== pointing) {
+        // A fresh pose, including a flick to the other side, starts over and fires quickly.
         pointing = name;
         pointingSince = now;
         pointingFiredAt = -Infinity;
+        pointingSteps = 0;
       }
-      if (now - pointingSince > POINT_HOLD_MS && now - pointingFiredAt > POINT_REPEAT_MS && now > quietUntil) {
+      const wait = repeatDelay(pointingSteps);
+      if (now - pointingSince > POINT_HOLD_MS && now - pointingFiredAt > wait && now > quietUntil) {
         pointingFiredAt = now;
-        onPointDirection?.(name === 'Point_Right' ? 1 : -1);
+        pointingSteps++;
+        onPointDirection?.(name === 'Thumb_Right' ? 1 : -1);
       }
     } else {
       pointing = null;
+      pointingSteps = 0;
     }
 
     // Swipe: palm centre moving fast sideways (not while aiming). Mirrored x, so moving
@@ -158,7 +188,7 @@ export async function createGestures({
     track.push({ x: palmX, t: now });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
     const travel = palmX - track[0].x;
-    if (!direction && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
+    if (!aiming && !thumb && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
       motion(now);
       onSwipe?.(travel > 0 ? 1 : -1);
       return;

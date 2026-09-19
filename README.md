@@ -2,7 +2,7 @@
 
 Experiments with [Jev](https://vercel.com/ai-gateway/models/jev), TypeSafe AI's evaluation model on Vercel AI Gateway:
 
-- **Jev Commander**: command a squad of four AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
+- **Commander**: command a squad of four AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
 - **Jev visualizer**: a playground for Jev's typed questions and probability answers.
 
 ## What is Jev?
@@ -45,12 +45,12 @@ Pricing is $0.042 per 1M input tokens, with no charge for output. A request can 
    To create a key with the Vercel CLI, run `npx vercel@latest login`, then:
    `npx vercel@latest --scope <team-slug> ai-gateway api-keys create --name hack-the-north`
 4. **Add a credit card to your Vercel team.** Without one, AI Gateway rejects every request with `403 customer_verification_required`, even though the free credits don't charge the card.
-5. For voice orders in Jev Commander, add a [Deepgram](https://deepgram.com) key to `.env.local`:
+5. For voice orders in Commander, add a [Deepgram](https://deepgram.com) key to `.env.local`:
    ```
    DEEPGRAM_API_KEY=...
    ```
 
-## Jev Commander
+## Commander
 
 ```sh
 npm run dev    # then open http://localhost:3000/commander/ in Chrome
@@ -88,10 +88,12 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | --- | --- |
 | Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." The squad acts on the first clause while you're still talking (see below). **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
-| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." |
+| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." A finger held sideways or down does nothing. |
 | Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
-| Switching agents | Point your index finger left or right (hold it to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar or their card. |
-| Switching views | Pinch your thumb and index finger, press <kbd>Tab</kbd>, or use the **3D** button. |
+| Switching agents | Hold your thumb out left or right, hitchhiker style. Keep holding and it keeps stepping through the squad, faster the longer you hold. Or swipe your hand, press ←/→ or 1–4, or click an agent on the top bar. |
+| Switching views | Pinch your thumb and index finger, or press <kbd>Tab</kbd>. |
+| Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
+| Settings | From the menu or the pause screen: agent cards (off by default), kill feed, minimap, Jev numbers, control hints. Remembered per machine. |
 
 **First-person view.** The map is the default view. Switch to first-person and you watch over one
 agent's shoulder: their view of the map drawn in 3D, a minimap, and the top bar showing who is
@@ -102,10 +104,11 @@ their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their
 keeps both full squads on screen all match, in one strip: a red cross once you know they're down,
 and dimmed while nobody on your team can see them.
 
-**Mic and camera.** The first time you open Commander it asks whether you want the mic and the
-camera, and remembers your answer on that machine (in `localStorage`), so later visits turn them
-back on without asking. Toggling them in the side panel updates what gets restored. The mic only
-listens during matches, and the camera never leaves the browser. Left alone,
+**Mic and camera.** Both are required to play: you command the squad by voice and hand signal.
+The side panel has one **Allow mic and camera** button. Your answer is
+remembered on that machine (in `localStorage`), so later visits turn them back on without asking,
+and the button disappears once both are running. The mic only listens during matches, the camera
+never leaves the browser, and hand signals are ignored while a menu is open. Left alone,
 attackers rush the nearer site and shoot what they meet; defenders hold their posts.
 
 **How Jev is used.** Two layers, both plain typed questions:
@@ -157,7 +160,7 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 | `server.ts` | Serves `public/`, proxies `POST /api/evaluate` to Jev, and relays `/api/voice` to Deepgram, keeping both keys server-side |
 | `opponent.ts` | The OpenAI commander for the defender bots: snapshot validation, the plan schema, and the model call |
 | `multiplayer.ts` | Multiplayer rooms: invite codes, the server-side match loop, and per-team views over `/api/room` |
-| `public/commander/` | Jev Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js` (top-down), `pov.js` (first-person raycaster), `voice.js`, `gestures.js` |
+| `public/commander/` | Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js` (top-down), `pov.js` (first-person raycaster), `voice.js`, `gestures.js` |
 | `public/legacy/erwin/` | The Titan Siege (Commander Erwin) version, kept as a standalone snapshot |
 | `public/index.html` | The visualizer UI (a single file, no build step) |
 | `scripts/play-online.sh` | `npm run online`: tunnel + server + public link in one go |
@@ -166,7 +169,7 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 
 ## Rate limits we measured
 
-On the free tier, Jev allowed about 5 requests and then returned 429s for several minutes. After buying AI Gateway credits there were no 429s up to TypeSafe's published limit of 1,200 requests/min. The only errors were occasional `503 service_unavailable` responses from an overloaded upstream (2–14% depending on load), which a retry fixes. In Jev Commander, each squad in a firefight makes about 5 Jev calls a second (a multiplayer match runs two squads, with each agent thinking a little less often to stay well under the limit).
+On the free tier, Jev allowed about 5 requests and then returned 429s for several minutes. After buying AI Gateway credits there were no 429s up to TypeSafe's published limit of 1,200 requests/min. The only errors were occasional `503 service_unavailable` responses from an overloaded upstream (2–14% depending on load), which a retry fixes. In Commander, each squad in a firefight makes about 5 Jev calls a second (a multiplayer match runs two squads, with each agent thinking a little less often to stay well under the limit).
 
 ## Links
 

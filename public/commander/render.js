@@ -94,6 +94,8 @@ export function createRenderer(canvas) {
     if (focus) drawFocus({ ...focus, ...at(focus) }, px);
     for (const u of enemies) drawSoldier({ ...u, ...at(u) }, u.color ?? ENEMY, px);
     for (const u of own) if (u.alive) drawSoldier({ ...u, ...at(u) }, u.color ?? OWN, px, true);
+    // Names last, so no dot is drawn over them. The minimap is too small to label.
+    if (!mini) drawNames(own.filter(u => u.alive).map(u => ({ ...u, ...at(u) })), px);
     if (pointer) drawPointer(pointer, px);
   }
 
@@ -149,6 +151,21 @@ export function createRenderer(canvas) {
       ctx.fillStyle = '#ffb347';
       ctx.fillRect(u.x + 0.7, u.y - 1.3, 0.7, 0.7);
       if (u.plantProgress > 0) ring(u.x, u.y, u.r + 1.1, u.plantProgress, '#ffb347', px);
+    }
+  }
+
+  // Each name sits directly under its own dot, always at the same offset, in that agent's
+  // colour: a dot on the map and a chip on the top bar are then obviously the same agent.
+  // Stacked agents overlap; the dark outline is what keeps them readable.
+  function drawNames(units, px) {
+    ctx.font = `700 ${10 * px}px system-ui, sans-serif`;
+    ctx.lineWidth = 3 * px;
+    for (const u of units) {
+      const y = u.y + u.r + 1.35;
+      ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
+      ctx.strokeText(u.name, u.x, y);
+      ctx.fillStyle = u.color ?? OWN;
+      ctx.fillText(u.name, u.x, y);
     }
   }
 
