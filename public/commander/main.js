@@ -113,6 +113,7 @@ function newGame(nextMode, { start = false } = {}) {
   $('opponent').disabled = mode !== 'tactical';
   $('opponentDetails').hidden = game.opponent !== 'openai';
   $('opponentDetails').open = false;
+  $('opponentReason').textContent = '';
   $('opponentSummary').textContent = '';
   $('opponentOrders').replaceChildren();
   const versusOpenAI = game.opponent === 'openai';
@@ -232,12 +233,18 @@ function updateOpponentHud() {
   const text = !running && !game.result ? 'OpenAI opponent: ready to start'
     : game.result ? 'OpenAI opponent: round finished' : labels[s?.status] ?? 'OpenAI opponent: starting…';
   setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
-  $('opponentStatus').title = s?.error || 'The enemy commander replans between fights. Bots keep acting while it thinks.';
-  $('opponentSummary').textContent = s?.error || s?.summary || 'Waiting for the first plan. Defenders use their normal tactics in the meantime.';
+  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, and plants. Bots keep acting while it thinks.';
+  $('opponentReason').textContent = s?.status === 'thinking' ? `Replanning: ${s.planningReason}`
+    : s?.status === 'fallback' ? '' : s?.reason ? `Why this plan: ${s.reason}` : '';
+  $('opponentSummary').textContent = s?.error || (s?.summary
+    ? `${s.status === 'thinking' ? 'Current plan: ' : ''}${s.summary}`
+    : 'Waiting for the first plan. Defenders use their normal tactics in the meantime.');
   if ($('opponentDetails').open) {
     $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
       const unit = game.units.find(u => u.id === order.unitId);
-      return el('div', { textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${order.action} → ${order.zone}` : 'eliminated'}` });
+      const escape = unit?.botFallback;
+      const reflex = escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
+      return el('div', { textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone}` : 'eliminated'}` });
     }));
   }
 }

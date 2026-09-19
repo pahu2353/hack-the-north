@@ -82,38 +82,79 @@ By default, the opposing side is scripted: defenders hold posts, rotate to threa
 ### Bot mode: you + Jev vs OpenAI
 
 In **Spike Rush**, choose **Opponent → OpenAI commander**, then Start. You give your squad
-orders as usual; Jev still runs your agents. An OpenAI model now coordinates the four enemy
+orders as usual; Jev still runs your agents. GPT-5.6 Sol now coordinates the four enemy
 defenders. Titan Siege continues to use its scripted enemies. Changing the opponent starts a fresh round.
+Your squad currently always attacks; side selection and automatic side swaps are not implemented.
 
 The enemy commander assigns each defender a zone and one of `hold`, `rotate`, `flank`,
-`retreat`, or `retake`. It replans five seconds after an answer, or sooner when the spike is
-planted. Shooting, movement, pathfinding, cover reflexes, and defusing remain normal game code.
+`retreat`, `regroup`, or `retake`. It normally replans five seconds after an answer. New sightings,
+attackers spotted in a different zone, and defender casualties trigger an earlier rethink:
+events are collected for 350 ms, with at least two seconds between combat-triggered requests.
+An emergency fallback also prompts an early rethink so Sol can arrange support.
+Planting the spike triggers a rethink as soon as any pending request finishes. Only one request
+runs at a time; battlefield changes during that request are considered for the next plan.
+Repeating an active order extends its lifetime while preserving flank progress, paths, and cover.
+`hold` keeps a defender's position when they are already in the named zone. `regroup` moves
+them to a shared rally zone even under fire, then waits for the next order.
+Shooting, movement, pathfinding, cover reflexes, and defusing remain normal game code.
 The model sees the defenders' state, their sightings from the last eight seconds, and the public
 planted-spike state. It does not receive your orders, pointer, or hidden squad positions.
 
-Add either key to `.env.local` (keys stay on the server):
+**Responding to a squad rush.** In OpenAI mode, defenders immediately seek cover when visible
+attackers outnumber their local group at least two to one, or when they are below 50 HP and
+outnumbered. Local support counts living allies within 12m who can see the defender or cover
+one of the same enemies from another angle. This reflex runs in the simulation without waiting
+for a model response. After breaking sight, they keep the escape point for up to four seconds,
+resuming sooner if enough support arrives;
+an explicit retreat or regroup order can take over the withdrawal.
+
+Sol receives each defender's visible enemy count, nearby ally count, and fallback status. Its
+strategy is to give ground and gather the team against a confirmed 3–4-person push, with permission
+to leave the quiet site. A lone sighting should not pull everyone away, and an imminent spike
+detonation takes priority over staging a distant regroup. These are commander instructions,
+not a guarantee that every generated plan will be optimal. Weapon damage and accuracy are unchanged.
+
+The default opponent model is **`gpt-5.6-sol` with low reasoning**. Run `npm run dev` normally;
+no model override is needed. Low reasoning reduces planning overhead; requests time out
+after eight seconds on the server.
+
+The existing setup uses two keys in `.env.local`, both kept on the server:
+
+| Feature | Model / processor | Key |
+| --- | --- | --- |
+| Your squad's order interpretation and agent decisions | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
+| OpenAI enemy commander | `openai/gpt-5.6-sol`, low reasoning | The same `AI_GATEWAY_API_KEY` |
+| Voice transcription | Deepgram `nova-3` | `DEEPGRAM_API_KEY` |
+| Hand gestures | MediaPipe, locally in the browser | None |
+
+A separate OpenAI key is optional. If `OPENAI_API_KEY` is set, the enemy commander uses the
+direct OpenAI API instead of Gateway; your squad still uses Gateway for Jev. To override the
+opponent model, set its OpenAI model ID without the `openai/` prefix:
 
 ```sh
-# Direct OpenAI API; preferred when both keys are present:
-OPENAI_API_KEY=...
-# Or reuse AI_GATEWAY_API_KEY, which is already required for Jev.
-
-# Optional OpenAI model ID (without the "openai/" prefix):
-OPENAI_BOT_MODEL=gpt-5.6-luna
+# Optional; this is already the default:
+OPENAI_BOT_MODEL=gpt-5.6-sol
 ```
 
-The default opponent model is `gpt-5.6-luna` with low reasoning to keep decisions quick and
-inexpensive. GPT-5/6 overrides also use low reasoning; non-reasoning models such as
-`gpt-4.1-mini` omit that setting. The direct API uses
+GPT-5/6 overrides also use low reasoning; older non-reasoning models omit that setting.
+The direct API uses
 [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 to constrain the plan; both provider paths also validate unit IDs, actions, and destinations
-before applying it. Your squad still requires the existing AI Gateway configuration for live Jev.
+before applying it.
+
+The standalone `index.ts` holiday example uses `openai/gpt-5.5` to check Gateway connectivity.
+It is independent of the game and does not select the opponent model.
 
 The opponent status shows planning, model/latency, or a fallback. **Inspect enemy plan (demo)**
-reveals the latest strategy and per-defender orders; leave it closed for regular play.
+reveals the latest strategy, per-defender orders, and the event that triggered the plan, such as
+“E1 eliminated · 2 attackers spotted at B Main.” While a request is pending, its trigger appears
+above the current plan. Leave this panel closed for regular play to keep enemy intel hidden.
+Defender rows also show active escape reflexes, for example “taking cover (1 vs 4),” alongside
+the order they will resume.
 On timeout, invalid output, or missing credentials, scripted defenders take over and the commander
-retries after ten seconds. Plans expire after twelve simulation seconds. Restarting cancels pending
-requests, and responses from an older battlefield state are discarded when the objective changes.
+retries after ten seconds; combat and plant events respect this failure backoff.
+Plans expire after twelve simulation seconds. Restarting cancels pending requests, and responses
+from an older battlefield state are discarded when the objective changes.
 
 ```sh
 npm run mock          # both Jev and the opponent use fake answers; no keys needed
@@ -150,11 +191,13 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 
 | File | What it is |
 | --- | --- |
-| `server.ts` | Serves `public/`, proxies `POST /api/evaluate` to Jev, and relays `/api/voice` to Deepgram, keeping both keys server-side |
-| `public/commander/` | Jev Commander: `main.js` (UI), `brain.js` (Jev calls), `sim.js` (game rules and bots), `world.js` (maps, pathfinding), `render.js`, `voice.js`, `gestures.js` |
+| `server.ts` | Serves `public/`, handles `/api/evaluate` (Jev) and `/api/opponent` (OpenAI), and relays `/api/voice` to Deepgram; credentials stay server-side |
+| `opponent.ts` | OpenAI enemy commander: model configuration, structured plans, validation, and mock responses |
+| `public/commander/` | Jev Commander: `main.js` (UI), `brain.js` (Jev calls), `opponent.js` (enemy intel and planning loop), `sim.js` (game rules and bots), `world.js` (maps, pathfinding), `render.js`, `voice.js`, `gestures.js` |
+| `tests/opponent.test.js` | Bot-mode checks for plans, execution, provider requests, and failure recovery |
 | `public/index.html` | The visualizer UI (a single file, no build step) |
 | `scripts/rate-limit-probe.ts` | Measures Jev's rate limit on your tier |
-| `index.ts` | Minimal `generateText` example: `node --env-file=.env.local index.ts` |
+| `index.ts` | Standalone GPT-5.5 Gateway example: `node --env-file=.env.local index.ts`; independent of the game model |
 
 ## Rate limits we measured
 

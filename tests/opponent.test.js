@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createOpponentPlan, mockOpponentPlan, parseOpponentSnapshot } from '../opponent.ts';
-import { createGame, stepGame } from '../public/commander/sim.js';
+import { createGame, setOrder, stepGame } from '../public/commander/sim.js';
 import {
-  applyOpponentPlan, createOpponentCommander, opponentDestination, opponentSnapshot,
+  applyOpponentPlan, createOpponentCommander, defenderCombat, opponentDestination, opponentSnapshot,
   PLAN_LIFETIME, validateOpponentPlan,
 } from '../public/commander/opponent.js';
 
@@ -45,6 +45,34 @@ test('input validation strips extra information and rejects invalid snapshots', 
   assert(!JSON.stringify(parsed).includes('not allowed'));
   assert.deepEqual(parsed.spike, { state: 'unplanted' });
   for (const invalid of [null, {}, { ...snapshot, contacts: [{}] }, { ...snapshot, defenders: [snapshot.defenders[0], snapshot.defenders[0]] }, { ...snapshot, time: NaN }]) {
+    assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
+  }
+});
+
+test('combat facts use visible enemies and nearby allies with sightlines; the server validates and sanitizes them', () => {
+  const game = makeGame();
+  const [anchor, nearby, blocked, distant] = bots(game);
+  Object.assign(anchor, { x: 12, y: 18 });
+  Object.assign(nearby, { x: 10, y: 18 });
+  Object.assign(blocked, { x: 20, y: 17 });
+  Object.assign(distant, { x: 70, y: 8 });
+  game.units[1].alive = false;
+  anchor.visible = [game.units[0], game.units[1]];
+  assert.deepEqual(defenderCombat(game, anchor), { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
+  blocked.visible = [game.units[0]];
+  assert.equal(defenderCombat(game, anchor).nearbyAllies, 2); // shared crossfire counts despite the wall between allies
+  blocked.visible = [];
+  const snapshot = opponentSnapshot(game);
+  snapshot.defenders[0].combat.extra = 'strip this';
+  const parsed = parseOpponentSnapshot(snapshot);
+  assert.deepEqual(parsed.defenders[0].combat, { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
+  for (const combat of [
+    { visibleEnemies: -1, nearbyAllies: 0, fallingBack: false },
+    { visibleEnemies: 1, nearbyAllies: 99, fallingBack: false },
+    { visibleEnemies: 1, nearbyAllies: 0, fallingBack: 'yes' },
+  ]) {
+    const invalid = structuredClone(snapshot);
+    invalid.defenders[0].combat = combat;
     assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   }
 });
@@ -99,6 +127,134 @@ test('retreat moves under fire, flank uses a Link, retake aims at the actual spi
   assert.deepEqual(opponentDestination(game, bot), { x: 70, y: 18 });
 });
 
+test('holding the current site keeps an existing angle; regroup continues moving under fire', () => {
+  const game = makeGame();
+  const anchor = bots(game)[0];
+  const original = { x: anchor.x, y: anchor.y };
+  applyOpponentPlan(game, { orders: [{ unitId: anchor.id, action: 'hold', zone: 'A Site' }] });
+  assert.deepEqual(opponentDestination(game, anchor), original);
+  stepGame(game, 1 / 60);
+  assert.equal(anchor.moving, false);
+  Object.assign(game.units[0], { x: 12, y: 9, cooldown: 100 });
+  applyOpponentPlan(game, { orders: [{ unitId: anchor.id, action: 'regroup', zone: 'A Link' }] });
+  const before = { x: anchor.x, y: anchor.y };
+  stepGame(game, 1 / 60);
+  assert(anchor.visible.includes(game.units[0]));
+  assert(Math.hypot(anchor.x - before.x, anchor.y - before.y) > 0);
+  assert.equal(anchor.botFallback, null);
+});
+
+function rushFixture({ grouped = false, opponent = 'openai' } = {}) {
+  const game = createGame('tactical', { opponent });
+  const defenders = bots(game);
+  for (const [i, u] of game.units.filter(u => u.team === 'squad').entries()) {
+    Object.assign(u, { x: 9 + i * 1.3, y: 25, action: 'fight', cooldown: 100 });
+    setOrder(game, u, { type: 'hold', zone: 'A Main', point: { x: u.x, y: u.y } });
+  }
+  for (const [i, u] of defenders.entries()) {
+    Object.assign(u, grouped ? { x: 9 + i * 1.3, y: 18 } : i === 0 ? { x: 12, y: 18 } : { x: 67 + i * 2, y: 8 });
+    u.cooldown = 100;
+  }
+  applyOpponentPlan(game, { orders: defenders.map((u, i) => ({ unitId: u.id, action: 'hold', zone: grouped || i === 0 ? 'A Site' : 'B Site' })) });
+  return game;
+}
+
+test('a healthy isolated OpenAI defender immediately escapes a rush and stays in cover after losing sight', () => {
+  const game = rushFixture();
+  const anchor = bots(game)[0];
+  stepGame(game, 1 / 60);
+  assert.equal(anchor.hp, 100);
+  assert.equal(anchor.visible.length, 4);
+  assert.equal(anchor.moving, true);
+  assert(anchor.botFallback);
+  const fallback = anchor.botFallback;
+  assert.deepEqual(opponentSnapshot(game).defenders[0].combat, { visibleEnemies: 4, nearbyAllies: 0, fallingBack: true });
+  // Break contact while keeping the original hold order. The bot must not immediately re-peek.
+  for (const [i, attacker] of game.units.filter(u => u.team === 'squad').entries()) {
+    Object.assign(attacker, { x: 66 + i * 2, y: 50 });
+    setOrder(game, attacker, { type: 'hold', zone: 'Attacker Spawn', point: { x: attacker.x, y: attacker.y } });
+  }
+  Object.assign(anchor, fallback.point);
+  for (let i = 0; i < 60; i++) stepGame(game, 1 / 60);
+  assert.equal(anchor.visible.length, 0);
+  assert.equal(anchor.botFallback, fallback);
+  assert.equal(anchor.moving, false);
+  assert(Math.hypot(anchor.x - fallback.point.x, anchor.y - fallback.point.y) < 0.8);
+  game.time = fallback.until;
+  stepGame(game, 1 / 60);
+  assert.equal(anchor.botFallback, null);
+  assert.equal(anchor.moving, true); // resumes its order after the recovery window
+});
+
+test('supported defenders stand their ground in a fair fight; scripted mode retains its original behavior', () => {
+  const together = rushFixture({ grouped: true });
+  stepGame(together, 1 / 60);
+  assert(bots(together).every(u => !u.botFallback && !u.moving));
+  assert.equal(defenderCombat(together, bots(together)[0]).nearbyAllies, 3);
+  const scripted = rushFixture({ opponent: 'scripted' });
+  stepGame(scripted, 1 / 60);
+  assert.equal(bots(scripted)[0].hp, 100);
+  assert.equal(bots(scripted)[0].moving, false);
+  assert(!bots(scripted)[0].botFallback);
+});
+
+test('arriving support lets a withdrawing defender resume the fight before its recovery timer expires', () => {
+  const game = rushFixture();
+  const [anchor, support] = bots(game);
+  for (const [i, attacker] of game.units.slice(2, 4).entries()) {
+    Object.assign(attacker, { x: 68 + i * 2, y: 50 });
+    setOrder(game, attacker, { type: 'hold', zone: 'Attacker Spawn', point: { x: attacker.x, y: attacker.y } });
+  }
+  stepGame(game, 1 / 60);
+  assert.equal(anchor.botFallback.enemies, 2);
+  const recoveryUntil = anchor.botFallback.until;
+  Object.assign(support, { x: anchor.x - 1.5, y: anchor.y });
+  applyOpponentPlan(game, { orders: [{ unitId: support.id, action: 'hold', zone: 'A Site' }] });
+  stepGame(game, 1 / 60);
+  assert(game.time < recoveryUntil);
+  assert.equal(defenderCombat(game, anchor).nearbyAllies, 1);
+  assert.equal(anchor.botFallback, null);
+  assert.equal(anchor.moving, false);
+});
+
+test('renewed flank orders preserve completed waypoints, paths and cover; changed orders get a new route', () => {
+  const game = makeGame();
+  const bot = bots(game)[0];
+  const flank = { orders: [{ unitId: bot.id, action: 'flank', zone: 'B Site' }] };
+  applyOpponentPlan(game, flank);
+  Object.assign(bot, opponentDestination(game, bot)); // arrive at B Link
+  assert.deepEqual(opponentDestination(game, bot), { x: 67, y: 14 });
+  bot.x = 60; bot.y = 17;
+  const ongoing = bot.botOrder;
+  const path = bot.path = [{ x: 65, y: 17 }];
+  const goal = bot.pathGoal = { x: 67, y: 14 };
+  const cover = bot.coverPoint = { x: 60, y: 15 };
+  game.time = 5;
+  applyOpponentPlan(game, flank);
+  assert.equal(bot.botOrder, ongoing);
+  assert.equal(bot.botOrder.expiresAt, game.time + PLAN_LIFETIME);
+  assert.deepEqual(opponentDestination(game, bot), { x: 67, y: 14 });
+  assert.equal(bot.path, path);
+  assert.equal(bot.pathGoal, goal);
+  assert.equal(bot.coverPoint, cover);
+
+  applyOpponentPlan(game, { orders: [{ unitId: bot.id, action: 'flank', zone: 'A Site' }] });
+  assert.notEqual(bot.botOrder, ongoing);
+  assert.deepEqual(opponentDestination(game, bot), { x: 28, y: 17.5 });
+  assert.equal(bot.pathGoal, null);
+  assert.equal(bot.coverPoint, null);
+  applyOpponentPlan(game, { orders: [{ unitId: bot.id, action: 'hold', zone: 'A Site' }] });
+  assert.equal(bot.botOrder.via, null);
+
+  applyOpponentPlan(game, flank);
+  Object.assign(bot, opponentDestination(game, bot));
+  opponentDestination(game, bot);
+  const expired = bot.botOrder;
+  game.time = expired.expiresAt;
+  applyOpponentPlan(game, flank);
+  assert.notEqual(bot.botOrder, expired); // expired orders have already yielded to scripted behavior
+});
+
 test('scripted opponents and Titan Siege do not call the LLM', () => {
   const commander = createOpponentCommander({ request: () => { throw new Error('Unexpected request'); } });
   assert.equal(commander.update(createGame('tactical')), undefined);
@@ -128,6 +284,135 @@ test('one outstanding request, throttled replanning, and mock labeling', async (
   now = 5100;
   await commander.update(game);
   assert.equal(calls, 2);
+});
+
+test('new sightings are batched and rate limited; refreshed sightings and visibility flicker do not replan', async () => {
+  const game = makeGame();
+  let now = 0;
+  const sent = [];
+  const commander = createOpponentCommander({ now: () => now, request: async (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    return response(answer(game));
+  } });
+  await commander.update(game);
+  assert.equal(game.botCommander.reason, 'Opening defense');
+  now = 1000;
+  game.enemyIntel.set(game.units[0].id, { x: 70, y: 30, t: game.time });
+  commander.update(game);
+  now = 1200;
+  game.enemyIntel.set(game.units[1].id, { x: 71, y: 30, t: game.time });
+  commander.update(game);
+  now = 1500;
+  commander.update(game);
+  assert.equal(sent.length, 1); // debounce passed, but not the minimum request interval
+  now = 2000;
+  await commander.update(game);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].contacts.length, 2);
+  assert.equal(game.botCommander.reason, '2 attackers spotted at B Main');
+
+  for (now = 2300; now < 6900; now += 100) {
+    game.time = now / 1000;
+    game.units[0].x = 12; // hidden movement never becomes defender intel
+    bots(game)[0].visible = now % 200 ? [] : [game.units[1]];
+    game.enemyIntel.set(game.units[1].id, { x: 71, y: 30, t: game.time });
+    commander.update(game);
+  }
+  assert.equal(sent.length, 2);
+});
+
+test('a known attacker seen in a new zone triggers an early plan after the debounce', async () => {
+  const game = makeGame();
+  let now = 0;
+  let calls = 0;
+  game.enemyIntel.set(game.units[0].id, { x: 40, y: 34, t: 0 });
+  const commander = createOpponentCommander({ now: () => now, request: async () => { calls++; return response(answer(game)); } });
+  await commander.update(game);
+  now = 2500;
+  game.enemyIntel.set(game.units[0].id, { x: 70, y: 30, t: 0 });
+  commander.update(game);
+  now = 2849;
+  commander.update(game);
+  assert.equal(calls, 1);
+  now = 2850;
+  await commander.update(game);
+  assert.equal(calls, 2);
+  assert.equal(game.botCommander.reason, '1 attacker spotted at B Main');
+});
+
+test('an emergency fallback triggers a debounced support plan without repeatedly requesting the same event', async () => {
+  const game = makeGame();
+  let now = 0;
+  let calls = 0;
+  const commander = createOpponentCommander({ now: () => now, request: async () => { calls++; return response(answer(game)); } });
+  await commander.update(game);
+  now = 2500;
+  bots(game)[0].botFallback = { point: { x: 12, y: 8 }, until: 4, enemies: 4, allies: 1 };
+  commander.update(game);
+  assert.equal(calls, 1);
+  now = 2850;
+  await commander.update(game);
+  assert.equal(calls, 2);
+  assert.equal(game.botCommander.reason, 'E1 taking cover');
+  now = 5000;
+  commander.update(game);
+  assert.equal(calls, 2);
+});
+
+test('casualties and sightings during an outstanding request trigger a fresh plan without overlapping calls', async () => {
+  const game = makeGame();
+  let now = 0;
+  const waiting = deferred();
+  const sent = [];
+  const commander = createOpponentCommander({ now: () => now, request: (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    return sent.length === 1 ? waiting.promise : Promise.resolve(response(answer(game)));
+  } });
+  const first = commander.update(game);
+  const oldAnswer = answer(game);
+  now = 1000;
+  bots(game)[0].alive = false;
+  game.enemyIntel.set(game.units[0].id, { x: 70, y: 30, t: 0 });
+  commander.update(game);
+  now = 3500;
+  commander.update(game);
+  assert.equal(sent.length, 1);
+  waiting.resolve(response(oldAnswer));
+  await first;
+  const followup = commander.update(game);
+  assert.equal(game.botCommander.planningReason, 'E1 eliminated · 1 attacker spotted at B Main');
+  assert.equal(game.botCommander.reason, 'Opening defense'); // old plan's reason stays with its summary
+  await followup;
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].defenders.length, 3);
+  assert.equal(game.botCommander.reason, 'E1 eliminated · 1 attacker spotted at B Main');
+  assert.equal(game.botCommander.orders.length, 3);
+  assert(!bots(game)[0].botOrder);
+  now = 5500;
+  commander.update(game);
+  assert.equal(sent.length, 2); // the same casualty does not retrigger
+});
+
+test('combat and plant events respect failure backoff, then recover using current intel', async () => {
+  const game = makeGame();
+  let now = 0;
+  let calls = 0;
+  const commander = createOpponentCommander({ now: () => now, request: async () => response(++calls === 1 ? { plan: {} } : answer(game)) });
+  await commander.update(game);
+  now = 2000;
+  bots(game)[0].alive = false;
+  game.enemyIntel.set(game.units[0].id, { x: 70, y: 30, t: 0 });
+  Object.assign(game.spike, { state: 'planted', site: 'B Site', x: 67, y: 14 });
+  commander.update(game);
+  now = 9999;
+  commander.update(game);
+  assert.equal(calls, 1);
+  now = 10000;
+  await commander.update(game);
+  assert.equal(calls, 2);
+  assert.equal(game.botCommander.status, 'active');
+  assert.equal(game.botCommander.orders.length, 3);
+  assert(bots(game).filter(u => u.alive).every(u => u.botOrder.action === 'retake'));
 });
 
 test('restart aborts a request and prevents a late response from modifying either game', async () => {
@@ -258,16 +543,16 @@ test('existing AI Gateway credentials can run the OpenAI opponent', async () => 
     env: { AI_GATEWAY_API_KEY: 'test-only' },
     generate: async options => { settings = options; return { output: expected }; },
   });
-  assert.equal(settings.model, 'openai/gpt-5.6-luna');
+  assert.equal(settings.model, 'openai/gpt-5.6-sol');
   assert.equal(settings.providerOptions.openai.reasoningEffort, 'low');
   assert.equal(settings.maxRetries, 0);
   assert(settings.abortSignal);
   assert.deepEqual(result.plan, expected);
 });
 
-test('direct OpenAI uses low reasoning for Luna and omits it for a GPT-4.1 override', async () => {
+test('direct OpenAI uses low reasoning for Sol and Astra and omits it for a GPT-4.1 override', async () => {
   const game = makeGame();
-  for (const [model, reasoning] of [[undefined, { effort: 'low' }], ['gpt-4.1-mini', undefined]]) {
+  for (const [model, reasoning] of [[undefined, { effort: 'low' }], ['gpt-6-astra', { effort: 'low' }], ['gpt-4.1-mini', undefined]]) {
     let body;
     await createOpponentPlan(opponentSnapshot(game), {
       env: { OPENAI_API_KEY: 'test-only', ...(model ? { OPENAI_BOT_MODEL: model } : {}) },
@@ -276,7 +561,7 @@ test('direct OpenAI uses low reasoning for Luna and omits it for a GPT-4.1 overr
         return response({ status: 'completed', output: [{ content: [{ type: 'output_text', text: JSON.stringify(answer(game).plan) }] }] });
       },
     });
-    assert.equal(body.model, model ?? 'gpt-5.6-luna');
+    assert.equal(body.model, model ?? 'gpt-5.6-sol');
     assert.deepEqual(body.reasoning, reasoning);
   }
 });

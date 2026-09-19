@@ -20,8 +20,13 @@ export function parseOpponentSnapshot(value: any) {
     if (!u || !unitId(u.id) || ids.has(u.id) || !finite(u.hp, 1, 100) || !point(u.position)
         || !zones.includes(u.zone) || typeof u.name !== 'string' || !/^E\d{1,2}$/.test(u.name)) bad();
     ids.add(u.id);
+    const combat = u.combat;
+    if (combat && (!Number.isInteger(combat.visibleEnemies) || !finite(combat.visibleEnemies, 0, 8)
+        || !Number.isInteger(combat.nearbyAllies) || !finite(combat.nearbyAllies, 0, 7)
+        || typeof combat.fallingBack !== 'boolean')) bad();
     return {
       id: u.id, name: u.name, hp: u.hp, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
+      ...(combat && { combat: { visibleEnemies: combat.visibleEnemies, nearbyAllies: combat.nearbyAllies, fallingBack: combat.fallingBack } }),
       order: u.order && OPPONENT_ACTIONS.includes(u.order.action) && zones.includes(u.order.zone)
         ? { action: u.order.action, zone: u.order.zone } : null,
     };
@@ -66,15 +71,28 @@ The human commands the attacking squad. Win by preventing a plant until time run
 eliminating the attackers, or retaking and defusing a planted spike (6 seconds nearby without contact).
 Give exactly one order to each living defender, using each unitId exactly once.
 Orders last about 5-12 seconds. Preserve useful existing assignments; coordinate different jobs.
-hold: move to the zone and hold an angle. rotate: reinforce another zone.
+hold: keep the current angle if already in the zone, otherwise move there. rotate: reinforce another zone.
 flank: approach a site through its Link. retreat: move toward the zone even under fire.
+regroup: move to a shared safe zone even under fire, then wait there for the next coordinated order.
 retake: approach the planted spike's exact position to defuse; use only after a plant.
-Bots shoot automatically, stop for fights unless retreating, and seek cover if hurt/outnumbered.
-Without contact, spread coverage across A and B and keep a rotator near Mid or the Links.
+Bots shoot automatically and stop for fights unless retreating/regrouping. They immediately seek
+cover at a 2:1 local disadvantage, or when hurt and outnumbered, and pause there for support.
+Each defender's combat field reports current visible enemies, nearby allies within 12m who can
+see the defender or share a visible enemy, and whether an emergency fallback is active.
+Without contact, cover both sites with mutually supporting positions; avoid isolated forward scouts.
+When 3-4 attackers are freshly seen together on one approach, prioritize keeping defenders alive
+and concentrating your team against that push. Yield the site if necessary, gather at a safe Link
+or rear position, then contest together. Do not feed single reinforcements into a larger group.
+You may abandon an empty site when the sightings justify it; do not keep a token anchor there
+while the rest die one by one. One uncertain sighting alone is not evidence of a full rush.
+Use regroup to stage the team, then assign hold/rotate/flank/retake when support is in position.
+On a planted spike, allow travel time plus the 6-second defuse; do not waste the deadline regrouping far away.
 React to sightings and plants. Last-known contacts are uncertain, not live wall vision.
 The map is 80m wide and 56m tall. Attackers approach from the south (high y).
 A is west, B is east. A Main and B Main are long south-to-site lanes.
 Mid connects to A Link and B Link, which connect to their sites. Top Hall links the sites behind them.
+Movement to a new zone ends at its supplied center, not at the next zone beyond it. Top Hall's center
+is on the west/A side; use the coordinates when choosing a nearby retreat or rally point for B.
 Do not invent unseen positions, read the player's orders, or give physics/shooting instructions.
 Return a concise strategy summary (maximum 240 characters) and structured orders.`;
 
@@ -102,7 +120,7 @@ export async function createOpponentPlan(input: unknown, {
   if (!env.OPENAI_API_KEY && !env.AI_GATEWAY_API_KEY) {
     throw Object.assign(new Error('Set OPENAI_API_KEY or AI_GATEWAY_API_KEY in .env.local to enable the OpenAI opponent.'), { statusCode: 503 });
   }
-  const model = env.OPENAI_BOT_MODEL || 'gpt-5.6-luna';
+  const model = env.OPENAI_BOT_MODEL || 'gpt-5.6-sol';
   // Keep reasoning models within the real-time plan deadline and token budget.
   // Older non-reasoning models (e.g. a GPT-4.1 override) must not receive this option.
   const reasoningEffort = /^gpt-[56](?:[.-]|$)/.test(model) ? 'low' as const : undefined;

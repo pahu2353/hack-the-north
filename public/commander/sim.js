@@ -1,5 +1,5 @@
 // Game simulation: squad agents (steered by Jev), defender bots, titans, and round rules.
-import { opponentDestination } from './opponent.js';
+import { defenderCombat, opponentDestination } from './opponent.js';
 import {
   MAPS, angleDiff, angleTo, buildGrid, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
@@ -458,15 +458,47 @@ function pushOutOfRect(u, w) {
   u.y += ey * (depth + u.r);
 }
 
-// ---------- defender bots (scripted) ----------
+// ---------- defender bots ----------
 
 function controlBot(game, u, dt) {
-  const focus = u.visible[0];
+  const focus = u.visible.find(v => v.alive);
   const planned = opponentDestination(game, u);
+  if (planned && ['retreat', 'regroup'].includes(u.botOrder.action)) {
+    // Spotting an enemy must not turn a withdrawal into another isolated fight.
+    u.botFallback = null;
+    moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    if (focus) shoot(game, u, focus);
+    return;
+  }
+  if (game.opponent === 'openai') {
+    const combat = defenderCombat(game, u);
+    const strength = combat.nearbyAllies + 1;
+    const overwhelmed = combat.visibleEnemies >= strength * 2
+      || (u.hp < 50 && combat.visibleEnemies > strength);
+    if (overwhelmed) {
+      if (!u.botFallback) {
+        u.botFallback = { point: findCover(game, u), recheckAt: game.time + 0.5 };
+      } else if (game.time >= u.botFallback.recheckAt) {
+        if (u.visible.some(v => v.alive && hasLineOfSight(game.map, v, u.botFallback.point))) {
+          u.botFallback.point = findCover(game, u);
+        }
+        u.botFallback.recheckAt = game.time + 0.5;
+      }
+      Object.assign(u.botFallback, { until: game.time + 4, enemies: combat.visibleEnemies, allies: strength });
+    } else if (u.botFallback && (game.time >= u.botFallback.until || strength >= u.botFallback.enemies)) {
+      u.botFallback = null;
+    }
+    if (u.botFallback) {
+      // Keep the escape point after breaking sight, rather than walking straight back
+      // into the same crossfire. Resume when support arrives or after a short recovery.
+      const safe = u.botFallback.point;
+      moveToward(game, u, dist(u, safe) < 0.8 ? null : safe, dt);
+      if (focus) shoot(game, u, focus);
+      return;
+    }
+  }
   if (focus) {
-    if (planned && u.botOrder.action === 'retreat') {
-      moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
-    } else if (u.hp < 50 && u.visible.length >= 2) {
+    if (u.hp < 50 && u.visible.length >= 2) {
       // Outnumbered and hurt: fall back to cover instead of trading badly.
       if (!u.coverPoint || hasLineOfSight(game.map, focus, u.coverPoint)) u.coverPoint = findCover(game, u);
       moveToward(game, u, u.coverPoint, dt);
