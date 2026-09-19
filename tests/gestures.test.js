@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { pointDirection, thumbDirection } from '../public/commander/gestures.js';
+import { pointDirection, repeatDelay, thumbDirection } from '../public/commander/gestures.js';
 
 // Hands are built from a canonical pose relative to the wrist, in image coordinates (y grows
 // downward), then rotated as a whole: pointing or thumbing sideways turns the hand, it does not
@@ -69,4 +69,13 @@ test('an open hand is not a thumb signal', () => {
     open[tip] = { x: 0.5, y: 0.25 }; // fingers extended away from the wrist
   }
   assert.equal(thumbDirection(open), null);
+});
+
+test('a held thumb steps faster the longer it is held, down to a floor', () => {
+  const delays = [0, 1, 2, 3, 4, 5, 9].map(repeatDelay);
+  assert.deepEqual(delays.slice(0, 4), [700, 590, 480, 370]);
+  for (let i = 1; i < delays.length; i++) assert(delays[i] <= delays[i - 1], 'never slows down');
+  assert.equal(Math.min(...delays), 260, 'and never runs away');
+  // Four agents: holding through the whole squad takes well under two seconds.
+  assert(delays.slice(0, 3).reduce((a, b) => a + b, 0) < 2000);
 });

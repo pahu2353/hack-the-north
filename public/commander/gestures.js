@@ -10,9 +10,12 @@ const SWIPE_DIST = 0.15;
 const SWIPE_MS = 450;
 // Pinch: thumb and index fingertip closing together, like zooming on a phone. It fires once
 // when they meet and rearms when the hand opens again.
-// Thumb out sideways: held this long to switch agent, then repeats while you keep holding it.
-const POINT_HOLD_MS = 300;
-const POINT_REPEAT_MS = 900;
+// Thumb out sideways: held this long to switch agent, then repeats while you keep holding it,
+// speeding up like a held arrow key so running along the squad doesn't take four separate poses.
+const POINT_HOLD_MS = 260;
+const POINT_REPEAT_MS = 700;
+const POINT_REPEAT_MIN_MS = 260;
+const POINT_REPEAT_STEP_MS = 110;
 const PINCH_MS = 110; // fingertips have to stay together this long
 const PINCH_CLOSED = 0.45; // gap counting as closed, relative to hand size
 const PINCH_OPEN = 0.6; // and the gap that rearms it
@@ -72,6 +75,12 @@ function pinchClosed(hand) {
   return pinchGap(hand) < PINCH_CLOSED && d(8, 0) > d(5, 0) * 1.1 && d(12, 0) > d(9, 0) * 1.1;
 }
 
+// How long to wait before the next agent while the thumb stays out: quicker each time, so a
+// held thumb runs along the squad instead of plodding.
+export function repeatDelay(steps) {
+  return Math.max(POINT_REPEAT_MIN_MS, POINT_REPEAT_MS - steps * POINT_REPEAT_STEP_MS);
+}
+
 export async function createGestures({
   video, overlay, onPointer, onSignal, onSwipe, onPinch, onPointDirection, onStatus,
 }) {
@@ -111,6 +120,7 @@ export async function createGestures({
   let pointing = null;
   let pointingSince = 0;
   let pointingFiredAt = -Infinity;
+  let pointingSteps = 0;
 
   function motion(now) {
     quietUntil = now + MOTION_QUIET_MS;
@@ -155,16 +165,21 @@ export async function createGestures({
     // Hold the thumb out to step through the squad; keep holding to keep stepping.
     if (name === 'Thumb_Left' || name === 'Thumb_Right') {
       if (name !== pointing) {
+        // A fresh pose, including a flick to the other side, starts over and fires quickly.
         pointing = name;
         pointingSince = now;
         pointingFiredAt = -Infinity;
+        pointingSteps = 0;
       }
-      if (now - pointingSince > POINT_HOLD_MS && now - pointingFiredAt > POINT_REPEAT_MS && now > quietUntil) {
+      const wait = repeatDelay(pointingSteps);
+      if (now - pointingSince > POINT_HOLD_MS && now - pointingFiredAt > wait && now > quietUntil) {
         pointingFiredAt = now;
+        pointingSteps++;
         onPointDirection?.(name === 'Thumb_Right' ? 1 : -1);
       }
     } else {
       pointing = null;
+      pointingSteps = 0;
     }
 
     // Swipe: palm centre moving fast sideways (not while aiming). Mirrored x, so moving

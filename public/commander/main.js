@@ -967,7 +967,7 @@ function showSign(text) {
 
 $('signs').replaceChildren(
   el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
-  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right (or swipe) to switch agents' }),
+  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right to keep stepping through the squad' }),
   el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
   ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
     textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,
