@@ -1,20 +1,17 @@
 // First-person view: a raycaster over the same map.walls the top-down renderer draws, so the
 // 3D world and the minimap always match. Plain 2D canvas: one ray per column for the walls,
 // then billboard sprites (units, spike, pings) clipped against the wall depth buffer.
-import { hasLineOfSight } from './world.js';
+// Draws one team's view (see teamView in sim.js), narrowed to what a single agent can see.
+import { MAPS, hasLineOfSight } from './world.js';
 
 const FOV = (90 * Math.PI) / 180;
 const WALL_H = 3;
 const EYE = 1.6;
 const COLUMN = 2; // CSS px per ray
 const FAR = 70;
-const SIGHT = 45; // how far an agent can spot an enemy (matches the sim)
 const LINGER = 0.4; // seconds an enemy stays drawn after slipping out of sight
-const THEMES = {
-  tactical: { sky: ['#6f8ba3', '#c9d3d9'], fog: [201, 211, 217], wall: [196, 168, 128], floor: ['#a08e74', '#5f5446'], trim: 0.62 },
-  titan: { sky: ['#5c6470', '#b9b4a8'], fog: [185, 180, 168], wall: [150, 140, 124], floor: ['#7a7060', '#3f3a31'], trim: 0.6 },
-};
-const SQUAD = '#4aa3ff';
+const THEME = { sky: ['#6f8ba3', '#c9d3d9'], fog: [201, 211, 217], wall: [196, 168, 128], floor: ['#a08e74', '#5f5446'], trim: 0.62 };
+const OWN = '#4aa3ff';
 const ENEMY = '#ff4d5a';
 const POINTER = '#ffd24a';
 
@@ -40,15 +37,17 @@ export function createPovRenderer(canvas) {
     return dpr;
   }
 
-  function draw(game, unit, camera) {
+  // view: a teamView snapshot. unit: the agent you're watching (one of view.units).
+  // at: optional unit id → smoothed position, the same interpolation the map uses.
+  function draw(view, unit, camera, at = u => u) {
     const dpr = fit();
     if (!W || !H) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const theme = THEMES[game.mode];
+    const theme = THEME;
     const focal = W / 2 / Math.tan(FOV / 2);
     const horizon = H / 2;
     cam = { x: camera.x, y: camera.y, angle: camera.angle, focal, horizon };
-    const walls = game.gate ? [...game.map.walls, game.gate] : game.map.walls;
+    const walls = MAPS.tactical.walls;
 
     // Sky and floor.
     let g = ctx.createLinearGradient(0, 0, 0, horizon);
@@ -94,17 +93,18 @@ export function createPovRenderer(canvas) {
       if (z < 0.3 || z > FAR) return;
       sprites.push({ z, sx: W / 2 + ((-rx * sin + ry * cos) * focal) / z, drawFn });
     };
-    for (const e of game.effects) {
-      if (e.kind === 'death') add(e.x, e.y, s => body(s, e));
+    for (const e of view.effects) {
+      if (e.kind === 'death') add(e.x, e.y, s => body(s, e, view.team));
     }
-    const spike = game.spike;
-    if (spike && spike.state !== 'carried' && spike.state !== 'defused') add(spike.x, spike.y, s => spikeSprite(s, game));
-    for (const u of game.units) {
-      if (!u.alive || u === unit) continue;
-      if (u.team === 'enemy' && u.kind !== 'titan' && !enemyInView(game, walls, camera, u)) continue;
-      add(u.x, u.y, s => figure(s, u, game));
+    const spike = view.spike;
+    if (spike && ['planted', 'dropped'].includes(spike.state)) add(spike.x, spike.y, s => spikeSprite(s, spike, view.time));
+    for (const u of view.units) {
+      if (!u.alive || u.id === unit.id) continue;
+      if (u.team !== view.team && !enemyInView(view, unit, u)) continue;
+      const p = at(u);
+      add(p.x, p.y, s => figure(s, { ...u, ...p }, view));
     }
-    if (game.pointer && performance.now() - game.pointer.at < 8000) add(game.pointer.x, game.pointer.y, s => ping(s, game));
+    if (pointer) add(pointer.x, pointer.y, s => ping(s, pointer));
     sprites.sort((a, b) => b.z - a.z);
     for (const s of sprites) {
       ctx.save();
@@ -112,26 +112,27 @@ export function createPovRenderer(canvas) {
       ctx.restore();
     }
 
-    for (const e of game.effects) if (e.kind === 'tracer') tracer(e, walls);
-    viewmodel(game, unit);
+    for (const e of view.effects) if (e.kind === 'tracer') tracer(e, walls, view);
+    viewmodel(view, unit);
     crosshair();
+  }
+
+  // The marker the commander placed on the map, drawn as a beacon in the world.
+  let pointer = null;
+  function setPointer(p) {
+    pointer = p;
   }
 
   // ---------- geometry ----------
 
-  // The sim tests one ray between centres, so an enemy edging past a corner blinks in and out.
-  // Here: rays to their centre and both sides, then a short grace period once sight is lost.
-  function enemyInView(game, walls, camera, u) {
-    const seen = lastSeen.get(u.id) ?? -Infinity;
-    if (Math.hypot(u.x - camera.x, u.y - camera.y) > SIGHT) return game.time - seen < LINGER;
-    const a = Math.atan2(u.y - camera.y, u.x - camera.x) + Math.PI / 2;
-    const dx = Math.cos(a) * u.r * 0.8;
-    const dy = Math.sin(a) * u.r * 0.8;
-    const map = { walls };
-    const visible = [[0, 0], [dx, dy], [-dx, -dy]]
-      .some(([ox, oy]) => hasLineOfSight(map, camera, { x: u.x + ox, y: u.y + oy }));
-    if (visible) lastSeen.set(u.id, game.time);
-    return visible || game.time - seen < LINGER;
+  // Only what the agent you're watching can see. The server says which of your agents see each
+  // enemy; a short grace period stops them blinking as they edge past a corner.
+  function enemyInView(view, unit, u) {
+    if (u.seenBy?.includes(unit.id)) {
+      lastSeen.set(u.id, view.time);
+      return true;
+    }
+    return view.time - (lastSeen.get(u.id) ?? -Infinity) < LINGER;
   }
 
   // Nearest wall hit along a ray (slab test against each rectangle).
@@ -209,17 +210,17 @@ export function createPovRenderer(canvas) {
 
   // ---------- sprites ----------
 
-  function figure(s, u, game) {
-    const titan = u.kind === 'titan';
-    const height = titan ? u.r * 3.2 : 1.8;
-    const width = titan ? u.r * 1.4 : 0.75;
+  function figure(s, u, view) {
+    const own = u.team === view.team;
+    const height = 1.8;
+    const width = 0.75;
     const scale = cam.focal / s.z;
     const foot = cam.horizon + EYE * scale;
     const h = height * scale;
     const w = width * scale;
     const x = s.sx;
     const fog = Math.min(1, s.z / FAR);
-    const color = u.color ?? (u.team === 'squad' ? SQUAD : ENEMY);
+    const color = u.color ?? (own ? OWN : ENEMY);
     ctx.globalAlpha = 1 - fog * 0.6;
     // Body and head.
     ctx.fillStyle = shadeHex(color, 0.55);
@@ -229,14 +230,14 @@ export function createPovRenderer(canvas) {
     ctx.beginPath();
     ctx.arc(x, foot - h * 0.88, h * 0.11, 0, Math.PI * 2);
     ctx.fill();
-    if (u.team === 'enemy' && !titan) {
+    if (!own) {
       // Valorant-style red outline on spotted enemies.
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(1, scale * 0.06);
       ctx.strokeRect(x - w / 2, foot - h * 0.78, w, h * 0.78);
     }
     // Muzzle flash when they fire.
-    if (game.time - u.lastShotAt < 0.06 && !titan) {
+    if (u.firing) {
       ctx.fillStyle = '#fff2b0';
       ctx.beginPath();
       ctx.arc(x, foot - h * 0.6, Math.max(2, scale * 0.15), 0, Math.PI * 2);
@@ -245,7 +246,7 @@ export function createPovRenderer(canvas) {
     ctx.globalAlpha = 1;
     // Name tag for teammates, health bar for enemies.
     const tagY = foot - h - Math.max(8, scale * 0.25);
-    if (u.team === 'squad') {
+    if (own) {
       ctx.font = `700 ${clamp(scale * 0.3, 10, 14)}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(10,14,20,0.6)';
@@ -263,19 +264,19 @@ export function createPovRenderer(canvas) {
     }
   }
 
-  function body(s, e) {
+  function body(s, e, team) {
     const scale = cam.focal / s.z;
     const foot = cam.horizon + EYE * scale;
     ctx.globalAlpha = Math.min(1, e.ttl / 2) * 0.8;
-    ctx.fillStyle = shadeHex(e.color ?? (e.team === 'squad' ? SQUAD : ENEMY), 0.4);
+    ctx.fillStyle = shadeHex(e.color ?? (e.team === team ? OWN : ENEMY), 0.4);
     ctx.fillRect(s.sx - 0.9 * scale, foot - 0.3 * scale, 1.8 * scale, 0.3 * scale);
     ctx.globalAlpha = 1;
   }
 
-  function spikeSprite(s, game) {
+  function spikeSprite(s, spike, time) {
     const scale = cam.focal / s.z;
     const foot = cam.horizon + EYE * scale;
-    const planted = game.spike.state === 'planted';
+    const planted = spike.state === 'planted';
     const size = 0.5 * scale;
     ctx.fillStyle = planted ? '#ff6b3d' : '#ffb347';
     ctx.beginPath();
@@ -284,7 +285,7 @@ export function createPovRenderer(canvas) {
     ctx.lineTo(s.sx - size / 2, foot);
     ctx.closePath();
     ctx.fill();
-    if (planted && Math.sin(game.time * (10 - game.spike.timer / 5)) > 0) {
+    if (planted && Math.sin(time * (10 - spike.timer / 5)) > 0) {
       ctx.fillStyle = 'rgba(255,107,61,0.35)';
       ctx.beginPath();
       ctx.arc(s.sx, foot - size, size * 1.6, 0, Math.PI * 2);
@@ -292,10 +293,10 @@ export function createPovRenderer(canvas) {
     }
   }
 
-  function ping(s, game) {
+  function ping(s, p) {
     const scale = cam.focal / s.z;
     const foot = cam.horizon + EYE * scale;
-    const age = (performance.now() - game.pointer.at) / 8000;
+    const age = (performance.now() - p.at) / 8000;
     ctx.globalAlpha = 1 - age * 0.7;
     ctx.strokeStyle = POINTER;
     ctx.lineWidth = 2;
@@ -316,7 +317,7 @@ export function createPovRenderer(canvas) {
     ctx.globalAlpha = 1;
   }
 
-  function tracer(e, walls) {
+  function tracer(e, walls, view) {
     const mid = { x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 };
     if (!hasLineOfSight({ walls }, cam, mid)) return;
     // Clip the segment to in front of the camera before projecting.
@@ -336,7 +337,7 @@ export function createPovRenderer(canvas) {
     const pa = project(a.x, a.y, 1.4);
     const pb = project(b.x, b.y, 1.3);
     if (!pa || !pb) return;
-    ctx.strokeStyle = e.color ?? (e.team === 'squad' ? 'rgb(170,215,255)' : 'rgb(255,170,150)');
+    ctx.strokeStyle = e.color ?? (e.team === view.team ? 'rgb(170,215,255)' : 'rgb(255,170,150)');
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(pa.x, pa.y);
@@ -346,25 +347,16 @@ export function createPovRenderer(canvas) {
 
   // ---------- HUD in the 3D view ----------
 
-  function viewmodel(game, u) {
-    const bob = u.moving ? Math.sin(game.time * 11) * 6 : 0;
-    const kick = game.time - u.lastShotAt < 0.08 ? 10 : 0;
+  function viewmodel(view, u) {
+    const bob = u.moving ? Math.sin(view.time * 11) * 6 : 0;
+    const kick = u.firing ? 10 : 0;
     const x = W * 0.7;
     const y = H - 10 + Math.abs(bob) + kick;
     const s = Math.min(W, H) / 600;
     ctx.save();
     ctx.translate(x + bob, y);
     ctx.scale(s, s);
-    if (game.mode === 'titan') {
-      // Twin blades.
-      ctx.fillStyle = '#c9d2dc';
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(60, -200);
-      ctx.lineTo(75, -195);
-      ctx.lineTo(40, 0);
-      ctx.fill();
-    } else {
+    {
       ctx.fillStyle = '#23272f';
       ctx.beginPath();
       ctx.moveTo(-10, 0);
@@ -399,7 +391,7 @@ export function createPovRenderer(canvas) {
     ctx.stroke();
   }
 
-  return { draw, toWorld };
+  return { draw, toWorld, setPointer };
 }
 
 // A camera that follows a unit but eases its turns, since Jev can snap an agent's facing.

@@ -10,7 +10,7 @@ const zone = (name, x, y, w, h, description, center) => ({
 const BORDER = [rect(0, 0, 80, 1), rect(0, 55, 80, 1), rect(0, 0, 1, 56), rect(79, 0, 1, 56)];
 
 export const MAPS = {
-  // Valorant-style: attackers start at the bottom, two bomb sites at the top.
+  // Valorant-style: attackers (the squad) start at the bottom, two bomb sites at the top.
   tactical: {
     id: 'tactical',
     width: 80,
@@ -38,7 +38,7 @@ export const MAPS = {
       zone('Mid', 32, 14, 16, 30, 'the middle of the map', { x: 40, y: 34 }),
       zone('A Main', 1, 21, 13, 23, 'the long corridor into A Site', { x: 10, y: 30 }),
       zone('B Main', 66, 21, 13, 23, 'the long corridor into B Site', { x: 70, y: 30 }),
-      zone('Attacker Spawn', 1, 44, 78, 11, 'where the attackers start', { x: 40, y: 51 }),
+      zone('Attacker Spawn', 1, 44, 78, 11, 'our starting area', { x: 40, y: 51 }),
     ],
     sites: ['A Site', 'B Site'],
     // Pushes go through a site's main lane; flanks come through the link (or whichever
@@ -49,14 +49,42 @@ export const MAPS = {
       Mid: { flank: ['A Link', 'B Link'] },
     },
     spawns: {
-      attack: [{ x: 36, y: 51 }, { x: 40, y: 52 }, { x: 44, y: 51 }, { x: 40, y: 48 }],
-      // Defenders start on their posts. Bot rotators move to whichever site a callout threatens.
-      defend: [
+      squad: [{ x: 36, y: 51 }, { x: 40, y: 52 }, { x: 44, y: 51 }, { x: 40, y: 48 }],
+      // Defender bots start on their posts; rotators move toward callouts.
+      bots: [
         { x: 10, y: 8, rotate: false },
         { x: 20, y: 17, rotate: true },
         { x: 40, y: 17, rotate: true },
         { x: 70, y: 8, rotate: false },
       ],
+    },
+  },
+
+  // Commander Erwin's squad holds a district gate against waves of titans from the breach.
+  titan: {
+    id: 'titan',
+    width: 80,
+    height: 56,
+    walls: [
+      ...BORDER,
+      ...[11, 23, 35].flatMap(y => [rect(5, y, 11, 6), rect(19, y, 10, 6), rect(51, y, 10, 6), rect(64, y, 11, 6)]),
+      rect(1, 52, 32, 3), rect(47, 52, 32, 3), // the inner wall either side of the gate
+    ],
+    gate: rect(33, 52, 14, 1.5),
+    zones: [
+      zone('Gate', 29, 47, 22, 5, 'the gate we must protect', { x: 40, y: 49 }),
+      zone('Plaza', 1, 41, 78, 11, 'the open square in front of the gate', { x: 40, y: 45 }),
+      zone('Wall Breach', 1, 1, 78, 10, 'the breach in the outer wall where titans pour in', { x: 40, y: 5 }),
+      zone('Main Street', 29, 11, 22, 30, 'the wide central avenue', { x: 40, y: 26 }),
+      zone('West District', 1, 11, 28, 30, 'the western blocks of houses', { x: 17, y: 20 }),
+      zone('East District', 51, 11, 28, 30, 'the eastern blocks of houses', { x: 63, y: 20 }),
+    ],
+    routes: {
+      'Wall Breach': { flank: ['West District', 'East District'] },
+      'Main Street': { flank: ['West District', 'East District'] },
+    },
+    spawns: {
+      squad: [{ x: 36, y: 47 }, { x: 40, y: 48 }, { x: 44, y: 47 }, { x: 40, y: 45 }],
     },
   },
 };
