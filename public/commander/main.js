@@ -1,53 +1,37 @@
-// Jev Commander: voice, hand signals, and typed orders → Jev → a squad of four agents.
-import { createBrains, spikeCarrierName } from './brain.js';
+// Jev Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
+// Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
+// which runs the match and streams this player their team's view.
+import { createBrains } from './brain.js';
 import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { createRenderer } from './render.js';
-import { SQUADS, actionLabel, aliveSquad, createGame, orderLabel, roundStatus, squad, stepGame } from './sim.js';
-import { zoneAt } from './world.js';
+import { ENEMY_COLORS, OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
+import { MAPS, zoneAt } from './world.js';
 
 const STEP = 1 / 60;
+const POINTER_MS = 8000;
 const $ = id => document.getElementById(id);
 
-const MODES = {
-  tactical: {
-    title: 'Spike Rush',
-    intro: 'You command Alpha, Bravo, Charlie and Delta against four defender bots. Left alone they rush the nearest site and shoot whoever they see, so orders are how you change the plan. Alpha carries the spike: get it planted on A or B (stand on site, 3s) and defend it, or wipe the defenders. Try “Everyone push B”, “Alpha and Bravo hold mid, Charlie and Delta flank A”, or point at the map and say “go there”.',
-    keyterms: ['Alpha', 'Bravo', 'Charlie', 'Delta', 'A Site', 'B Site', 'A Main', 'B Main', 'Mid', 'A Link', 'B Link', 'spike', 'plant', 'flank', 'regroup'],
-  },
-  titan: {
-    title: 'Titan Siege',
-    intro: 'Commander Erwin: Levi, Mikasa, Hange and Armin must hold the gate for 150s against waves of small, big and abnormal titans. Blades only kill from behind: aim for the nape (the red dot). Try “Levi and Mikasa flank the big one”, “everyone protect the gate”, or “Hange, attack Main Street”.',
-    keyterms: ['Levi', 'Mikasa', 'Hange', 'Armin', 'Erwin', 'titan', 'nape', 'gate', 'Plaza', 'Main Street', 'West District', 'East District', 'Wall Breach', 'flank', 'regroup'],
-  },
-};
+const ZONE_TERMS = ['A Site', 'B Site', 'A Main', 'B Main', 'Mid', 'A Link', 'B Link', 'spike', 'flank', 'regroup', 'rotate'];
+const keytermsFor = team => [...TEAMS[team].names, ...ZONE_TERMS, team === 'attack' ? 'plant' : 'defuse'];
 
-// What each hand signal says, per scenario. The words go to Jev like any other order.
-// In first-person the order is for the watched agent only, so "Everyone" becomes their name.
-function signalOrder(name, game) {
-  const order = squadSignalOrder(name, game);
-  const u = watched();
-  if (view === 'pov' && u) order.text = order.text.replace(/^Everyone/, u.name);
-  return order;
-}
-
-function squadSignalOrder(name, game) {
-  const pointed = game.pointer && performance.now() - game.pointer.at < 8000;
-  const tactical = game.mode === 'tactical';
+// What each hand signal says. The words go to Jev like any other order.
+function signalOrder(name, team, pointed) {
+  const attack = team === 'attack';
+  const [a, b, c, d] = TEAMS[team].names;
+  const carrier = view?.units.find(u => u.carrying)?.name ?? a;
   const orders = {
     Thumb_Up: pointed ? 'Everyone push there!' : 'Everyone push forward!',
     Open_Palm: 'Everyone hold your positions!',
     Closed_Fist: 'Everyone regroup!',
-    Thumb_Down: tactical ? 'Everyone fall back to spawn!' : 'Everyone fall back to the gate!',
-    Victory: tactical
-      ? 'Alpha and Bravo push A Site. Charlie and Delta push B Site.'
-      : 'Levi and Mikasa flank through the West District. Hange and Armin flank through the East District.',
-    ILoveYou: tactical
-      ? `${spikeCarrierName(game) ?? 'Alpha'}, plant the spike${pointed ? ' there' : ' on B Site'}. Everyone else push with them.`
-      : 'Everyone attack! Aim for the nape!',
+    Thumb_Down: attack ? 'Everyone fall back to spawn!' : 'Everyone fall back to Defender Spawn!',
+    Victory: attack ? `${a} and ${b} push A Site. ${c} and ${d} push B Site.` : `${a} and ${b} hold A Site. ${c} and ${d} hold B Site.`,
+    ILoveYou: attack
+      ? `${carrier}, plant the spike${pointed ? ' there' : ' on B Site'}. Everyone else push with them.`
+      : 'Everyone retake the site and defuse the spike!',
   };
-  const label = name === 'ILoveYou' ? (tactical ? 'Plant' : 'All-out attack') : SIGNALS[name].label;
+  const label = name === 'ILoveYou' ? (attack ? 'Plant' : 'Retake') : SIGNALS[name].label;
   return { text: orders[name], gesture: { ...SIGNALS[name], label } };
 }
 
@@ -57,44 +41,48 @@ const povCanvas = $('pov');
 const pov = createPovRenderer(povCanvas);
 const minimap = createRenderer($('minimap'));
 const camera = createCamera();
-const brains = createBrains();
-let mode = 'tactical';
-let game = createGame(mode);
-let running = false;
+
+let session = null; // { kind: 'bots' | 'online', team }
+let game = null; // bot games only: the local simulation
+let brains = null; // bot games only: the attackers' Jev brains
+let online = null; // multiplayer connection: { ws, code, team, host, players, pending, seq, jev }
+let view = null; // what's on screen: a teamView, local or streamed from the server
+let pointer = null; // { x, y, at } marked by clicking the map or pointing at the camera
+let resultShown = false;
+let is3d = false; // first-person view of one agent, instead of the top-down map
+let watchedId = null; // which agent that is
+const positions = new Map(); // smoothed unit positions for multiplayer
 
 // ---------- view: the top-down map (default) or one agent's first-person view ----------
 
-let view = 'map';
-let watchedId = null;
-const watched = () => game.units.find(u => u.id === watchedId && u.alive) ?? null;
+const ownUnits = () => (view?.units ?? []).filter(u => u.team === view.team);
+const watched = () => ownUnits().find(u => u.id === watchedId && u.alive) ?? null;
 
 function setView(next) {
-  view = next;
-  $('arena').dataset.view = view;
-  $('viewBtn').replaceChildren(view === 'map' ? 'First-person ' : 'Map ', el('kbd', { textContent: 'Tab' }));
-  $('hint').textContent = view === 'map'
-    ? 'Click the map (or point at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.'
-    : 'Watching this agent. Every order here is for them alone. ←/→ or swipe: switch agent · Tab or pinch: map.';
-  if (view === 'map') renderer.resize(game.map);
-  else {
-    if (!watched()) watchedId = aliveSquad(game)[0]?.id ?? null;
-    minimap.resize(game.map);
+  is3d = next;
+  $('arena').dataset.view = is3d ? 'pov' : 'map';
+  $('toggle3d').setAttribute('aria-pressed', String(is3d));
+  $('toggle3d').textContent = `3D: ${is3d ? 'On' : 'Off'}`;
+  $('hint').textContent = is3d
+    ? 'Watching this agent. Every order here is for them alone. ←/→ or swipe: switch agent · Tab or pinch: map.'
+    : 'Click the map (or point at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.';
+  if (is3d) {
+    if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
+    minimap.resize();
+  } else {
+    renderer.resize();
   }
   updateScorebar();
 }
 
-// Step through the living agents in top-bar order, wrapping around.
+// Step through your living agents in top-bar order, wrapping around.
 function cycleAgent(dir) {
-  const alive = aliveSquad(game);
-  if (!alive.length) return;
-  const order = squad(game);
+  const order = ownUnits();
+  if (!order.some(u => u.alive)) return;
   const from = order.findIndex(u => u.id === watchedId);
   for (let step = 1; step <= order.length; step++) {
     const next = order[(((from + dir * step) % order.length) + order.length) % order.length];
-    if (next.alive) {
-      watchAgent(next);
-      return;
-    }
+    if (next.alive) return watchAgent(next);
   }
 }
 
@@ -112,20 +100,257 @@ function showToast(text) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 700);
 }
 
+const activePointer = () => (pointer && performance.now() - pointer.at < POINTER_MS ? pointer : null);
+
+// ---------- screens ----------
+
+function showScreen(name) {
+  $('overlay').hidden = !name;
+  for (const id of ['screenMenu', 'screenOnline', 'screenLobby', 'screenResult']) $(id).hidden = id !== name;
+}
+
+function goToMenu() {
+  leaveOnline();
+  session = null;
+  game = null;
+  brains = null;
+  view = null;
+  history.replaceState(null, '', location.pathname);
+  updateTeamUi();
+  showScreen('screenMenu');
+}
+
+$('playBots').onclick = startBotGame;
+$('playOnline').onclick = () => {
+  setStatus('onlineStatus', '');
+  showScreen('screenOnline');
+};
+$('toggle3d').onclick = () => setView(!is3d);
+$('onlineBack').onclick = goToMenu;
+$('lobbyLeave').onclick = goToMenu;
+$('resultMenu').onclick = goToMenu;
+$('menuBtn').onclick = goToMenu;
+$('createRoom').onclick = () => connectOnline(null);
+$('joinForm').onsubmit = e => {
+  e.preventDefault();
+  const code = $('joinCode').value.trim().toUpperCase();
+  if (code) connectOnline(code);
+};
+$('again').onclick = () => {
+  if (session?.kind === 'bots') startBotGame();
+  else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
+  else if (online) showScreen('screenLobby');
+};
+const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
+$('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
+
+// ---------- vs bots ----------
+
+function startBotGame() {
+  leaveOnline();
+  session = { kind: 'bots', team: 'attack' };
+  game = createGame({ defenders: 'bots' });
+  brains = createBrains();
+  view = teamView(game, 'attack');
+  beginMatch();
+}
+
+// ---------- multiplayer ----------
+
+function connectOnline(code) {
+  leaveOnline();
+  setStatus('onlineStatus', code ? `Joining ${code}…` : 'Creating a game…');
+  showScreen('screenOnline');
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${location.host}/api/room${code ? `?join=${encodeURIComponent(code)}` : ''}`);
+  const connection = { ws, code: null, team: null, host: false, players: {}, pending: new Map(), seq: 0, jev: null, closedReason: '' };
+  online = connection;
+  ws.onmessage = event => {
+    if (online === connection) handleServer(connection, JSON.parse(event.data));
+  };
+  ws.onclose = () => {
+    if (online !== connection) return;
+    online = null;
+    for (const { reject } of connection.pending.values()) reject(new Error('Disconnected'));
+    session = null;
+    view = null;
+    updateTeamUi();
+    showScreen('screenOnline');
+    setStatus('onlineStatus', connection.closedReason || 'Disconnected from the game server.', 'error');
+  };
+}
+
+function handleServer(connection, message) {
+  switch (message.type) {
+    case 'joined':
+      Object.assign(connection, { code: message.code, team: message.team, host: message.host });
+      session = { kind: 'online', team: message.team };
+      view = null;
+      // A refreshed guest rejoins; the host doesn't (their room closes when they leave).
+      if (!message.host) history.replaceState(null, '', `${location.pathname}?join=${message.code}`);
+      voice.setKeyterms(keytermsFor(message.team));
+      updateTeamUi();
+      renderLobby();
+      showScreen('screenLobby');
+      break;
+    case 'lobby':
+      connection.players = message.players;
+      renderLobby();
+      if (resultShown) updateResultActions();
+      break;
+    case 'started':
+      view = null;
+      beginMatch();
+      break;
+    case 'state':
+      view = message.view;
+      connection.jev = message.jev;
+      break;
+    case 'plan': {
+      const waiter = connection.pending.get(message.id);
+      connection.pending.delete(message.id);
+      if (message.error) waiter?.reject(new Error(message.error));
+      else waiter?.resolve(message);
+      break;
+    }
+    case 'opponent-left':
+      if (!view?.result) showScreen('screenLobby');
+      break;
+    case 'closed':
+    case 'error':
+      connection.closedReason = message.reason ?? message.message;
+      break;
+  }
+}
+
+async function renderLobby() {
+  if (!online?.code) return;
+  const { code, team, host, players } = online;
+  $('lobbyCode').textContent = code;
+  $('lobbyIntro').textContent = `You command the ${TEAMS[team].label.toLowerCase()}. Share this code or link with your opponent:`;
+  for (const [id, seat] of [['seatAttack', 'attack'], ['seatDefend', 'defend']]) {
+    const filled = Boolean(players?.[seat]);
+    $(id).classList.toggle('filled', filled);
+    $(id).querySelector('.who').textContent = seat === team ? 'You' : filled ? 'Opponent ready' : 'Waiting for opponent…';
+  }
+  const ready = Boolean(players?.attack && players?.defend);
+  $('startMatch').hidden = !host;
+  $('startMatch').disabled = !ready;
+  if (!host) setStatus('lobbyStatus', 'Waiting for the host to start the match…');
+  else setStatus('lobbyStatus', ready ? 'Both commanders are here.' : 'Waiting for your opponent to join…');
+  $('inviteLink').value = await inviteUrl(code);
+}
+
+// The invite has to work from another machine: prefer the server's public (tunnel) address,
+// then its LAN address, over localhost.
+const isLocalHost = host => ['localhost', '127.0.0.1', '[::1]'].includes(host);
+let serverInfo;
+async function inviteUrl(code) {
+  serverInfo ??= await fetch('/api/info').then(res => res.json()).catch(() => ({ public: null, lan: [] }));
+  const local = isLocalHost(location.hostname);
+  const origin = serverInfo.public || (local && serverInfo.lan[0]) || location.origin;
+  $('inviteNote').textContent = isLocalHost(new URL(origin).hostname)
+    ? 'This link only works on this computer. Run npm run online for a link anyone can open.'
+    : '';
+  return `${origin}/commander/?join=${code}`;
+}
+
+$('copyInvite').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($('inviteLink').value);
+    $('copyInvite').textContent = 'Copied';
+  } catch {
+    $('inviteLink').select();
+    $('copyInvite').textContent = 'Press ⌘C';
+  }
+  setTimeout(() => { $('copyInvite').textContent = 'Copy link'; }, 1500);
+};
+
+function leaveOnline() {
+  if (!online) return;
+  const { ws } = online;
+  online = null;
+  ws.close();
+}
+
+// ---------- matches ----------
+
+function beginMatch() {
+  ensureMic();
+  resultShown = false;
+  positions.clear();
+  $('log').replaceChildren();
+  $('feed').replaceChildren();
+  $('caption').textContent = '';
+  updateTeamUi();
+  buildSquadCards();
+  watchedId = null; // picked from the first view that has your squad in it
+  buildScorebar();
+  setView(is3d);
+  showScreen(null);
+}
+
+function showResult() {
+  resultShown = true;
+  const won = view.result.winner === session.team;
+  $('resultTitle').textContent = won ? 'Victory' : 'Defeat';
+  $('resultTitle').className = won ? 'win' : 'lose';
+  $('resultText').textContent = view.result.reason;
+  updateResultActions();
+  showScreen('screenResult');
+}
+
+function updateResultActions() {
+  if (session.kind === 'bots') {
+    $('again').hidden = false;
+    $('again').textContent = 'Play again';
+    setStatus('resultStatus', '');
+  } else if (!opponentPresent()) {
+    $('again').hidden = false;
+    $('again').textContent = 'Back to lobby';
+    setStatus('resultStatus', 'Your opponent left.');
+  } else {
+    $('again').hidden = !online?.host;
+    $('again').textContent = 'Rematch';
+    setStatus('resultStatus', online?.host ? '' : 'Waiting for the host to start a rematch…');
+  }
+}
+
 // ---------- orders ----------
 
 async function issueCommand({ source, text, gesture }) {
   if (!text?.trim()) return;
+  if (!session || !view || view.result) {
+    setStatus('micStatus', 'Start a match first.', 'error');
+    return;
+  }
   // First-person is one agent's view, so every order given there is for them alone.
-  const only = view === 'pov' ? watched()?.name : undefined;
+  const only = is3d ? watched()?.name : undefined;
   const entry = addLogEntry(source, only ? `→ ${only}: ${text}` : text, gesture);
+  const p = activePointer();
+  const request = { text, gesture, pointer: p && { x: p.x, y: p.y }, only };
   try {
-    const { plan, latency, tokens } = await brains.interpretCommand(game, { text, gesture, only });
-    renderPlan(entry, plan, latency, tokens);
+    const result = session.kind === 'bots'
+      ? await brains.interpretCommand(game, session.team, request)
+      : await sendCommand(request);
+    renderPlan(entry, result);
   } catch (error) {
     entry.querySelector('.plan').replaceChildren();
     entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
   }
+}
+
+function sendCommand(request) {
+  const connection = online;
+  if (!connection) return Promise.reject(new Error('Not connected'));
+  const id = ++connection.seq;
+  connection.ws.send(JSON.stringify({ type: 'command', id, ...request }));
+  return new Promise((resolve, reject) => {
+    connection.pending.set(id, { resolve, reject });
+    setTimeout(() => {
+      if (connection.pending.delete(id)) reject(new Error('No answer from the game server'));
+    }, 15000);
+  });
 }
 
 function addLogEntry(source, text, gesture) {
@@ -141,9 +366,16 @@ function addLogEntry(source, text, gesture) {
   return entry;
 }
 
-function renderPlan(entry, plan, latency, tokens) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder }) {
+  const pct = v => `${Math.round(v * 100)}%`;
+  if (ignored) {
+    entry.querySelector('.plan').replaceChildren(
+      el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
+    entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+    entry.classList.add('ignored');
+    return;
+  }
   const rows = plan.flatMap(p => {
-    const pct = v => `${Math.round(v * 100)}%`;
     if (!p.applied) {
       return [
         el('span', { className: 'skip', textContent: p.name }),
@@ -151,10 +383,9 @@ function renderPlan(entry, plan, latency, tokens) {
         el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
       ];
     }
-    const detail = `${p.order} → ${p.target}${p.priority && p.priority !== 'any' ? ` (${p.priority} first)` : ''}`;
     return [
       el('span', { textContent: p.name }),
-      el('span', { textContent: detail, title: `addressed ${pct(p.addressed)} · order ${pct(p.orderP)} · target ${pct(p.targetP)}` }),
+      el('span', { textContent: `${p.order} → ${p.target}`, title: `addressed ${pct(p.addressed)} · order ${pct(p.orderP)} · target ${pct(p.targetP)}` }),
       el('span', { className: 'p', textContent: pct(p.orderP * p.targetP), title: 'P(order) × P(target)' }),
     ];
   });
@@ -165,42 +396,20 @@ function renderPlan(entry, plan, latency, tokens) {
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
 
 function handleSignal(name) {
-  if (view === 'pov' && SQUAD_ONLY_SIGNALS[name]) {
+  if (!session) return;
+  if (is3d && SQUAD_ONLY_SIGNALS[name]) {
     showSign(`${SQUAD_ONLY_SIGNALS[name]}: map view only`);
     return;
   }
-  const { text, gesture } = signalOrder(name, game);
+  const { text: said, gesture } = signalOrder(name, session.team, Boolean(activePointer()));
+  // A signal carries no names, so in first-person it speaks to the agent you're watching.
+  const u = is3d ? watched() : null;
+  const text = u ? said.replace(/^Everyone/, u.name) : said;
   showSign(`${gesture.emoji} ${gesture.label}`);
   issueCommand({ source: 'hand', text, gesture });
 }
 
-// ---------- game lifecycle ----------
-
-function newGame(nextMode, { start = false } = {}) {
-  mode = nextMode;
-  game = createGame(mode);
-  renderer.resize(game.map);
-  $('log').replaceChildren();
-  $('feed').replaceChildren();
-  buildSquadCards();
-  buildScorebar();
-  watchedId = aliveSquad(game)[0]?.id ?? null;
-  setView(view);
-  running = start;
-  showOverlay(!start, MODES[mode].title, MODES[mode].intro, 'Start');
-  voice.setKeyterms([...MODES[mode].keyterms]);
-  $('textInput').placeholder = mode === 'tactical'
-    ? 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”'
-    : 'Or type an order, e.g. “Levi and Mikasa flank the big titans”';
-}
-
-function showOverlay(visible, title, text, button, outcome) {
-  $('overlay').hidden = !visible;
-  $('overlayTitle').textContent = title;
-  $('overlayTitle').className = outcome ?? '';
-  $('overlayText').textContent = text;
-  $('start').textContent = button;
-}
+// ---------- frame loop ----------
 
 let last = performance.now();
 let accumulator = 0;
@@ -208,136 +417,199 @@ let lastHud = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  if (running && !game.result) {
-    accumulator += dt;
-    while (accumulator >= STEP) {
-      stepGame(game, STEP);
-      accumulator -= STEP;
+  if (session?.kind === 'bots' && game) {
+    if (!game.result) {
+      accumulator += dt;
+      while (accumulator >= STEP) {
+        stepGame(game, STEP);
+        accumulator -= STEP;
+      }
+      brains.update(game, 'attack');
     }
-    brains.update(game);
+    view = teamView(game, 'attack');
   }
-  if (running && game.result) {
-    running = false;
-    const won = game.result.winner === 'squad';
-    showOverlay(true, won ? 'Victory' : 'Defeat', game.result.reason, 'Play again', won ? 'win' : 'lose');
-  }
-  if (view === 'pov' && !watched()) cycleAgent(1); // the watched agent died
-  const u = watched();
-  if (view === 'pov' && u) {
-    pov.draw(game, u, camera.update(u, dt));
-    minimap.draw(game, { focusId: u.id, mini: true });
+  if (session?.kind === 'online') smoothPositions(dt);
+  const smoothed = session?.kind === 'online' ? positions : null;
+  if (is3d && !watched()) cycleAgent(1); // the agent you were watching died
+  const u = is3d ? watched() : null;
+  if (u) {
+    const at = unit => smoothed?.get(unit.id) ?? unit;
+    pov.setPointer(activePointer());
+    pov.draw(view, u, camera.update({ ...u, ...at(u) }, dt), at);
+    minimap.draw(view, { pointer: activePointer(), positions: smoothed, focusId: u.id, mini: true });
   } else {
-    renderer.draw(game, { focusId: watchedId });
+    renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
   }
+  if (view?.result && !resultShown && session) showResult();
   if (now - lastHud > 100) {
     lastHud = now;
     updateHud();
+    syncListening();
   }
   requestAnimationFrame(frame);
 }
 
+// Snapshots arrive 20 times a second; ease units toward them so movement stays smooth.
+function smoothPositions(dt) {
+  if (!view) return;
+  const k = 1 - Math.exp(-dt * 18);
+  const present = new Set();
+  for (const u of view.units) {
+    present.add(u.id);
+    const p = positions.get(u.id);
+    if (!p || Math.hypot(p.x - u.x, p.y - u.y) > 6) positions.set(u.id, { x: u.x, y: u.y });
+    else {
+      p.x += (u.x - p.x) * k;
+      p.y += (u.y - p.y) * k;
+    }
+  }
+  for (const id of positions.keys()) if (!present.has(id)) positions.delete(id);
+}
+
 // ---------- HUD ----------
 
-// Valorant-style top bar: squad portraits (left, in switching order), clock, enemies (right).
+function updateTeamUi() {
+  const team = session?.team;
+  $('teamBadge').hidden = !team;
+  $('teamBadge').className = `badge ${team ?? ''}`;
+  $('teamBadge').textContent = team ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}` : '';
+  $('textInput').placeholder = team === 'defend'
+    ? 'Or type an order, e.g. “Echo, Foxtrot hold A. Golf rotate B”'
+    : 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”';
+  if (team) voice.setKeyterms(keytermsFor(team));
+  $('scorebar').hidden = !team;
+  if (!team) {
+    $('squad').replaceChildren();
+    $('scoreClock').textContent = '–';
+    $('roundLabel').textContent = '';
+    $('jevStats').textContent = '';
+  }
+}
+
+// Valorant-style top bar: your agents (left, in switching order), the clock, then theirs.
 // The dead drop off the bar.
+// Online, the match starts before the first snapshot arrives, so the bar is (re)built as soon
+// as your squad shows up in a view.
+let scorebarKey = '';
+
 function buildScorebar() {
   const portrait = (u, onclick) => {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
-      el('span', { className: 'face', textContent: u.team === 'squad' ? u.name[0] : u.name.slice(1) }),
+      el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
       el('span', { className: 'bar' }, [el('i')]),
-      ...(u.team === 'squad' ? [el('span', { className: 'who', textContent: u.name })] : []),
+      ...(onclick ? [el('span', { className: 'who', textContent: u.name })] : []),
     ]);
-    u.portrait = node;
+    node.dataset.id = u.id;
     return node;
   };
-  $('squadBar').replaceChildren(...squad(game).map(u => portrait(u, () => watchAgent(u))));
-  $('enemyBar').replaceChildren(...game.units.filter(u => u.team === 'enemy').map(u => portrait(u)));
+  const own = ownUnits();
+  // Defender bots are E1–E4; a second commander's agents have the defend squad's names.
+  const enemies = session.kind === 'bots'
+    ? ['E1', 'E2', 'E3', 'E4']
+    : TEAMS[otherTeamOf(session.team)].names;
+  scorebarKey = own.map(u => u.id).join(',');
+  $('squadBar').replaceChildren(...own.map(u => portrait(u, () => watchAgent(u))));
+  // Their agents aren't in your view until spotted, so the bar keeps fixed slots for them.
+  $('enemyBar').replaceChildren(...enemies.map((name, i) => el('button', {
+    type: 'button', className: 'portrait', title: name, style: `--agent:${ENEMY_COLORS[i]}`,
+  }, [
+    el('span', { className: 'face', textContent: /^E\d/.test(name) ? name.slice(1) : name[0] }),
+    el('span', { className: 'bar' }, [el('i')]),
+  ])));
 }
 
+const otherTeamOf = team => (team === 'attack' ? 'defend' : 'attack');
+
 function updateScorebar() {
-  for (const u of game.units) {
-    if (!u.portrait) continue;
-    u.portrait.hidden = !u.alive;
-    u.portrait.classList.toggle('active', u.id === watchedId);
-    u.portrait.querySelector('.bar i').style.width = `${(u.hp / u.maxHp) * 100}%`;
+  if (!view || !session) return;
+  const own = ownUnits();
+  if (own.map(u => u.id).join(',') !== scorebarKey) buildScorebar();
+  watchedId ??= own.find(u => u.alive)?.id ?? null;
+  for (const u of own) {
+    const chip = $('squadBar').querySelector(`[data-id="${u.id}"]`);
+    if (!chip) continue;
+    chip.hidden = !u.alive;
+    chip.classList.toggle('active', u.id === watchedId);
+    chip.querySelector('.bar i').style.width = `${(u.hp / u.maxHp) * 100}%`;
   }
-  // Titans spawn mid-game, so add their portraits as they appear.
-  const missing = game.units.filter(u => u.team === 'enemy' && !u.portrait && u.alive);
-  for (const u of missing) {
-    const node = el('button', { type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}` }, [
-      el('span', { className: 'face', textContent: u.name.slice(1) }),
-      el('span', { className: 'bar' }, [el('i')]),
-    ]);
-    u.portrait = node;
-    $('enemyBar').append(node);
-  }
+  // You only know an enemy is down when your team saw it happen, so grey them out on kills.
+  const downed = new Set(view.feed.filter(f => f.team === session.team).map(f => f.text.split(' eliminated ')[1]));
+  for (const chip of $('enemyBar').children) chip.classList.toggle('down', downed.has(chip.title));
 }
 
 function buildSquadCards() {
-  $('squad').replaceChildren(...squad(game).map(u => {
-    const card = el('div', { className: 'agent', style: `--agent:${u.color}`, onclick: () => watchAgent(u) }, [
-      el('div', { className: 'top' }, [
-        el('span', { className: 'name', textContent: u.name }),
-        el('span', { className: 'brain' }),
-      ]),
-      el('div', { className: 'hp' }, [el('i')]),
-      el('div', { className: 'doing' }),
-      el('div', { className: 'order' }),
-      el('div', { className: 'probs' }),
-    ]);
-    u.card = card;
-    return card;
-  }));
+  $('squad').replaceChildren(...TEAMS[session.team].names.map((name, i) => el('div', {
+    className: 'agent', style: `--agent:${OWN_COLORS[i]}`, onclick: () => {
+      const u = ownUnits()[i];
+      if (u?.alive) watchAgent(u);
+    },
+  }, [
+    el('div', { className: 'top' }, [el('span', { className: 'name' }), el('span', { className: 'brain' })]),
+    el('div', { className: 'hp' }, [el('i')]),
+    el('div', { className: 'doing' }),
+    el('div', { className: 'order' }),
+    el('div', { className: 'probs' }),
+  ])));
+}
+
+// Who an agent is shooting at, when Jev picked a target.
+function enemyName(u) {
+  const target = u.decision?.target;
+  return target && view.units.some(e => e.name === target) ? target : null;
 }
 
 function updateHud() {
-  const status = roundStatus(game);
-  const seconds = Math.max(0, Math.ceil(status.clock));
+  if (!session || !view) return;
+  const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-  updateScorebar();
-  const u = watched();
-  if (u) {
-    $('povHp').textContent = Math.round(u.hp);
-    $('povName').textContent = u.name;
-    $('povName').style.color = u.color;
-    $('povAction').textContent = `${actionLabel(game, u)} · order: ${orderLabel(u)}`;
-    $('povZone').textContent = zoneAt(game.map, u).name.toUpperCase();
+  $('roundLabel').textContent = view.status.label;
+
+  const s = session.kind === 'bots' ? brains.summary() : online?.jev;
+  if (s) {
+    $('jevStats').replaceChildren(
+      'Jev ', el('b', { textContent: `${s.perMinute}/min` }),
+      ' · p50 ', el('b', { textContent: s.p50 ? `${s.p50} ms` : '–' }),
+      ` · ${s.ok} ok · ${s.failed} failed`,
+    );
+    $('jevStats').title = s.lastError;
   }
-  $('roundLabel').textContent = status.label;
 
-  const s = brains.summary();
-  $('jevStats').replaceChildren(
-    'Jev ', el('b', { textContent: `${s.perMinute}/min` }),
-    ' · p50 ', el('b', { textContent: s.p50 ? `${s.p50} ms` : '–' }),
-    ` · ${s.ok} ok · ${s.failed} failed`,
-  );
-  $('jevStats').title = s.lastError;
-
-  for (const u of squad(game)) {
-    const card = u.card;
+  const own = view.units.filter(u => u.team === session.team);
+  own.forEach((u, i) => {
+    const card = $('squad').children[i];
+    if (!card) return;
     card.classList.toggle('dead', !u.alive);
     card.classList.toggle('watched', u.id === watchedId);
-    card.querySelector('.hp i').style.width = `${u.hp}%`;
-    card.querySelector('.doing').textContent = actionLabel(game, u);
-    card.querySelector('.order').textContent = u.alive ? `Order: ${orderLabel(u)}` : '';
-    card.querySelector('.brain').textContent = !u.alive ? ''
-      : !u.decision ? (u.brain ? '…' : '')
+    card.querySelector('.name').textContent = u.name;
+    card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
+    card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
+    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}` : '';
+    card.querySelector('.brain').textContent = !u.alive ? '' : !u.decision ? '…'
       : u.decision.local ? 'no contact' : `Jev ${Math.round(u.decision.latency)} ms`;
     // Just the chosen action's confidence: the full spread was more noise than signal.
-    const [action, p] = Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] ?? [];
-    card.querySelector('.probs').replaceChildren(...(action && u.alive ? [
+    const [action, p] = (u.alive ? Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] : null) ?? [];
+    card.querySelector('.probs').replaceChildren(...(action ? [
       el('div', { className: 'prob top' }, [
         el('span', { textContent: action }),
         el('span', { className: 'bar' }, [el('i', { style: `width:${p * 100}%` })]),
         el('span', { textContent: `${Math.round(p * 100)}%` }),
       ]),
     ] : []));
-  }
+  });
 
-  const recent = game.feed.filter(f => game.time - f.t < 8).slice(-5);
-  $('feed').replaceChildren(...recent.map(f => el('div', { className: f.team, textContent: f.text })));
+  $('feed').replaceChildren(...view.feed.map(f => el('div', { className: f.team === session.team ? 'own' : 'other', textContent: f.text })));
+
+  updateScorebar();
+  const watching = watched();
+  if (watching) {
+    $('povHp').textContent = Math.round(watching.hp);
+    $('povName').textContent = watching.name;
+    $('povName').style.color = watching.color;
+    $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
+    $('povZone').textContent = zoneAt(MAPS.tactical, watching).name.toUpperCase();
+  }
 }
 
 // ---------- inputs ----------
@@ -352,56 +624,41 @@ const voice = createVoice({
   onLevel: level => { $('level').style.width = `${level * 100}%`; },
 });
 
-$('micBtn').onclick = async () => {
-  if (voice.enabled) {
-    voice.disable();
-    $('micBtn').textContent = 'Enable mic';
-    setStatus('micStatus', 'Mic off');
-    return;
-  }
+// Voice is hands-free: the mic turns on when a match starts and listens only during matches.
+// Each sentence becomes an order when you pause. Muting keeps it off until you unmute.
+let micMuted = false;
+async function ensureMic() {
+  if (voice.enabled || !window.isSecureContext) return;
   try {
-    await voice.enable([...MODES[mode].keyterms]);
-    $('micBtn').textContent = 'Disable mic';
+    await voice.enable(keytermsFor(session?.team ?? 'attack'));
   } catch (error) {
     setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error');
   }
-};
+}
 
-function startTalking() {
+function syncListening() {
+  const inMatch = Boolean(session && view && !view.result);
+  voice.setListening(inMatch && !micMuted);
+  const label = !voice.enabled ? '🎙 Mic off'
+    : micMuted ? '🔇 Muted: click to unmute'
+    : inMatch ? '🎙 Listening: just talk'
+    : '🎙 Mic on: listens during matches';
+  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
+  $('listen').classList.toggle('live', voice.listening);
+  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
+}
+
+async function toggleMic() {
   if (!voice.enabled) {
-    setStatus('micStatus', 'Enable the mic first (or type the order).', 'error');
-    return;
+    micMuted = false;
+    await ensureMic();
+  } else {
+    micMuted = !micMuted;
   }
-  $('ptt').classList.add('live');
-  voice.startTalking();
+  syncListening();
 }
-function stopTalking() {
-  $('ptt').classList.remove('live');
-  voice.stopTalking();
-}
-const typing = () => document.activeElement?.tagName === 'INPUT';
-document.addEventListener('keydown', e => {
-  if (typing()) return;
-  if (e.code === 'KeyV' && !e.repeat) {
-    e.preventDefault();
-    startTalking();
-  } else if (e.code === 'Tab') {
-    e.preventDefault();
-    setView(view === 'map' ? 'pov' : 'map');
-  } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
-    e.preventDefault();
-    cycleAgent(e.code === 'ArrowRight' ? 1 : -1);
-  } else if (/^Digit[1-4]$/.test(e.code)) {
-    const u = squad(game)[Number(e.code.slice(5)) - 1];
-    if (u?.alive) watchAgent(u);
-  }
-});
-document.addEventListener('keyup', e => {
-  if (e.code === 'KeyV' && !typing()) stopTalking();
-});
-$('ptt').addEventListener('pointerdown', startTalking);
-$('ptt').addEventListener('pointerup', stopTalking);
-$('ptt').addEventListener('pointerleave', () => $('ptt').classList.contains('live') && stopTalking());
+$('micBtn').onclick = toggleMic;
+$('listen').onclick = toggleMic;
 
 $('textForm').onsubmit = e => {
   e.preventDefault();
@@ -411,14 +668,29 @@ $('textForm').onsubmit = e => {
   issueCommand({ source: 'text', text });
 };
 
-canvas.addEventListener('click', e => markSpot(renderer.toWorld(e.clientX, e.clientY)));
+canvas.addEventListener('click', e => {
+  const p = renderer.toWorld(e.clientX, e.clientY);
+  if (p.x < 0 || p.y < 0 || p.x > 80 || p.y > 56) return;
+  pointer = { ...p, at: performance.now() };
+});
+
 // No aiming in first-person: it's a view for watching one agent, not for marking spots.
 povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
 
-function markSpot(p) {
-  if (!p || p.x < 0 || p.y < 0 || p.x > game.map.width || p.y > game.map.height) return;
-  game.pointer = { ...p, at: performance.now() };
-}
+const typing = () => document.activeElement?.tagName === 'INPUT';
+document.addEventListener('keydown', e => {
+  if (typing() || !session) return;
+  if (e.code === 'Tab') {
+    e.preventDefault();
+    setView(!is3d);
+  } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+    e.preventDefault();
+    cycleAgent(e.code === 'ArrowRight' ? 1 : -1);
+  } else if (/^Digit[1-4]$/.test(e.code)) {
+    const u = ownUnits()[Number(e.code.slice(5)) - 1];
+    if (u?.alive) watchAgent(u);
+  }
+});
 
 let gestures = null;
 $('previewBtn').onclick = () => {
@@ -452,12 +724,11 @@ $('camBtn').onclick = async () => {
           $('sign').textContent = label;
           $('lastSign').textContent = label;
         }
-        if (!p) return;
+        if (!p || is3d) return; // aiming is map-view only
         // Use the middle of the camera frame so you don't have to reach the edges.
         const nx = Math.min(1, Math.max(0, (p.x - 0.15) / 0.7));
         const ny = Math.min(1, Math.max(0, (p.y - 0.15) / 0.7));
-        if (view === 'pov') return; // aiming is map-view only
-        game.pointer = { x: nx * game.map.width, y: ny * game.map.height, at: performance.now() };
+        pointer = { x: nx * 80, y: ny * 56, at: performance.now() };
       },
       onSignal: handleSignal,
       onSwipe: dir => {
@@ -466,8 +737,8 @@ $('camBtn').onclick = async () => {
         cycleAgent(-dir);
       },
       onPinch: () => {
-        showSign(view === 'map' ? '🤏 First-person' : '🤏 Map');
-        setView(view === 'map' ? 'pov' : 'map');
+        showSign(is3d ? '🤏 Map' : '🤏 First-person');
+        setView(!is3d);
       },
     });
     $('camBtn').textContent = 'Disable camera';
@@ -498,17 +769,17 @@ $('signs').replaceChildren(
   })),
 );
 
-$('start').onclick = () => {
-  if (game.result) newGame(mode, { start: true });
-  else {
-    running = true;
-    $('overlay').hidden = true;
-  }
-};
-$('restart').onclick = () => newGame(mode, { start: true });
-$('mode').onchange = e => newGame(e.target.value);
-$('viewBtn').onclick = () => setView(view === 'map' ? 'pov' : 'map');
-window.addEventListener('resize', () => setView(view));
+// Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
+if (!window.isSecureContext) {
+  const why = 'needs HTTPS or localhost. Type orders and click the map instead.';
+  setStatus('micStatus', `Voice ${why}`, 'error');
+  setStatus('camStatus', `Camera ${why}`, 'error');
+  $('micBtn').disabled = true;
+  $('listen').disabled = true;
+  $('camBtn').disabled = true;
+}
+
+window.addEventListener('resize', () => setView(is3d));
 
 function setStatus(id, text, kind = '') {
   $(id).textContent = text;
@@ -522,20 +793,27 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
-newGame(mode);
+renderer.resize();
+const joinCode = new URLSearchParams(location.search).get('join');
+if (joinCode) {
+  $('joinCode').value = joinCode.toUpperCase();
+  connectOnline(joinCode.toUpperCase());
+} else {
+  showScreen('screenMenu');
+}
 requestAnimationFrame(frame);
 
 // Handy for debugging and scripted demos in the console.
 window.commander = {
+  get session() { return session; },
+  get view() { return view; },
+  get online() { return online && { code: online.code, team: online.team, host: online.host, players: online.players }; },
   get game() { return game; },
-  get running() { return running; },
-  brains,
-  voice,
   issueCommand,
   signal: handleSignal,
-  point: (x, y) => { game.pointer = { x, y, at: performance.now() }; },
-  get view() { return view; },
+  get is3d() { return is3d; },
   setView,
   cycleAgent,
-  squadNames: () => SQUADS[mode],
+  point: (x, y) => { pointer = { x, y, at: performance.now() }; },
+  voice,
 };
