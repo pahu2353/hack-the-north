@@ -15,8 +15,10 @@ export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 
 // One colour per agent, in squad order, so an agent looks the same on the top bar, the map,
 // the first-person view and their card. Always from the viewer's side: yours blue, theirs red.
-export const OWN_COLORS = ['#3d8bfd', '#2ad4c4', '#9b8cff', '#a9e0ff'];
-export const ENEMY_COLORS = ['#ff5d5d', '#ff9a3d', '#f0467f', '#c2453f'];
+// Four shades of one hue per side. They stay light enough to read as text on the dark panel
+// and to take dark lettering inside a filled chip.
+export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd'];
+export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37'];
 
 const RIFLE = { range: 45, damage: 35, interval: 0.22, accuracy: 0.6 };
 const SIGHT = 45;
@@ -44,6 +46,7 @@ export function createGame({ defenders = 'bots', opponent = 'scripted' } = {}) {
     result: null,
     nextId: 1,
     intel: { attack: new Map(), defend: new Map() },
+    knownDown: { attack: new Set(), defend: new Set() },
   };
   TEAMS.attack.names.forEach((name, i) => game.units.push(makeAgent(game, 'attack', name, map.spawns.attack[i], i)));
   map.spawns.defend.forEach((post, i) => {
@@ -288,6 +291,7 @@ function damage(game, target, amount, source) {
   target.alive = false;
   target.moving = false;
   game.effects.push({ kind: 'death', x: target.x, y: target.y, r: target.r, team: target.team, ttl: 8 });
+  game.knownDown[source.team].add(target.id); // you know the ones you killed
   pushFeed(game, `${source.name} eliminated ${target.name}`, source.team);
   if (game.spike.state === 'carried' && game.spike.carrierId === target.id) {
     Object.assign(game.spike, { state: 'dropped', carrierId: null, x: target.x, y: target.y, progress: 0 });
@@ -541,8 +545,22 @@ export function teamView(game, team) {
     const age = game.time - i.t;
     if (age >= 0.15 && age < 3 && unitById(game, id)?.alive) ghosts.push({ id, x: i.x, y: i.y, age });
   }
+  // Every enemy, whether or not you can see them: name and colour are fixed, and you always
+  // know which ones you have killed. Health only while one of your agents has eyes on them.
+  const roster = game.units.filter(u => u.team !== team).map(u => {
+    const seen = u.alive && seenNow(u.id);
+    return {
+      id: u.id, name: u.name, slot: u.slot ?? 0,
+      color: ENEMY_COLORS[(u.slot ?? 0) % ENEMY_COLORS.length],
+      down: !u.alive && game.knownDown[team].has(u.id),
+      seen,
+      hp: seen ? u.hp / u.maxHp : null,
+    };
+  });
+
   return {
     team,
+    roster,
     time: game.time,
     result: game.result,
     status: roundStatus(game, team),

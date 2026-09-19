@@ -6,7 +6,7 @@ import { createOpponentCommander } from './opponent.js';
 import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { createRenderer } from './render.js';
-import { ENEMY_COLORS, OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
+import { OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
@@ -66,8 +66,8 @@ function setView(next) {
   $('toggle3d').setAttribute('aria-pressed', String(is3d));
   $('toggle3d').textContent = `3D: ${is3d ? 'On' : 'Off'}`;
   $('hint').textContent = is3d
-    ? 'Watching this agent. Every order here is for them alone. ←/→ or swipe: switch agent · Tab or pinch: map.'
-    : 'Click the map (or point at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.';
+    ? 'Watching this agent. Every order here is for them alone. ←/→, point or swipe: switch agent · Tab or pinch: map.'
+    : 'Click the map (or point straight up at the camera) to mark a spot, then say “push there”. Tab or pinch: first-person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -108,7 +108,9 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) $(id).hidden = id !== name;
+  for (const id of ['screenDevices', 'screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
+    $(id).hidden = id !== name;
+  }
 }
 
 function goToMenu() {
@@ -153,6 +155,52 @@ $('again').onclick = () => {
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
 $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
+
+// ---------- microphone and camera ----------
+
+// Asked once, then remembered on this machine, so you don't re-enable them every visit.
+// The browser remembers the permission itself; this remembers whether you wanted them on.
+const DEVICE_KEY = 'commander:devices';
+
+function readDevices() {
+  try {
+    return JSON.parse(localStorage.getItem(DEVICE_KEY)) ?? {};
+  } catch {
+    return {}; // private windows and blocked storage: just ask again
+  }
+}
+
+function saveDevices(patch) {
+  try {
+    localStorage.setItem(DEVICE_KEY, JSON.stringify({ ...readDevices(), ...patch }));
+  } catch {
+    // Not being able to remember is not worth interrupting anyone over.
+  }
+}
+
+async function chooseDevices({ mic, camera }) {
+  setStatus('devicesStatus', 'Waiting for your browser\u2019s permission…');
+  saveDevices({ asked: true, mic, camera });
+  if (mic) await ensureMic();
+  if (camera) await startCamera();
+  showScreen('screenMenu');
+}
+
+$('devicesBoth').onclick = () => chooseDevices({ mic: true, camera: true });
+$('devicesMic').onclick = () => chooseDevices({ mic: true, camera: false });
+$('devicesSkip').onclick = () => {
+  saveDevices({ asked: true, mic: false, camera: false });
+  showScreen('screenMenu');
+};
+
+// On later visits, turn back on whatever was wanted last time. The browser only reopens the
+// devices without a click because it already granted this page permission.
+async function restoreDevices() {
+  const devices = readDevices();
+  if (!devices.asked || !window.isSecureContext) return;
+  if (devices.mic) await ensureMic();
+  if (devices.camera) await startCamera();
+}
 
 // ---------- vs bots ----------
 
@@ -288,7 +336,7 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
-  ensureMic();
+  if (readDevices().mic !== false) ensureMic();
   resultShown = false;
   positions.clear();
   $('log').replaceChildren();
@@ -514,46 +562,44 @@ function buildScorebar() {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
+      // Just the initial and a health bar: the name lives in the tooltip and on their card,
+      // which keeps the bar one line high.
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
       el('span', { className: 'bar' }, [el('i')]),
-      ...(onclick ? [el('span', { className: 'who', textContent: u.name })] : []),
     ]);
     node.dataset.id = u.id;
     return node;
   };
   const own = ownUnits();
-  // Defender bots are E1–E4; a second commander's agents have the defend squad's names.
-  const enemies = session.kind === 'bots'
-    ? ['E1', 'E2', 'E3', 'E4']
-    : TEAMS[otherTeamOf(session.team)].names;
   scorebarKey = own.map(u => u.id).join(',');
   $('squadBar').replaceChildren(...own.map(u => portrait(u, () => watchAgent(u))));
-  // Their agents aren't in your view until spotted, so the bar keeps fixed slots for them.
-  $('enemyBar').replaceChildren(...enemies.map((name, i) => el('button', {
-    type: 'button', className: 'portrait', title: name, style: `--agent:${ENEMY_COLORS[i]}`,
-  }, [
-    el('span', { className: 'face', textContent: /^E\d/.test(name) ? name.slice(1) : name[0] }),
-    el('span', { className: 'bar' }, [el('i')]),
-  ])));
+  // The whole enemy roster, named and coloured from the start; what changes is how they look.
+  $('enemyBar').replaceChildren(...(view.roster ?? []).map(u => portrait(u)));
 }
 
-const otherTeamOf = team => (team === 'attack' ? 'defend' : 'attack');
 
 function updateScorebar() {
   if (!view || !session) return;
   const own = ownUnits();
   if (own.map(u => u.id).join(',') !== scorebarKey) buildScorebar();
-  watchedId ??= own.find(u => u.alive)?.id ?? null;
+  if ($('enemyBar').children.length !== (view.roster?.length ?? 0)) buildScorebar();
+  // Never leave the highlight on someone who is down, in either view.
+  if (!own.some(u => u.id === watchedId && u.alive)) watchedId = own.find(u => u.alive)?.id ?? null;
   for (const u of own) {
     const chip = $('squadBar').querySelector(`[data-id="${u.id}"]`);
     if (!chip) continue;
-    chip.hidden = !u.alive;
+    chip.classList.toggle('down', !u.alive);
     chip.classList.toggle('active', u.id === watchedId);
     chip.querySelector('.bar i').style.width = `${(u.hp / u.maxHp) * 100}%`;
   }
-  // You only know an enemy is down when your team saw it happen, so grey them out on kills.
-  const downed = new Set(view.feed.filter(f => f.team === session.team).map(f => f.text.split(' eliminated ')[1]));
-  for (const chip of $('enemyBar').children) chip.classList.toggle('down', downed.has(chip.title));
+  for (const u of view.roster ?? []) {
+    const chip = $('enemyBar').querySelector(`[data-id="${u.id}"]`);
+    if (!chip) continue;
+    chip.classList.toggle('down', u.down);
+    // Dimmed while nobody on your team has eyes on them: their health is unknown.
+    chip.classList.toggle('unseen', !u.seen && !u.down);
+    chip.querySelector('.bar i').style.width = `${(u.seen ? u.hp : 1) * 100}%`;
+  }
 }
 
 function buildSquadCards() {
@@ -705,6 +751,7 @@ async function toggleMic() {
   if (!voice.enabled) {
     micMuted = false;
     await ensureMic();
+    saveDevices({ asked: true, mic: true });
   } else {
     micMuted = !micMuted;
   }
@@ -752,7 +799,14 @@ $('previewBtn').onclick = () => {
   $('previewBtn').textContent = showing ? 'Hide preview' : 'Show preview';
 };
 $('camBtn').onclick = async () => {
-  if (gestures) {
+  const wanted = !gestures;
+  if (wanted) await startCamera();
+  else stopCamera();
+  saveDevices({ asked: true, camera: wanted });
+};
+
+function stopCamera() {
+  {
     gestures.stop();
     gestures = null;
     $('camBtn').textContent = 'Enable camera';
@@ -762,8 +816,11 @@ $('camBtn').onclick = async () => {
     $('lastSign').textContent = '';
     $('sign').hidden = true;
     setStatus('camStatus', 'Camera off');
-    return;
   }
+}
+
+async function startCamera() {
+  if (gestures) return true;
   try {
     $('camOff').hidden = true;
     gestures = await createGestures({
@@ -772,7 +829,8 @@ $('camBtn').onclick = async () => {
       onStatus: (text, kind) => setStatus('camStatus', text, kind),
       onPointer: (p, name) => {
         if (!signTimer) {
-          const label = name === 'Pointing_Up' ? '☝️ Aiming' : SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '';
+          const labels = { Pointing_Up: '☝️ Aiming', Point_Left: '👈 Previous agent', Point_Right: '👉 Next agent' };
+          const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
           $('sign').hidden = name === 'None';
           $('sign').textContent = label;
           $('lastSign').textContent = label;
@@ -789,6 +847,8 @@ $('camBtn').onclick = async () => {
         showSign(dir > 0 ? '👉 Previous agent' : '👈 Next agent');
         cycleAgent(-dir);
       },
+      // Pointing sideways picks the agent you point at; pinch still switches map/first-person.
+      onPointDirection: dir => cycleAgent(dir),
       onPinch: () => {
         showSign(is3d ? '🤏 Map' : '🤏 First-person');
         setView(!is3d);
@@ -798,11 +858,13 @@ $('camBtn').onclick = async () => {
     $('previewBtn').hidden = false;
     $('previewBtn').textContent = 'Hide preview';
     $('cam').hidden = false;
+    return true;
   } catch (error) {
     $('camOff').hidden = false;
     setStatus('camStatus', `Camera unavailable: ${error.message}`, 'error');
+    return false;
   }
-};
+}
 
 let signTimer = null;
 function showSign(text) {
@@ -814,8 +876,8 @@ function showSign(text) {
 }
 
 $('signs').replaceChildren(
-  el('span', { textContent: '☝️ aim', title: 'Point to mark a spot on the map' }),
-  el('span', { textContent: '👋 agent', title: 'Swipe left or right to switch agents' }),
+  el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
+  el('span', { textContent: '👈👉 agent', title: 'Point left or right (or swipe) to switch agents' }),
   el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
   ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
     textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,
@@ -851,8 +913,11 @@ const joinCode = new URLSearchParams(location.search).get('join');
 if (joinCode) {
   $('joinCode').value = joinCode.toUpperCase();
   connectOnline(joinCode.toUpperCase());
-} else {
+} else if (readDevices().asked || !window.isSecureContext) {
   showScreen('screenMenu');
+  restoreDevices();
+} else {
+  showScreen('screenDevices');
 }
 requestAnimationFrame(frame);
 

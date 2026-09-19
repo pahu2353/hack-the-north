@@ -88,9 +88,9 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | --- | --- |
 | Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
-| Pointing | Click the map, or point your index finger at the camera, to mark a spot. Then say or type "push there." |
+| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." |
 | Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
-| Switching agents | Swipe your hand left or right, press ←/→ or 1–4, or click an agent on the top bar or their card. |
+| Switching agents | Point your index finger left or right (hold it to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar or their card. |
 | Switching views | Pinch your thumb and index finger, press <kbd>Tab</kbd>, or use the **3D** button. |
 
 **First-person view.** The map is the default view. Switch to first-person and you watch over one
@@ -98,7 +98,14 @@ agent's shoulder: their view of the map drawn in 3D, a minimap, and the top bar 
 alive on both sides. It's for monitoring, not aiming, so pointing, ✌️ split and 🤟 special are
 map-view only, and every order you give in first-person goes to the agent you're watching alone.
 You see only what that agent sees, while the map shows everything your team sees. Each agent has
-their own colour (yours blue, theirs red) on the bar, the map, in 3D and on their card. Left alone,
+their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their card. The top bar
+keeps both full squads on screen all match, in one strip: a red cross once you know they're down,
+and dimmed while nobody on your team can see them.
+
+**Mic and camera.** The first time you open Commander it asks whether you want the mic and the
+camera, and remembers your answer on that machine (in `localStorage`), so later visits turn them
+back on without asking. Toggling them in the side panel updates what gets restored. The mic only
+listens during matches, and the camera never leaves the browser. Left alone,
 attackers rush the nearer site and shoot what they meet; defenders hold their posts.
 
 **How Jev is used.** Two layers, both plain typed questions:
