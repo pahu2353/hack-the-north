@@ -64,7 +64,7 @@ function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('hint').textContent = is3d
-    ? 'Orders here go to this agent. ←/→ or point: switch agent. Tab or pinch: map.'
+    ? 'Orders here go to this agent. ←/→ or thumb: switch agent. Tab or pinch: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -917,7 +917,7 @@ async function startCamera() {
       onStatus: (text, kind) => setStatus('camStatus', text, kind),
       onPointer: (p, name) => {
         if (!signTimer) {
-          const labels = { Pointing_Up: '☝️ Aiming', Point_Left: '👈 Previous agent', Point_Right: '👉 Next agent' };
+          const labels = { Pointing_Up: '☝️ Aiming', Thumb_Left: '👈 Previous agent', Thumb_Right: '👉 Next agent' };
           const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
           $('sign').hidden = name === 'None';
           $('sign').textContent = label;
@@ -935,7 +935,7 @@ async function startCamera() {
         showSign(dir > 0 ? '👉 Previous agent' : '👈 Next agent');
         cycleAgent(-dir);
       },
-      // Pointing sideways picks the agent you point at; pinch still switches map/first-person.
+      // A thumb out sideways picks the agent on that side; pinch still switches map/first-person.
       onPointDirection: dir => {
         if (matchActive()) cycleAgent(dir);
       },
@@ -967,7 +967,7 @@ function showSign(text) {
 
 $('signs').replaceChildren(
   el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
-  el('span', { textContent: '👈👉 agent', title: 'Point left or right (or swipe) to switch agents' }),
+  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right (or swipe) to switch agents' }),
   el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
   ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
     textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,

@@ -154,21 +154,14 @@ export function createRenderer(canvas) {
     }
   }
 
-  // Each name sits just under its own dot, in that agent's colour, so a dot on the map and a
-  // chip on the top bar are obviously the same agent. A name is only pushed down a row when it
-  // would land on one already placed, which keeps a spread-out squad tight to its dots.
+  // Each name sits directly under its own dot, always at the same offset, in that agent's
+  // colour: a dot on the map and a chip on the top bar are then obviously the same agent.
+  // Stacked agents overlap; the dark outline is what keeps them readable.
   function drawNames(units, px) {
-    const ROW = 1.15;
     ctx.font = `700 ${10 * px}px system-ui, sans-serif`;
     ctx.lineWidth = 3 * px;
-    const placed = [];
     for (const u of units) {
-      const half = ctx.measureText(u.name).width / 2;
-      let y = u.y + u.r + 1.35;
-      while (placed.some(p => Math.abs(p.y - y) < ROW * 0.9 && Math.abs(p.x - u.x) < p.half + half + 0.4)) {
-        y += ROW;
-      }
-      placed.push({ x: u.x, y, half });
+      const y = u.y + u.r + 1.35;
       ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
       ctx.strokeText(u.name, u.x, y);
       ctx.fillStyle = u.color ?? OWN;

@@ -88,9 +88,9 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | --- | --- |
 | Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
-| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." |
+| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." A finger held sideways or down does nothing. |
 | Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
-| Switching agents | Point your index finger left or right (hold it to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar or their card. |
+| Switching agents | Hold your thumb out left or right, hitchhiker style (keep holding to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar. |
 | Switching views | Pinch your thumb and index finger, or press <kbd>Tab</kbd>. |
 | Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
 | Settings | From the menu or the pause screen: agent cards (off by default), kill feed, minimap, Jev numbers, control hints. Remembered per machine. |
