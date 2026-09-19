@@ -628,8 +628,9 @@ function buildScorebar() {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
+      // Initial only: the same letter is drawn inside the agent's dot on the map, and the
+      // full name sits under it there.
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
-      el('span', { className: 'who', textContent: u.name }),
       el('span', { className: 'bar' }, [el('i')]),
     ]);
     node.dataset.id = u.id;

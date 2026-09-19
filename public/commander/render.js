@@ -93,7 +93,9 @@ export function createRenderer(canvas) {
     for (const g of teamView.ghosts) drawGhost(g, px);
     if (focus) drawFocus({ ...focus, ...at(focus) }, px);
     for (const u of enemies) drawSoldier({ ...u, ...at(u) }, u.color ?? ENEMY, px);
-    for (const u of own) if (u.alive) drawSoldier({ ...u, ...at(u) }, u.color ?? OWN, px, true);
+    own.forEach((u, i) => {
+      if (u.alive) drawSoldier({ ...u, ...at(u) }, u.color ?? OWN, px, true, mini ? -1 : i);
+    });
     if (pointer) drawPointer(pointer, px);
   }
 
@@ -123,7 +125,9 @@ export function createRenderer(canvas) {
     ctx.stroke();
   }
 
-  function drawSoldier(u, color, px, own = false) {
+  // slot: position in your squad, used to stagger name labels so neighbours don't collide.
+  // -1 means don't label (the minimap is too small for names).
+  function drawSoldier(u, color, px, own = false, slot = -1) {
     ctx.fillStyle = fade(color, 0.14);
     ctx.beginPath();
     ctx.moveTo(u.x, u.y);
@@ -150,6 +154,16 @@ export function createRenderer(canvas) {
       ctx.fillRect(u.x + 0.7, u.y - 1.3, 0.7, 0.7);
       if (u.plantProgress > 0) ring(u.x, u.y, u.r + 1.1, u.plantProgress, '#ffb347', px);
     }
+    // The name under the dot, in the agent's own colour, so a dot on the map and a chip on the
+    // top bar are obviously the same agent. Alternating rows keep a stacked squad readable.
+    if (slot < 0) return;
+    ctx.font = `700 ${10 * px}px system-ui, sans-serif`;
+    ctx.lineWidth = 3 * px;
+    ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
+    const y = u.y + u.r + 1.7 + (slot % 4) * 1.45; // a row each, so a stacked squad still reads
+    ctx.strokeText(u.name, u.x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(u.name, u.x, y);
   }
 
   // The agent you're watching: a wide view cone and a gold ring.

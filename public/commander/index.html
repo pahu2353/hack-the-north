@@ -222,26 +222,17 @@
     display: grid; place-items: center; min-width: 76px; padding: 0 12px; font: 700 20px system-ui, sans-serif;
     background: rgba(8, 10, 14, 0.92); border: 1px solid var(--border); border-left: 0; border-right: 0;
   }
-  /* Initial, name, and a health bar under both: one row, so the strip stays one line high. */
+  /* Initials only: names are drawn under the dots in the game, where you need them. */
   .portrait {
-    display: grid; grid-template-columns: auto auto; grid-template-rows: 30px 4px;
-    grid-template-areas: "face name" "bar bar"; gap: 3px 6px; align-content: center; align-items: center;
+    display: grid; grid-template-rows: 30px 4px; gap: 3px; align-content: center; justify-items: center;
     pointer-events: auto; cursor: pointer; background: none; border: 0; padding: 0;
   }
-  .portrait .face { grid-area: face; }
-  .portrait .who {
-    grid-area: name; padding-right: 4px; font: 700 11px/1 system-ui, sans-serif; letter-spacing: 0.07em;
-    text-transform: uppercase; color: var(--ink-2); white-space: nowrap;
-  }
-  .portrait .bar { grid-area: bar; }
-  .portrait.active .who { color: var(--gold); }
-  .portrait.down .who { color: var(--muted); text-decoration: line-through; }
   .portrait .face {
     position: relative; width: 32px; height: 30px; display: grid; place-items: center;
     font: 800 15px/1 system-ui, sans-serif; background: var(--agent); color: #08131f; border: 2px solid transparent;
   }
   .enemy .portrait { cursor: default; }
-  .portrait .bar { height: 4px; background: rgba(0, 0, 0, 0.45); overflow: hidden; }
+  .portrait .bar { width: 32px; height: 4px; background: rgba(0, 0, 0, 0.45); overflow: hidden; }
   .portrait .bar i { display: block; height: 100%; width: 100%; background: var(--agent); }
   .portrait.active .face { border-color: var(--gold); box-shadow: 0 0 10px rgba(255, 210, 74, 0.5); }
   .portrait.active .bar i { background: var(--gold); }
@@ -259,12 +250,13 @@
   /* Dimmed while nobody on your team can see them: their health is unknown. */
   .portrait.unseen { opacity: 0.5; }
   .portrait.unseen .bar i { background: rgba(255, 255, 255, 0.25); }
+  /* Under the scoreboard, not beside it. */
   #minimap {
-    position: absolute; top: 10px; left: 10px; width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56;
+    position: absolute; top: 62px; left: 12px; width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56;
     background: rgba(10, 12, 16, 0.6); border: 1px solid var(--border);
   }
   .pov-zone {
-    position: absolute; top: calc(18px + clamp(140px, 20vw, 250px) * 0.7); left: 12px; font-weight: 700;
+    position: absolute; top: calc(70px + clamp(140px, 20vw, 250px) * 0.7); left: 12px; font-weight: 700;
     letter-spacing: 0.04em; text-shadow: 0 1px 3px #000;
   }
   .pov-hud {
@@ -278,18 +270,8 @@
     position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); font: 800 28px system-ui, sans-serif;
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
   }
-  .arena[data-view="pov"] .hint { color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
-  /* Leave room for the minimap on narrower screens. */
-  @media (max-width: 1300px) {
-    .arena[data-view="pov"] .scorebar { left: calc(clamp(140px, 20vw, 250px) + 20px); transform: none; }
-    .portrait .face { width: 28px; }
-  }
-
-  /* Only when the strip would otherwise overflow: initials alone. */
-  @media (max-width: 1080px) {
-    .portrait .who { display: none; }
-  }
-
+  /* Clear of the agent HUD, which sits bottom centre. */
+  .arena[data-view="pov"] .hint { bottom: 62px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
