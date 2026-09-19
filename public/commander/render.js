@@ -93,9 +93,9 @@ export function createRenderer(canvas) {
     for (const g of teamView.ghosts) drawGhost(g, px);
     if (focus) drawFocus({ ...focus, ...at(focus) }, px);
     for (const u of enemies) drawSoldier({ ...u, ...at(u) }, u.color ?? ENEMY, px);
-    own.forEach((u, i) => {
-      if (u.alive) drawSoldier({ ...u, ...at(u) }, u.color ?? OWN, px, true, mini ? -1 : i);
-    });
+    for (const u of own) if (u.alive) drawSoldier({ ...u, ...at(u) }, u.color ?? OWN, px, true);
+    // Names last, so no dot is drawn over them. The minimap is too small to label.
+    if (!mini) drawNames(own.filter(u => u.alive).map(u => ({ ...u, ...at(u) })), px);
     if (pointer) drawPointer(pointer, px);
   }
 
@@ -125,9 +125,7 @@ export function createRenderer(canvas) {
     ctx.stroke();
   }
 
-  // slot: position in your squad, used to stagger name labels so neighbours don't collide.
-  // -1 means don't label (the minimap is too small for names).
-  function drawSoldier(u, color, px, own = false, slot = -1) {
+  function drawSoldier(u, color, px, own = false) {
     ctx.fillStyle = fade(color, 0.14);
     ctx.beginPath();
     ctx.moveTo(u.x, u.y);
@@ -154,16 +152,28 @@ export function createRenderer(canvas) {
       ctx.fillRect(u.x + 0.7, u.y - 1.3, 0.7, 0.7);
       if (u.plantProgress > 0) ring(u.x, u.y, u.r + 1.1, u.plantProgress, '#ffb347', px);
     }
-    // The name under the dot, in the agent's own colour, so a dot on the map and a chip on the
-    // top bar are obviously the same agent. Alternating rows keep a stacked squad readable.
-    if (slot < 0) return;
+  }
+
+  // Each name sits just under its own dot, in that agent's colour, so a dot on the map and a
+  // chip on the top bar are obviously the same agent. A name is only pushed down a row when it
+  // would land on one already placed, which keeps a spread-out squad tight to its dots.
+  function drawNames(units, px) {
+    const ROW = 1.15;
     ctx.font = `700 ${10 * px}px system-ui, sans-serif`;
     ctx.lineWidth = 3 * px;
-    ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
-    const y = u.y + u.r + 1.7 + (slot % 4) * 1.45; // a row each, so a stacked squad still reads
-    ctx.strokeText(u.name, u.x, y);
-    ctx.fillStyle = color;
-    ctx.fillText(u.name, u.x, y);
+    const placed = [];
+    for (const u of units) {
+      const half = ctx.measureText(u.name).width / 2;
+      let y = u.y + u.r + 1.35;
+      while (placed.some(p => Math.abs(p.y - y) < ROW * 0.9 && Math.abs(p.x - u.x) < p.half + half + 0.4)) {
+        y += ROW;
+      }
+      placed.push({ x: u.x, y, half });
+      ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
+      ctx.strokeText(u.name, u.x, y);
+      ctx.fillStyle = u.color ?? OWN;
+      ctx.fillText(u.name, u.x, y);
+    }
   }
 
   // The agent you're watching: a wide view cone and a gold ring.
