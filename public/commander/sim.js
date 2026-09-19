@@ -9,6 +9,11 @@ export const SQUADS = {
   titan: ['Levi', 'Mikasa', 'Hange', 'Armin'],
 };
 
+// One colour per unit, kept in the same order as the squad and the top bar, so an agent looks
+// the same on the map, in the first-person view, and on their card.
+export const SQUAD_COLORS = ['#3d8bfd', '#2ad4c4', '#9b8cff', '#a9e0ff'];
+export const ENEMY_COLORS = ['#ff5d5d', '#ff9a3d', '#f0467f', '#c2453f', '#ff7a7a'];
+
 const RIFLE = { range: 45, damage: 35, interval: 0.22, accuracy: 0.6 };
 const BLADE = { reach: 1.5, damage: 45, napeDamage: 150, interval: 0.7 };
 const SQUAD_SIGHT = 45;
@@ -20,6 +25,7 @@ const TITAN_TYPES = {
   big: { r: 2.8, hp: 420, speed: 2.0, damage: 70, reach: 1.6, turn: 0.7, aggro: 20, windup: 0.75, recover: 1.6 },
   abnormal: { r: 1.8, hp: 200, speed: 5.0, damage: 45, reach: 1.4, turn: 2.2, aggro: 26, windup: 0.35, recover: 0.8 },
 };
+const TITAN_COLORS = { small: '#d7a07a', big: '#b8745a', abnormal: '#e3b95c' };
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 const WAVES = 5;
 const WAVE_INTERVAL = 25;
@@ -46,13 +52,14 @@ export function createGame(mode) {
       team: 'squad',
       kind: squadKind,
       name,
+      color: SQUAD_COLORS[i % SQUAD_COLORS.length],
       ...map.spawns.squad[i],
       r: 0.6,
       hp: 100,
       maxHp: 100,
       speed: mode === 'tactical' ? 5 : 7.5,
       reaction: 0.25,
-      action: 'hold',
+      action: 'advance',
       focusId: null,
       decision: null,
     }));
@@ -61,7 +68,7 @@ export function createGame(mode) {
   if (mode === 'tactical') {
     map.spawns.bots.forEach((post, i) => {
       game.units.push(makeUnit(game, {
-        team: 'enemy', kind: 'bot', name: `E${i + 1}`, x: post.x, y: post.y, post, r: 0.6, hp: 100, maxHp: 100,
+        team: 'enemy', kind: 'bot', name: `E${i + 1}`, color: ENEMY_COLORS[i % ENEMY_COLORS.length], x: post.x, y: post.y, post, r: 0.6, hp: 100, maxHp: 100,
         speed: 4.5, reaction: 0.28 + Math.random() * 0.12, facing: Math.PI / 2,
       }));
     });
@@ -76,8 +83,9 @@ export function createGame(mode) {
     game.titanCount = 0;
   }
 
-  const startZone = mode === 'tactical' ? 'Attacker Spawn' : 'Plaza';
-  for (const u of squad(game)) setOrder(game, u, { type: 'hold', zone: startZone, point: { x: u.x, y: u.y } });
+  // Standing orders before you say anything: take the nearer site (and shoot whoever they
+  // meet on the way), or hold the gate.
+  for (const u of squad(game)) setOrder(game, u, defaultOrder(game, u));
   return game;
 }
 
@@ -134,9 +142,44 @@ export function setOrder(game, u, order) {
   u.coverPoint = null;
 }
 
+// What an agent does with no order from the commander.
+export function defaultOrder(game, u) {
+  if (game.mode !== 'tactical') {
+    const gate = zoneByName(game.map, 'Gate');
+    return { type: 'protect', zone: gate.name, point: gate.center };
+  }
+  // The whole squad picks the same site, so the default is a push together rather than a split.
+  const from = average(aliveSquad(game));
+  const site = game.map.sites
+    .map(name => zoneByName(game.map, name))
+    .reduce((a, b) => (dist(b.center, from) < dist(a.center, from) ? b : a));
+  return { type: 'push', zone: site.name, point: site.center };
+}
+
 export function orderLabel(u) {
   const { type, zone } = u.order;
   return type === 'regroup' ? 'regroup' : `${type} → ${zone}`;
+}
+
+// What an agent is doing right now, in words, for the cards and the first-person HUD.
+export function actionLabel(game, u) {
+  if (!u.alive) return 'Down';
+  const target = unitById(game, u.focusId);
+  const zone = u.order.zone;
+  const phrases = {
+    advance: `Moving to ${zone}`,
+    hold: `Holding ${zone}`,
+    fight: target ? `Shooting ${target.name}` : 'Fighting',
+    cover: 'Taking cover',
+    support: 'Helping a teammate',
+    strike: target ? `Striking ${target.name}` : 'Striking',
+    flank: target ? `Flanking ${target.name}` : 'Flanking',
+    evade: 'Backing off',
+    protect: 'Defending the gate',
+  };
+  const spike = game.spike;
+  if (spike?.state === 'carried' && spike.carrierId === u.id && spike.progress > 0) return 'Planting the spike';
+  return phrases[u.action] ?? u.action;
 }
 
 export function orderDestination(game, u) {
@@ -318,7 +361,7 @@ function shoot(game, u, target) {
   const hit = Math.random() < p;
   const miss = hit ? 0 : (Math.random() - 0.5) * 3;
   game.effects.push({
-    kind: 'tracer', team: u.team, ttl: 0.08,
+    kind: 'tracer', team: u.team, color: u.color, ttl: 0.08,
     x1: u.x, y1: u.y, x2: target.x + miss, y2: target.y - miss,
   });
   if (hit) damage(game, target, RIFLE.damage, u);
@@ -349,7 +392,7 @@ function damage(game, target, amount, source, nape = false) {
   target.hp = 0;
   target.alive = false;
   target.moving = false;
-  game.effects.push({ kind: 'death', x: target.x, y: target.y, r: target.r, team: target.team, ttl: 8 });
+  game.effects.push({ kind: 'death', x: target.x, y: target.y, r: target.r, team: target.team, color: target.color, ttl: 8 });
   const how = target.kind === 'titan' ? (nape ? 'cut the nape of' : 'brought down') : 'eliminated';
   pushFeed(game, `${source.name} ${how} ${target.kind === 'titan' ? `${target.class} titan ${target.name}` : target.name}`, source.team);
   if (target.kind === 'titan') game.kills++;
@@ -530,7 +573,7 @@ function spawnWave(game, wave) {
       const spec = TITAN_TYPES[type];
       game.titanCount++;
       game.units.push(makeUnit(game, {
-        team: 'enemy', kind: 'titan', class: type, name: `T${game.titanCount}`,
+        team: 'enemy', kind: 'titan', class: type, name: `T${game.titanCount}`, color: TITAN_COLORS[type],
         x: 8 + Math.random() * 64, y: 3 + Math.random() * 4,
         facing: Math.PI / 2, ...spec, maxHp: spec.hp, wobble: Math.random() * 10, status: 'walking', statusUntil: 0,
       }));

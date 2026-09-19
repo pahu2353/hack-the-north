@@ -2,8 +2,20 @@
 // Pointing moves a cursor over the map; held gestures become orders that go to Jev.
 const VISION = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task';
-const HOLD_MS = 450; // a gesture must be held this long to count
-const REPEAT_MS = 1800; // and can't re-fire sooner than this
+const HOLD_MS = 320; // a gesture must be held this long to count
+const REPEAT_MS = 1500; // and can't re-fire sooner than this
+const SCORE = 0.45; // how sure MediaPipe has to be about a sign
+// Swipe: the palm travels this far across the frame (0–1) within SWIPE_MS.
+const SWIPE_DIST = 0.15;
+const SWIPE_MS = 450;
+// Pinch: thumb and index fingertip closing together, like zooming on a phone. It fires once
+// when they meet and rearms when the hand opens again.
+const PINCH_MS = 110; // fingertips have to stay together this long
+const PINCH_CLOSED = 0.45; // gap counting as closed, relative to hand size
+const PINCH_OPEN = 0.6; // and the gap that rearms it
+// After a swipe or pinch, ignore held signs for a moment so the hand's follow-through
+// doesn't also give an order (a swipe ends with an open palm).
+const MOTION_QUIET_MS = 700;
 
 export const SIGNALS = {
   Thumb_Up: { emoji: '👍', label: 'Go', meaning: 'execute: everyone push to where I am pointing (or the current objective)' },
@@ -21,7 +33,20 @@ function isPointing(hand) {
   return extended(8, 6) && !extended(12, 10) && !extended(16, 14) && !extended(20, 18);
 }
 
-export async function createGestures({ video, overlay, onPointer, onSignal, onStatus }) {
+// Thumb tip to index fingertip, relative to hand size (wrist to middle knuckle).
+function pinchGap(hand) {
+  const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
+  return d(4, 8) / d(0, 9);
+}
+
+// A fist also puts the thumb near the index fingertip, so a pinch only counts when the
+// fingers are still reaching out.
+function pinchClosed(hand) {
+  const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
+  return pinchGap(hand) < PINCH_CLOSED && d(8, 0) > d(5, 0) * 1.1 && d(12, 0) > d(9, 0) * 1.1;
+}
+
+export async function createGestures({ video, overlay, onPointer, onSignal, onSwipe, onPinch, onStatus }) {
   onStatus('Loading hand tracking…', 'pending');
   const { FilesetResolver, GestureRecognizer, DrawingUtils } = await import(`${VISION}/vision_bundle.mjs`);
   const fileset = await FilesetResolver.forVisionTasks(`${VISION}/wasm`);
@@ -51,6 +76,17 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSt
   const lastFired = {};
   let lastVideoTime = -1;
   let running = true;
+  let track = []; // recent palm positions, for swipes
+  let quietUntil = 0;
+  let pinchedSince = 0;
+  let pinchArmed = true;
+
+  function motion(now) {
+    quietUntil = now + MOTION_QUIET_MS;
+    track = [];
+    pinchedSince = 0;
+    current = 'None';
+  }
 
   function frame() {
     if (!running) return;
@@ -64,6 +100,8 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSt
     const hand = result.landmarks[0];
     if (!hand) {
       current = 'None';
+      track = [];
+      pinchedSince = 0;
       onPointer(null, 'None');
       return;
     }
@@ -71,10 +109,39 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSt
     draw.drawLandmarks(hand, { color: '#ffd24a', radius: 3 });
 
     const top = result.gestures[0]?.[0];
-    let name = top && top.score > 0.55 ? top.categoryName : 'None';
+    let name = top && top.score > SCORE ? top.categoryName : 'None';
     if (name === 'None' && isPointing(hand)) name = 'Pointing_Up';
     // The preview is mirrored, so flip x to make pointing feel natural.
     onPointer(name === 'Pointing_Up' ? { x: 1 - hand[8].x, y: hand[8].y } : null, name);
+
+    // Swipe: palm centre moving fast sideways (not while aiming). Mirrored x, so moving
+    // your hand to your right is +1.
+    const palmX = 1 - (hand[0].x + hand[5].x + hand[17].x) / 3;
+    track.push({ x: palmX, t: now });
+    while (track.length && now - track[0].t > SWIPE_MS) track.shift();
+    const travel = palmX - track[0].x;
+    if (name !== 'Pointing_Up' && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
+      motion(now);
+      onSwipe?.(travel > 0 ? 1 : -1);
+      return;
+    }
+
+    // Pinch: fingertips together for a moment. Opening the hand rearms it.
+    if (pinchClosed(hand)) {
+      pinchedSince ||= now;
+      if (pinchArmed && now - pinchedSince >= PINCH_MS && now > quietUntil) {
+        pinchArmed = false;
+        motion(now);
+        onPinch?.();
+        return;
+      }
+    } else {
+      pinchedSince = 0;
+      if (pinchGap(hand) > PINCH_OPEN) pinchArmed = true;
+    }
+    if (now < quietUntil) return;
+    // A moving hand isn't holding a sign.
+    if (Math.abs(travel) > 0.12) since = now;
 
     if (name !== current) {
       current = name;
