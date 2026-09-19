@@ -58,6 +58,8 @@ npm run dev    # then open http://localhost:3000/commander/ in Chrome
 
 A Valorant-style round (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your four agents. Attackers (Alpha, Bravo, Charlie, Delta) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders. Defenders (Echo, Foxtrot, Golf, Hotel) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers. Standing still makes shots far more accurate, so good fight-or-move decisions matter.
 
+**Everyone carries one grenade**, which is what stops a squad from simply walking around as one clump. A throw covers 5m and costs 72 health at the centre, so it catches a whole stack at once. It lands, waits about a second (a red ring shows the blast and the time left), then goes off, and walls block it. Jev throws one when it sees enemies bunched together, and scatters out of one that lands nearby: in tests an agent that reacts escapes untouched, while one that ignores it loses most of its health. Against scripted bots, a squad that stacks and ignores grenades drops from an 84% win rate to 68%. You can also order one: "nade B site", or point at the map and say "grenade there". The 💣 on an agent's card means they still have theirs.
+
 The start screen has:
 
 - **Vs Bots:** you attack; four scripted defender bots hold posts, rotate to threatened sites, and retake the spike. The match runs in your browser.

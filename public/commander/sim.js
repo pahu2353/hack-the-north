@@ -27,6 +27,12 @@ const DEFUSE_SECONDS = 6;
 export const ROUND_SECONDS = 100;
 const SPIKE_SECONDS = 35;
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
+// Grenades are the answer to a squad that just walks around as one clump: one throw reaches
+// everyone standing together. The fuse is long enough that Jev can decide to scatter in time.
+export const GRENADE = {
+  carried: 1, range: 26, radius: 5, centreDamage: 72, edgeDamage: 20,
+  speed: 17, fuse: 1.2, cooldown: 1.5, clusterGap: 5,
+};
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
 const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 0, y: 2.4 }];
@@ -46,6 +52,7 @@ export function createGame({ defenders = 'bots', opponent = 'scripted' } = {}) {
     result: null,
     nextId: 1,
     intel: { attack: new Map(), defend: new Map() },
+    grenades: [],
     knownDown: { attack: new Set(), defend: new Set() },
   };
   TEAMS.attack.names.forEach((name, i) => game.units.push(makeAgent(game, 'attack', name, map.spawns.attack[i], i)));
@@ -88,6 +95,8 @@ function makeUnit(game, props) {
     targetId: null,
     lastShotAt: -Infinity,
     stillSince: 0,
+    grenades: GRENADE.carried,
+    throwReadyAt: 0,
     ...props,
   };
 }
@@ -179,6 +188,7 @@ export function stepGame(game, dt) {
     else controlAgent(game, u, dt);
   }
   resolveCollisions(game);
+  updateGrenades(game);
   updateSpike(game, dt);
   game.effects = game.effects.filter(e => (e.ttl -= dt) > 0);
   checkResult(game);
@@ -221,9 +231,32 @@ function controlAgent(game, u, dt) {
       dest = mate ?? objective;
       break;
     }
+    case 'nade': {
+      const target = u.order.type === 'grenade' ? { spot: u.order.point } : grenadeSpot(game, u);
+      if (!target) dest = objective;
+      else if (throwGrenade(game, u, target.spot)) dest = null;
+      else dest = target.spot; // out of range or no line: walk it in
+      break;
+    }
+    case 'scatter': {
+      const bomb = incomingGrenade(game, u);
+      dest = bomb ? evadePoint(game, u, bomb) : objective;
+      break;
+    }
     default: // hold, fight
       dest = null;
   }
+  // A grenade order is carried out as soon as the thrower is in range, then they hold there.
+  if (u.order.type === 'grenade' && u.grenades > 0 && u.action !== 'scatter') {
+    if (throwGrenade(game, u, u.order.point)) {
+      setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
+      dest = null;
+    } else if (u.action !== 'fight') {
+      dest = u.order.point;
+    }
+  }
+  // Nothing left to throw: fight instead of standing there.
+  if (u.action === 'nade' && u.grenades < 1) u.action = focus ? 'fight' : 'advance';
   // Reflexes between Jev decisions: with nothing to fight, carry out the commander's order,
   // and the nearest attacker picks up a dropped spike.
   if (!focus && ['hold', 'fight'].includes(u.action) && dist(u, objective) > 3) dest = objective;
@@ -235,6 +268,17 @@ function controlAgent(game, u, dt) {
   if (dest && dist(u, dest) < 0.8) dest = null;
   moveToward(game, u, dest, dt);
   if (focus) shoot(game, u, focus);
+}
+
+// Somewhere clear of a blast, in the walkable direction away from it.
+function evadePoint(game, u, from) {
+  const away = angleTo(from, u);
+  const g = gridFor(game);
+  for (const angle of [0, 0.6, -0.6, 1.2, -1.2, 2]) {
+    const p = { x: u.x + Math.cos(away + angle) * (GRENADE.radius + 2.5), y: u.y + Math.sin(away + angle) * (GRENADE.radius + 2.5) };
+    if (p.x > 1 && p.y > 1 && p.x < game.map.width - 1 && p.y < game.map.height - 1 && walkableLine(g, u, p)) return p;
+  }
+  return nearestOpenPoint(g, { x: u.x + Math.cos(away) * 6, y: u.y + Math.sin(away) * 6 });
 }
 
 function findCover(game, u) {
@@ -385,6 +429,19 @@ function pushOutOfRect(u, w) {
 
 function controlBot(game, u, dt) {
   const focus = u.visible.find(v => v.alive);
+  // Bots use grenades by rule: punish a group, and don't stand in one.
+  const bomb = incomingGrenade(game, u);
+  if (bomb) {
+    moveToward(game, u, evadePoint(game, u, bomb), dt);
+    if (focus) shoot(game, u, focus);
+    return;
+  }
+  // Throwing is instant, so it happens the moment a group is in sight, whether the bot then
+  // holds its angle or falls back. A squad that moves as one clump pays for it.
+  if (u.grenades > 0) {
+    const clump = grenadeSpot(game, u);
+    if (clump && clump.caught >= 2) throwGrenade(game, u, clump.spot);
+  }
   const planned = opponentDestination(game, u);
   if (planned && ['retreat', 'regroup'].includes(u.botOrder.action)) {
     // Spotting an enemy must not turn a withdrawal into another isolated fight.
@@ -443,6 +500,85 @@ function controlBot(game, u, dt) {
   }
   if (dist(u, dest) < 1.2) dest = null;
   moveToward(game, u, dest, dt);
+}
+
+// ---------- grenades ----------
+
+// The point that catches the most enemies: the middle of a group. Like a real player, this
+// counts people seen a moment ago as well as right now, so a squad moving as one clump can be
+// hit just after it ducks out of sight.
+export function grenadeSpot(game, u, memory = 2) {
+  const marks = u.visible.filter(e => e.alive).map(e => ({ x: e.x, y: e.y }));
+  for (const [id, seen] of game.intel[u.team]) {
+    const target = unitById(game, id);
+    if (!target?.alive || target.team === u.team) continue;
+    if (game.time - seen.t > memory || u.visible.some(v => v.id === id)) continue;
+    marks.push({ x: seen.x, y: seen.y });
+  }
+  if (marks.length < 2) return null;
+  let best = null;
+  for (const centre of marks) {
+    const caught = marks.filter(m => dist(m, centre) <= GRENADE.clusterGap);
+    const spot = average(caught);
+    if (!hasLineOfSight(game.map, u, spot) || dist(u, spot) > GRENADE.range) continue;
+    if (!best || caught.length > best.caught) best = { spot, caught: caught.length };
+  }
+  return best;
+}
+
+export function throwGrenade(game, u, point) {
+  if (u.grenades < 1 || game.time < u.throwReadyAt) return false;
+  if (dist(u, point) > GRENADE.range || !hasLineOfSight(game.map, u, point)) return false;
+  u.grenades--;
+  u.throwReadyAt = game.time + GRENADE.cooldown;
+  u.facing = angleTo(u, point);
+  game.grenades.push({
+    id: game.nextId++, team: u.team, throwerId: u.id,
+    x: u.x, y: u.y, fromX: u.x, fromY: u.y, tx: point.x, ty: point.y,
+    thrownAt: game.time, landAt: game.time + Math.max(0.35, dist(u, point) / GRENADE.speed), explodeAt: 0,
+  });
+  pushFeed(game, `${u.name} threw a grenade`, u.team, u.team);
+  return true;
+}
+
+// A grenade already on the ground near a unit, which it should run away from.
+export function incomingGrenade(game, u) {
+  return game.grenades
+    .filter(g => g.explodeAt && dist(g, u) <= GRENADE.radius + 2)
+    .sort((a, b) => a.explodeAt - b.explodeAt)[0] ?? null;
+}
+
+function updateGrenades(game) {
+  for (const g of game.grenades) {
+    if (!g.explodeAt) {
+      const flight = (game.time - g.thrownAt) / Math.max(0.001, g.landAt - g.thrownAt);
+      if (flight >= 1) {
+        g.x = g.tx;
+        g.y = g.ty;
+        g.explodeAt = game.time + GRENADE.fuse;
+      } else {
+        g.x = g.fromX + (g.tx - g.fromX) * flight;
+        g.y = g.fromY + (g.ty - g.fromY) * flight;
+      }
+    } else if (game.time >= g.explodeAt) {
+      explode(game, g);
+      g.done = true;
+    }
+  }
+  game.grenades = game.grenades.filter(g => !g.done);
+}
+
+// Damage falls off toward the edge of the blast, and walls block it.
+function explode(game, g) {
+  game.effects.push({ kind: 'blast', x: g.x, y: g.y, r: GRENADE.radius, team: g.team, ttl: 0.45 });
+  const thrower = unitById(game, g.throwerId) ?? { name: 'A grenade', team: g.team };
+  for (const target of game.units) {
+    if (!target.alive || target.team === g.team) continue;
+    const d = dist(g, target);
+    if (d > GRENADE.radius || !hasLineOfSight(game.map, g, target)) continue;
+    const share = 1 - d / GRENADE.radius;
+    damage(game, target, Math.round(GRENADE.edgeDamage + (GRENADE.centreDamage - GRENADE.edgeDamage) * share), thrower);
+  }
 }
 
 // ---------- the spike ----------
@@ -516,6 +652,8 @@ export function actionLabel(u, enemyName) {
     support: 'Helping a teammate',
     defuse: 'Defusing the spike',
     plant: 'Planting the spike',
+    nade: 'Throwing a grenade',
+    scatter: 'Getting clear of a grenade',
   }[u.action] ?? u.action;
 }
 
@@ -567,6 +705,8 @@ export function teamView(game, team) {
     units,
     ghosts,
     effects: game.effects.map(e => ({ ...e })),
+    // Grenades are loud and visible, so both sides see them.
+    grenades: game.grenades.map(g => ({ id: g.id, x: g.x, y: g.y, team: g.team, landed: Boolean(g.explodeAt), fuse: g.explodeAt ? Math.max(0, g.explodeAt - game.time) : 0 })),
     spike: spikeView(game, team),
     feed: game.feed.filter(f => (f.audience === 'all' || f.audience === team) && game.time - f.t < 8).slice(-5),
   };
@@ -577,7 +717,7 @@ function ownUnit(game, u) {
   return {
     id: u.id, team: u.team, name: u.name, kind: u.kind, x: u.x, y: u.y, facing: u.facing,
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
-    hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action,
+    hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
     firing: game.time - u.lastShotAt < 0.08,
     orderLabel: u.order ? orderLabel(u) : null,
     dest: u.alive && u.order ? orderDestination(game, u) : null,

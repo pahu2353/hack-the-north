@@ -88,6 +88,7 @@ export function createRenderer(canvas) {
       ctx.setLineDash([]);
     }
 
+    for (const g of teamView.grenades ?? []) drawGrenade(g, teamView.team, px);
     drawSpike(teamView.spike, teamView.time, px);
     for (const e of teamView.effects) drawEffect(e, teamView.team, px);
     for (const g of teamView.ghosts) drawGhost(g, px);
@@ -97,6 +98,33 @@ export function createRenderer(canvas) {
     // Names last, so no dot is drawn over them. The minimap is too small to label.
     if (!mini) drawNames(own.filter(u => u.alive).map(u => ({ ...u, ...at(u) })), px);
     if (pointer) drawPointer(pointer, px);
+  }
+
+  // In the air it's a small dark ball; on the ground, a shrinking ring shows the blast
+  // and how long is left to get out of it.
+  function drawGrenade(g, team, px) {
+    const mine = g.team === team;
+    if (g.landed) {
+      const left = Math.min(1, g.fuse / 1.2);
+      ctx.fillStyle = fade(mine ? OWN : ENEMY, 0.12);
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = fade(mine ? OWN : ENEMY, 0.85);
+      ctx.lineWidth = 2 * px;
+      ctx.setLineDash([3 * px, 3 * px]);
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 5 * (0.35 + 0.65 * left), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = '#20242c';
+    ctx.strokeStyle = mine ? OWN : ENEMY;
+    ctx.lineWidth = 1.5 * px;
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, 0.55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
   }
 
   function drawSpike(spike, time, px) {
@@ -201,6 +229,15 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.moveTo(e.x1, e.y1);
       ctx.lineTo(e.x2, e.y2);
+      ctx.stroke();
+    } else if (e.kind === 'blast') {
+      const fade_ = e.ttl / 0.45;
+      ctx.fillStyle = `rgba(255, 176, 64, ${0.45 * fade_})`;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.r * (1.15 - 0.15 * fade_), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(255, 120, 40, ${fade_})`;
+      ctx.lineWidth = 2 * px;
       ctx.stroke();
     } else if (e.kind === 'death') {
       ctx.strokeStyle = e.team === team ? 'rgba(74,163,255,0.5)' : 'rgba(255,93,93,0.5)';

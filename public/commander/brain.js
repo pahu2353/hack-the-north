@@ -4,7 +4,7 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
+import { aliveTeam, grenadeSpot, incomingGrenade, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -27,6 +27,7 @@ const ORDERS = {
     flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
+    grenade: 'throw a grenade / nade / frag the location',
     plant: 'plant the spike (only when told to plant)',
   },
   defend: {
@@ -35,6 +36,7 @@ const ORDERS = {
     flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
+    grenade: 'throw a grenade / nade / frag the location',
     defuse: 'go defuse the planted spike (only when told to defuse)',
   },
 };
@@ -218,10 +220,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
     const objective = orderDestination(game, u);
     const toObjective = Math.round(dist(u, objective));
+    const clump = u.grenades > 0 ? grenadeSpot(game, u) : null;
+    const bomb = incomingGrenade(game, u);
     const state = {
       you: {
         name: u.name,
         side: u.team === 'attack' ? 'attacker' : 'defender',
+        grenades_left: u.grenades,
         hp: Math.round(u.hp),
         location: zoneAt(game.map, u).name,
         moving: u.moving,
@@ -232,6 +237,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       enemies_in_sight: enemies,
       teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
       spike: spikeBriefing(game, u.team),
+      ...(clump && { enemies_bunched_together: `${clump.caught} of them are standing within 5m of each other, in grenade range` }),
+      ...(bomb && { grenade_about_to_go_off: `${Math.max(0, bomb.explodeAt - game.time).toFixed(1)}s, ${Math.round(Math.hypot(bomb.x - u.x, bomb.y - u.y))}m away` }),
     };
     // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled situations).
     const actions = {
@@ -239,7 +246,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       hold: 'stay put and watch this angle: when no enemy is in sight but one could appear',
       cover: 'break line of sight behind cover: when you are hurt and outnumbered',
     };
-    if (enemies.length) actions.fight = 'stop and shoot the enemy: whenever an enemy is in sight (standing still makes you far more accurate)';
+    if (enemies.length) {
+      actions.fight = clump?.caught >= 2
+        ? 'stop and shoot one of them: only hurts the one you aim at'
+        : 'stop and shoot the enemy: whenever an enemy is in sight (standing still makes you far more accurate)';
+    }
+    if (clump?.caught >= 2 && !bomb) actions.nade = `throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
+    if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
     const questions = {
       action: { type: 'choice', instructions: `You are ${u.name}. What should you do right now?`, criteria: actions },

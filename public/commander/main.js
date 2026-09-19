@@ -870,7 +870,7 @@ function updateHud() {
     card.querySelector('.name').textContent = u.name;
     card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
     card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
-    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}` : '';
+    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}${u.grenades ? ' · 💣' : ''}` : '';
     card.querySelector('.brain').textContent = !u.alive ? '' : !u.decision ? '…'
       : u.decision.local ? 'no contact' : `Jev ${Math.round(u.decision.latency)} ms`;
     // Just the chosen action's confidence: the full spread was more noise than signal.
