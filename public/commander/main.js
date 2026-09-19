@@ -2,6 +2,7 @@
 // Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
+import { createOpponentCommander } from './opponent.js';
 import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { createRenderer } from './render.js';
@@ -41,6 +42,7 @@ const povCanvas = $('pov');
 const pov = createPovRenderer(povCanvas);
 const minimap = createRenderer($('minimap'));
 const camera = createCamera();
+const opponentCommander = createOpponentCommander();
 
 let session = null; // { kind: 'bots' | 'online', team }
 let game = null; // bot games only: the local simulation
@@ -106,11 +108,12 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenMenu', 'screenOnline', 'screenLobby', 'screenResult']) $(id).hidden = id !== name;
+  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) $(id).hidden = id !== name;
 }
 
 function goToMenu() {
   leaveOnline();
+  opponentCommander.reset();
   session = null;
   game = null;
   brains = null;
@@ -120,7 +123,14 @@ function goToMenu() {
   showScreen('screenMenu');
 }
 
-$('playBots').onclick = startBotGame;
+let botOpponent = 'scripted'; // who commands the defenders: 'scripted' or 'openai'
+$('playBots').onclick = () => {
+  setStatus('botsStatus', '');
+  showScreen('screenBots');
+};
+$('botsScripted').onclick = () => startBotGame('scripted');
+$('botsOpenAI').onclick = () => startBotGame('openai');
+$('botsBack').onclick = () => showScreen('screenMenu');
 $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
   showScreen('screenOnline');
@@ -137,7 +147,7 @@ $('joinForm').onsubmit = e => {
   if (code) connectOnline(code);
 };
 $('again').onclick = () => {
-  if (session?.kind === 'bots') startBotGame();
+  if (session?.kind === 'bots') startBotGame(botOpponent);
   else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
   else if (online) showScreen('screenLobby');
 };
@@ -146,10 +156,12 @@ $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }
 
 // ---------- vs bots ----------
 
-function startBotGame() {
+function startBotGame(opponent = botOpponent) {
   leaveOnline();
+  botOpponent = opponent;
+  opponentCommander.reset();
   session = { kind: 'bots', team: 'attack' };
-  game = createGame({ defenders: 'bots' });
+  game = createGame({ defenders: 'bots', opponent });
   brains = createBrains();
   view = teamView(game, 'attack');
   beginMatch();
@@ -425,6 +437,7 @@ function frame(now) {
         accumulator -= STEP;
       }
       brains.update(game, 'attack');
+      opponentCommander.update(game);
     }
     view = teamView(game, 'attack');
   }
@@ -440,7 +453,10 @@ function frame(now) {
   } else {
     renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
   }
-  if (view?.result && !resultShown && session) showResult();
+  if (view?.result && !resultShown && session) {
+    opponentCommander.reset();
+    showResult();
+  }
   if (now - lastHud > 100) {
     lastHud = now;
     updateHud();
@@ -478,6 +494,7 @@ function updateTeamUi() {
     : 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
+  if (!team) $('opponentCard').hidden = true;
   if (!team) {
     $('squad').replaceChildren();
     $('scoreClock').textContent = '–';
@@ -554,6 +571,41 @@ function buildSquadCards() {
   ])));
 }
 
+// The enemy commander's status and current plan. Only in bot games against OpenAI: with
+// scripted bots or another player there is nothing to show.
+function updateOpponentHud() {
+  const openai = session?.kind === 'bots' && game?.opponent === 'openai';
+  $('opponentCard').hidden = !openai;
+  if (!openai) return;
+  const s = game.botCommander;
+  const labels = {
+    waiting: 'waiting for a fresh plan',
+    thinking: 'planning…',
+    active: `${s?.model} · ${s?.latency} ms · ${s?.plans} plans`,
+    mock: `mock · ${s?.plans} plans`,
+    fallback: 'unavailable · scripted defense',
+  };
+  const text = game.result ? 'round finished' : labels[s?.status] ?? 'starting…';
+  setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
+  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, and plants. Bots keep acting while it thinks.';
+  $('opponentReason').textContent = s?.status === 'thinking' ? `Replanning: ${s.planningReason}`
+    : s?.status === 'fallback' ? '' : s?.reason ? `Why this plan: ${s.reason}` : '';
+  $('opponentSummary').textContent = s?.error || (s?.summary
+    ? `${s.status === 'thinking' ? 'Current plan: ' : ''}${s.summary}`
+    : 'Waiting for the first plan. Defenders use their normal tactics in the meantime.');
+  if ($('opponentDetails').open) {
+    $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
+      const unit = game.units.find(u => u.id === order.unitId);
+      const escape = unit?.botFallback;
+      const reflex = escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
+      return el('div', {
+        className: 'order',
+        textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone}` : 'eliminated'}`,
+      });
+    }));
+  }
+}
+
 // Who an agent is shooting at, when Jev picked a target.
 function enemyName(u) {
   const target = u.decision?.target;
@@ -565,6 +617,7 @@ function updateHud() {
   const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   $('roundLabel').textContent = view.status.label;
+  updateOpponentHud();
 
   const s = session.kind === 'bots' ? brains.summary() : online?.jev;
   if (s) {
