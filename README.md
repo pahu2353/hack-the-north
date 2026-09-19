@@ -99,8 +99,13 @@ alive on both sides. It's for monitoring, not aiming, so pointing, ✌️ split 
 map-view only, and every order you give in first-person goes to the agent you're watching alone.
 You see only what that agent sees, while the map shows everything your team sees. Each agent has
 their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their card. The top bar
-keeps both full squads on screen all match: greyed out once you know they're down, and dimmed
-while nobody on your team can see them. Left alone,
+keeps both full squads on screen all match, in one strip: a red cross once you know they're down,
+and dimmed while nobody on your team can see them.
+
+**Mic and camera.** The first time you open Commander it asks whether you want the mic and the
+camera, and remembers your answer on that machine (in `localStorage`), so later visits turn them
+back on without asking. Toggling them in the side panel updates what gets restored. The mic only
+listens during matches, and the camera never leaves the browser. Left alone,
 attackers rush the nearer site and shoot what they meet; defenders hold their posts.
 
 **How Jev is used.** Two layers, both plain typed questions:

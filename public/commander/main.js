@@ -108,7 +108,9 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) $(id).hidden = id !== name;
+  for (const id of ['screenDevices', 'screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
+    $(id).hidden = id !== name;
+  }
 }
 
 function goToMenu() {
@@ -153,6 +155,52 @@ $('again').onclick = () => {
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
 $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
+
+// ---------- microphone and camera ----------
+
+// Asked once, then remembered on this machine, so you don't re-enable them every visit.
+// The browser remembers the permission itself; this remembers whether you wanted them on.
+const DEVICE_KEY = 'commander:devices';
+
+function readDevices() {
+  try {
+    return JSON.parse(localStorage.getItem(DEVICE_KEY)) ?? {};
+  } catch {
+    return {}; // private windows and blocked storage: just ask again
+  }
+}
+
+function saveDevices(patch) {
+  try {
+    localStorage.setItem(DEVICE_KEY, JSON.stringify({ ...readDevices(), ...patch }));
+  } catch {
+    // Not being able to remember is not worth interrupting anyone over.
+  }
+}
+
+async function chooseDevices({ mic, camera }) {
+  setStatus('devicesStatus', 'Waiting for your browser\u2019s permission…');
+  saveDevices({ asked: true, mic, camera });
+  if (mic) await ensureMic();
+  if (camera) await startCamera();
+  showScreen('screenMenu');
+}
+
+$('devicesBoth').onclick = () => chooseDevices({ mic: true, camera: true });
+$('devicesMic').onclick = () => chooseDevices({ mic: true, camera: false });
+$('devicesSkip').onclick = () => {
+  saveDevices({ asked: true, mic: false, camera: false });
+  showScreen('screenMenu');
+};
+
+// On later visits, turn back on whatever was wanted last time. The browser only reopens the
+// devices without a click because it already granted this page permission.
+async function restoreDevices() {
+  const devices = readDevices();
+  if (!devices.asked || !window.isSecureContext) return;
+  if (devices.mic) await ensureMic();
+  if (devices.camera) await startCamera();
+}
 
 // ---------- vs bots ----------
 
@@ -288,7 +336,7 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
-  ensureMic();
+  if (readDevices().mic !== false) ensureMic();
   resultShown = false;
   positions.clear();
   $('log').replaceChildren();
@@ -514,9 +562,10 @@ function buildScorebar() {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
     }, [
+      // Just the initial and a health bar: the name lives in the tooltip and on their card,
+      // which keeps the bar one line high.
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
       el('span', { className: 'bar' }, [el('i')]),
-      el('span', { className: 'who', textContent: u.name }),
     ]);
     node.dataset.id = u.id;
     return node;
@@ -534,7 +583,8 @@ function updateScorebar() {
   const own = ownUnits();
   if (own.map(u => u.id).join(',') !== scorebarKey) buildScorebar();
   if ($('enemyBar').children.length !== (view.roster?.length ?? 0)) buildScorebar();
-  watchedId ??= own.find(u => u.alive)?.id ?? null;
+  // Never leave the highlight on someone who is down, in either view.
+  if (!own.some(u => u.id === watchedId && u.alive)) watchedId = own.find(u => u.alive)?.id ?? null;
   for (const u of own) {
     const chip = $('squadBar').querySelector(`[data-id="${u.id}"]`);
     if (!chip) continue;
@@ -701,6 +751,7 @@ async function toggleMic() {
   if (!voice.enabled) {
     micMuted = false;
     await ensureMic();
+    saveDevices({ asked: true, mic: true });
   } else {
     micMuted = !micMuted;
   }
@@ -748,7 +799,14 @@ $('previewBtn').onclick = () => {
   $('previewBtn').textContent = showing ? 'Hide preview' : 'Show preview';
 };
 $('camBtn').onclick = async () => {
-  if (gestures) {
+  const wanted = !gestures;
+  if (wanted) await startCamera();
+  else stopCamera();
+  saveDevices({ asked: true, camera: wanted });
+};
+
+function stopCamera() {
+  {
     gestures.stop();
     gestures = null;
     $('camBtn').textContent = 'Enable camera';
@@ -758,8 +816,11 @@ $('camBtn').onclick = async () => {
     $('lastSign').textContent = '';
     $('sign').hidden = true;
     setStatus('camStatus', 'Camera off');
-    return;
   }
+}
+
+async function startCamera() {
+  if (gestures) return true;
   try {
     $('camOff').hidden = true;
     gestures = await createGestures({
@@ -797,11 +858,13 @@ $('camBtn').onclick = async () => {
     $('previewBtn').hidden = false;
     $('previewBtn').textContent = 'Hide preview';
     $('cam').hidden = false;
+    return true;
   } catch (error) {
     $('camOff').hidden = false;
     setStatus('camStatus', `Camera unavailable: ${error.message}`, 'error');
+    return false;
   }
-};
+}
 
 let signTimer = null;
 function showSign(text) {
@@ -850,8 +913,11 @@ const joinCode = new URLSearchParams(location.search).get('join');
 if (joinCode) {
   $('joinCode').value = joinCode.toUpperCase();
   connectOnline(joinCode.toUpperCase());
-} else {
+} else if (readDevices().asked || !window.isSecureContext) {
   showScreen('screenMenu');
+  restoreDevices();
+} else {
+  showScreen('screenDevices');
 }
 requestAnimationFrame(frame);
 
