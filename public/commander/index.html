@@ -126,6 +126,8 @@
   .entry { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 4px; }
   .entry .said { font-weight: 600; }
   .entry.ignored { opacity: 0.55; }
+  .entry.early { border-color: var(--gold); }
+  .entry.early .said::after { content: ' ⚡'; }
   .entry.ignored .plan { grid-template-columns: 1fr; }
   .entry .src { color: var(--muted); font-weight: 400; margin-right: 4px; }
   .entry .meta { color: var(--muted); font-size: 11px; }

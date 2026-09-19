@@ -54,6 +54,9 @@ async function evaluateOverHttp(state, questions, maxRetries) {
 
 export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS } = {}) {
   const stats = { calls: 0, ok: 0, failed: 0, lastError: '', latencies: [], recent: [] };
+  // Orders can be interpreted out of order (a guess at partial speech can land after the
+  // finished sentence), so a lower sequence number never overwrites a higher one.
+  let appliedSeq = 0;
 
   async function ask(state, questions, maxRetries = 0) {
     stats.calls++;
@@ -75,7 +78,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
-  async function interpretCommand(game, team, { text, gesture, pointer, only }) {
+  async function interpretCommand(game, team, { text, gesture, pointer, only, seq = Infinity }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
@@ -117,6 +120,10 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     if (isOrder < 0.5) {
       return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
     }
+    if (seq < appliedSeq) {
+      return { stale: true, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
+    }
+    appliedSeq = seq;
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
