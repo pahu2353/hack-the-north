@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jev Commander</title>
+<title>Commander</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎖️</text></svg>">
 <style>
   :root {
@@ -27,7 +27,7 @@
   body {
     margin: 0; background: var(--page); color: var(--ink);
     font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden;
+    display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden;
   }
   button, input, select { font: inherit; color: inherit; }
   /* One control style: square, bordered, small uppercase label. */
@@ -52,9 +52,6 @@
     text-transform: none; letter-spacing: 0;
   }
 
-  .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .brand { font-weight: 800; letter-spacing: 0.02em; font-size: 15px; }
-  .brand span { color: var(--squad); }
   .badge {
     font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.07em; text-transform: uppercase; padding: 4px 8px;
     border: 1px solid var(--border); color: var(--ink-2);
@@ -62,9 +59,10 @@
   .badge.attack { border-color: var(--squad); color: var(--squad); }
   .badge.defend { border-color: var(--gold); color: var(--gold); }
   .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; min-width: 52px; text-align: center; }
-  .round-label { color: var(--ink-2); }
-  .jev { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .jev b { color: var(--ink); font-weight: 600; }
+  #roundLabel { color: var(--ink-2); text-transform: none; letter-spacing: 0; font-weight: 600; }
+  #jevStats { font-variant-numeric: tabular-nums; }
+  #jevStats b { color: var(--ink-2); font-weight: 600; }
+  .card-head .badge { padding: 2px 6px; }
 
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
   .arena { position: relative; min-height: 0; }
@@ -268,14 +266,6 @@
 </style>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">Jev <span>Commander</span></div>
-  <span class="badge" id="teamBadge" hidden></span>
-  <div class="round-label" id="roundLabel"></div>
-  <div class="jev" id="jevStats"></div>
-  <button id="menuBtn" type="button">Menu</button>
-</header>
-
 <main class="layout">
   <section class="arena" id="arena" data-view="map">
     <canvas id="map" aria-label="Battle map"></canvas>
@@ -345,6 +335,15 @@
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
       </section>
 
+      <section id="screenPause" hidden>
+        <h2>Paused</h2>
+        <div class="choices">
+          <button id="resume" class="primary big" type="button">Resume</button>
+          <button id="pauseMenu" class="big" type="button">Main menu</button>
+        </div>
+        <div class="note">Esc closes this.</div>
+      </section>
+
       <section id="screenResult" hidden>
         <h2 id="resultTitle">Victory</h2>
         <p id="resultText"></p>
@@ -356,6 +355,10 @@
   </section>
 
   <aside class="side">
+    <div class="card" id="matchCard" hidden>
+      <div class="card-head"><span class="badge" id="teamBadge" hidden></span><span id="roundLabel"></span></div>
+      <div class="status" id="jevStats"></div>
+    </div>
     <div class="card" id="permsCard" hidden>
       <div class="card-head">Permissions</div>
       <button id="permsBtn" class="primary" type="button">Allow mic and camera</button>

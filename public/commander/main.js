@@ -1,4 +1,4 @@
-// Jev Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
+// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
 // Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
@@ -106,7 +106,7 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 function showScreen(name) {
   $('overlay').hidden = !name;
-  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenResult']) {
+  for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenResult']) {
     $(id).hidden = id !== name;
   }
 }
@@ -138,7 +138,8 @@ $('playOnline').onclick = () => {
 $('onlineBack').onclick = goToMenu;
 $('lobbyLeave').onclick = goToMenu;
 $('resultMenu').onclick = goToMenu;
-$('menuBtn').onclick = goToMenu;
+$('pauseMenu').onclick = goToMenu;
+$('resume').onclick = () => showScreen(null);
 $('createRoom').onclick = () => connectOnline(null);
 $('joinForm').onsubmit = e => {
   e.preventDefault();
@@ -477,6 +478,7 @@ function handleSignal(name) {
 
 // ---------- frame loop ----------
 
+const paused = () => !$('screenPause').hidden;
 let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
@@ -484,7 +486,7 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (session?.kind === 'bots' && game) {
-    if (!game.result) {
+    if (!game.result && !paused()) {
       accumulator += dt;
       while (accumulator >= STEP) {
         stepGame(game, STEP);
@@ -540,6 +542,7 @@ function smoothPositions(dt) {
 
 function updateTeamUi() {
   const team = session?.team;
+  $('matchCard').hidden = !team;
   $('teamBadge').hidden = !team;
   $('teamBadge').className = `badge ${team ?? ''}`;
   $('teamBadge').textContent = team ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}` : '';
@@ -786,7 +789,14 @@ povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
 
 const typing = () => document.activeElement?.tagName === 'INPUT';
 document.addEventListener('keydown', e => {
-  if (typing() || !matchActive()) return;
+  if (typing()) return;
+  // Escape is the way back to the menu now that there's no header.
+  if (e.code === 'Escape' && session && view && !view.result) {
+    e.preventDefault();
+    showScreen($('overlay').hidden ? 'screenPause' : null);
+    return;
+  }
+  if (!matchActive()) return;
   if (e.code === 'Tab') {
     e.preventDefault();
     setView(!is3d);
