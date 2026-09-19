@@ -73,8 +73,12 @@
   .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
   .cam .sign { position: absolute; left: 8px; bottom: 6px; background: rgba(0, 0, 0, 0.6); border-radius: 6px; padding: 1px 8px; font-weight: 700; }
   .cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
-  .signs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; font-size: 11px; color: var(--ink-2); }
-  .signs span { background: var(--panel-2); border-radius: 6px; padding: 2px 4px; text-align: center; white-space: nowrap; }
+  .card-head span { display: flex; gap: 6px; }
+  .signs { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; color: var(--muted); }
+  .signs span { background: var(--panel-2); border-radius: 6px; padding: 2px 6px; white-space: nowrap; }
+  .cam[hidden] { display: none; }
+  /* The last sign the camera saw, when the preview is folded away. */
+  .last-sign { font-size: 12px; color: var(--ink-2); min-height: 17px; }
 
   .ptt {
     display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px; font-weight: 700; user-select: none;
@@ -96,28 +100,90 @@
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  .squad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
-  .agent { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; display: grid; gap: 4px; min-width: 0; }
+  footer.squad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  .agent {
+    background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--agent); border-radius: 10px;
+    padding: 8px 10px; display: grid; gap: 4px; min-width: 0; cursor: pointer;
+  }
   .agent.dead { opacity: 0.4; }
+  .agent.watched { border-color: var(--gold); border-left-color: var(--agent); }
   .agent .top { display: flex; justify-content: space-between; gap: 6px; }
-  .agent .name { font-weight: 800; color: var(--squad); }
+  .agent .name { font-weight: 800; color: var(--agent); }
+  .agent .doing { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .agent .hp { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
-  .agent .hp i { display: block; height: 100%; background: var(--ok); }
-  .agent .order { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent .hp i { display: block; height: 100%; background: var(--agent); }
+  .agent .order { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Only the agent you're watching shows the order and Jev's confidence; the rest stay small. */
+  .agent:not(.watched) .order, .agent:not(.watched) .probs, .agent:not(.watched) .brain { display: none; }
   .agent .probs { display: grid; gap: 2px; }
   .agent .prob { display: grid; grid-template-columns: 52px 1fr 30px; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
   .agent .prob.top { color: var(--ink); font-weight: 600; }
   .agent .bar { height: 6px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
   .agent .bar i { display: block; height: 100%; background: #2b5c8f; border-radius: 0 2px 2px 0; }
-  .agent .prob.top .bar i { background: var(--squad); }
+  .agent .prob.top .bar i { background: var(--agent); }
   .agent .brain { font-size: 11px; color: var(--muted); }
+
+  /* First-person view: Valorant-style scoreboard on top, minimap top-left, HUD at the bottom. */
+  .arena[data-view="map"] #map { height: calc(100% - 56px); margin-top: 56px; }
+  .arena[data-view="map"] .pov-only, .arena[data-view="map"] #pov, .arena[data-view="pov"] #map { display: none; }
+  #pov { width: 100%; height: 100%; display: block; cursor: crosshair; }
+  .scorebar {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+    pointer-events: none;
+  }
+  .scorebar .team { display: flex; gap: 6px; padding: 4px 10px; border-radius: 8px; background: rgba(10, 30, 40, 0.72); }
+  .scorebar .team.enemy { background: rgba(50, 12, 16, 0.72); }
+  .portrait {
+    display: grid; justify-items: center; gap: 3px; pointer-events: auto; cursor: pointer; background: none; border: 0; padding: 0;
+    border-radius: 0; transition: transform 120ms;
+  }
+  .portrait .face {
+    width: 34px; height: 34px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 15px;
+    background: var(--agent); color: #08131f; border: 2px solid transparent;
+  }
+  .enemy .portrait { cursor: default; }
+  .portrait .bar { width: 34px; height: 3px; background: rgba(255, 255, 255, 0.15); border-radius: 2px; overflow: hidden; }
+  .portrait .bar i { display: block; height: 100%; background: var(--agent); }
+  .portrait .who { font-size: 10px; letter-spacing: 0.03em; color: var(--ink-2); }
+  .portrait.active .face { border-color: var(--gold); box-shadow: 0 0 12px rgba(255, 210, 74, 0.55); }
+  .portrait.active .who { color: var(--gold); font-weight: 700; }
+  .portrait[hidden] { display: none; }
+  .scorebar .score-clock {
+    font: 700 20px system-ui, sans-serif; font-variant-numeric: tabular-nums; padding: 6px 14px; border-radius: 8px;
+    background: rgba(10, 12, 16, 0.78); min-width: 70px; text-align: center;
+  }
+  #minimap {
+    position: absolute; top: 10px; left: 10px; width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56; border-radius: 10px;
+    background: rgba(10, 12, 16, 0.6); border: 1px solid var(--border);
+  }
+  .pov-zone { position: absolute; top: calc(18px + clamp(140px, 20vw, 250px) * 0.7); left: 12px; font-weight: 700; letter-spacing: 0.04em; text-shadow: 0 1px 3px #000; }
+  .pov-hud {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
+    background: rgba(10, 12, 16, 0.72); border-radius: 10px; padding: 6px 14px; pointer-events: none;
+  }
+  .pov-hud .hp { font: 800 26px system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .pov-hud .who { display: grid; font-size: 12px; color: var(--ink-2); }
+  .pov-hud .who b { color: var(--squad); font-size: 14px; }
+  .toast {
+    position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); font: 800 28px system-ui, sans-serif;
+    letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
+  }
+  .arena[data-view="pov"] .hint {
+    bottom: 70px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); border-radius: 6px; padding: 2px 8px;
+  }
+  /* Leave room for the minimap on narrower screens. */
+  @media (max-width: 1300px) {
+    .arena[data-view="pov"] .scorebar { left: calc(clamp(140px, 20vw, 250px) + 20px); transform: none; }
+    .portrait .face { width: 28px; height: 28px; font-size: 13px; }
+    .portrait .bar { width: 24px; }
+  }
 
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
     .arena { height: 60vh; }
     .side { border-left: 0; }
-    .squad { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    footer.squad { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -129,16 +195,29 @@
     <option value="titan">Titan Siege: Commander Erwin</option>
   </select>
   <button id="restart" type="button">Restart</button>
-  <div class="clock" id="clock">–</div>
+  <button id="viewBtn" type="button">First-person <kbd>Tab</kbd></button>
   <div class="round-label" id="roundLabel"></div>
   <div class="jev" id="jevStats">Jev idle</div>
 </header>
 
 <main class="layout">
-  <section class="arena">
+  <section class="arena" id="arena" data-view="map">
     <canvas id="map" aria-label="Battle map"></canvas>
+    <canvas id="pov" class="pov-only" aria-label="First-person view"></canvas>
+    <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
+    <div class="pov-zone pov-only" id="povZone"></div>
+    <div class="pov-hud pov-only">
+      <span class="hp" id="povHp"></span>
+      <span class="who"><b id="povName"></b><span id="povAction"></span></span>
+    </div>
+    <div class="scorebar">
+      <div class="team" id="squadBar"></div>
+      <div class="score-clock" id="scoreClock">–</div>
+      <div class="team enemy" id="enemyBar"></div>
+    </div>
+    <div class="toast" id="toast" hidden></div>
     <div class="feed" id="feed"></div>
-    <div class="hint">Click the map (or point at the camera) to mark a spot, then say “push there”.</div>
+    <div class="hint" id="hint"></div>
     <div class="overlay" id="overlay">
       <div class="box">
         <h2 id="overlayTitle">Jev Commander</h2>
@@ -150,15 +229,21 @@
 
   <aside class="side">
     <div class="card">
-      <div class="card-head">Hand signals <button id="camBtn" type="button">Enable camera</button></div>
-      <div class="cam">
+      <div class="card-head">Hand signals
+        <span>
+          <button id="previewBtn" type="button" hidden>Hide preview</button>
+          <button id="camBtn" type="button">Enable camera</button>
+        </span>
+      </div>
+      <div class="cam" id="cam" hidden>
         <video id="video" playsinline muted></video>
         <canvas id="hand"></canvas>
         <div class="off" id="camOff">Camera off. Hand signals: point to aim, hold a sign to give an order.</div>
         <div class="sign" id="sign" hidden></div>
       </div>
+      <div class="last-sign" id="lastSign"></div>
       <div class="signs" id="signs"></div>
-      <div class="status" id="camStatus"></div>
+      <div class="status" id="camStatus">Camera off. Point to aim, hold a sign to give an order.</div>
     </div>
     <div class="card">
       <div class="card-head">Voice <button id="micBtn" type="button">Enable mic</button></div>

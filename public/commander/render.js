@@ -4,11 +4,11 @@ import { zoneAt } from './world.js';
 
 const THEMES = {
   tactical: {
-    floor: '#161a21', wall: '#2d333f', wallEdge: '#414958', zone: 'rgba(255,255,255,0.22)',
+    floor: '#161a21', wall: '#2d333f', wallEdge: '#414958', zone: 'rgba(255,255,255,0.13)',
     site: 'rgba(255, 196, 64, 0.07)', siteLetter: 'rgba(255, 196, 64, 0.35)',
   },
   titan: {
-    floor: '#1d1b17', wall: '#3a352c', wallEdge: '#504838', zone: 'rgba(255,240,210,0.22)',
+    floor: '#1d1b17', wall: '#3a352c', wallEdge: '#504838', zone: 'rgba(255,240,210,0.13)',
     site: 'rgba(0,0,0,0)', siteLetter: 'rgba(0,0,0,0)',
   },
 };
@@ -35,7 +35,9 @@ export function createRenderer(canvas) {
     return { x: (clientX - r.left - view.ox) / view.scale, y: (clientY - r.top - view.oy) / view.scale };
   }
 
-  function draw(game) {
+  // opts.focusId: the agent being watched (highlighted, with a wide view cone).
+  // opts.mini: minimap mode, with no text labels.
+  function draw(game, opts = {}) {
     const { map } = game;
     const theme = THEMES[game.mode];
     const { scale: s, ox, oy, dpr } = view;
@@ -70,7 +72,7 @@ export function createRenderer(canvas) {
     // Zone labels go on top of the walls so buildings never hide them.
     ctx.fillStyle = theme.zone;
     ctx.font = `600 ${12 * px}px system-ui, sans-serif`;
-    for (const z of map.zones) {
+    for (const z of opts.mini ? [] : map.zones) {
       if (game.gate && z.name === 'Gate') continue; // the gate itself is labelled
       const labelY = z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2;
       ctx.fillText(z.name.toUpperCase(), z.center.x, labelY);
@@ -78,19 +80,19 @@ export function createRenderer(canvas) {
 
     if (game.gate) drawGate(game.gate, px);
 
-    // Order lines: where each squad member has been told to go.
-    ctx.setLineDash([4 * px, 4 * px]);
-    ctx.lineWidth = 1.5 * px;
-    for (const u of game.units) {
-      if (u.team !== 'squad' || !u.alive) continue;
-      const dest = orderDestination(game, u);
-      ctx.strokeStyle = 'rgba(74, 163, 255, 0.35)';
+    // Order line for the agent you're watching. Drawing all four at once was a web of dashes.
+    const lead = game.units.find(u => u.id === opts.focusId && u.alive && u.team === 'squad');
+    if (lead) {
+      const dest = orderDestination(game, lead);
+      ctx.setLineDash([4 * px, 4 * px]);
+      ctx.lineWidth = 1.5 * px;
+      ctx.strokeStyle = fade(lead.color, 0.5);
       ctx.beginPath();
-      ctx.moveTo(u.x, u.y);
+      ctx.moveTo(lead.x, lead.y);
       ctx.lineTo(dest.x, dest.y);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
-    ctx.setLineDash([]);
 
     if (game.spike) drawSpike(game, px);
 
@@ -102,12 +104,14 @@ export function createRenderer(canvas) {
       if (u.kind === 'titan') drawTitan(u, px);
       else {
         const intel = game.squadIntel.get(u.id);
-        if (intel && game.time - intel.t < 0.15) drawSoldier(u, ENEMY, px);
-        else if (intel && game.time - intel.t < 3) drawGhost(intel, game.time - intel.t, px);
+        if (intel && game.time - intel.t < 0.15) drawSoldier(u, u.color, px);
+        else if (intel && game.time - intel.t < 3) drawGhost(intel, game.time - intel.t, px, u.color);
       }
     }
+    const focus = game.units.find(u => u.id === opts.focusId && u.alive);
+    if (focus) drawFocus(focus, px);
     for (const u of game.units) {
-      if (u.team === 'squad' && u.alive) drawSoldier(u, SQUAD, px, game);
+      if (u.team === 'squad' && u.alive) drawSoldier(u, u.color, px, opts.mini ? null : game);
     }
 
     if (game.pointer && performance.now() - game.pointer.at < 8000) drawPointer(game, px);
@@ -155,7 +159,7 @@ export function createRenderer(canvas) {
 
   function drawSoldier(u, color, px, game) {
     // Facing wedge
-    ctx.fillStyle = color === SQUAD ? 'rgba(74,163,255,0.12)' : 'rgba(255,93,93,0.12)';
+    ctx.fillStyle = fade(color, 0.14);
     ctx.beginPath();
     ctx.moveTo(u.x, u.y);
     ctx.arc(u.x, u.y, 4, u.facing - 0.35, u.facing + 0.35);
@@ -183,14 +187,24 @@ export function createRenderer(canvas) {
       ctx.fillRect(u.x + 0.7, u.y - 1.3, 0.7, 0.7);
       if (game.spike.progress > 0) ring(u.x, u.y, u.r + 1.1, game.spike.progress / 3, '#ffb347', px);
     }
-    const label = u.decision && !u.decision.local ? `${u.name} · ${u.action}` : u.name;
-    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
-    ctx.fillStyle = 'rgba(232,234,240,0.9)';
-    ctx.fillText(label, u.x, u.y + u.r + 1.6);
   }
 
-  function drawGhost(intel, age, px) {
-    ctx.strokeStyle = `rgba(255,93,93,${0.6 * (1 - age / 3)})`;
+  function drawFocus(u, px) {
+    ctx.fillStyle = 'rgba(255, 210, 74, 0.16)';
+    ctx.beginPath();
+    ctx.moveTo(u.x, u.y);
+    ctx.arc(u.x, u.y, 14, u.facing - Math.PI / 4, u.facing + Math.PI / 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = POINTER;
+    ctx.lineWidth = 2 * px;
+    ctx.beginPath();
+    ctx.arc(u.x, u.y, u.r + 1.2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawGhost(intel, age, px, color = ENEMY) {
+    ctx.strokeStyle = fade(color, 0.6 * (1 - age / 3));
     ctx.lineWidth = 1.5 * px;
     ctx.setLineDash([3 * px, 3 * px]);
     ctx.beginPath();
@@ -200,7 +214,7 @@ export function createRenderer(canvas) {
   }
 
   function drawTitan(t, px) {
-    const color = TITAN[t.class];
+    const color = t.color ?? TITAN[t.class];
     // Telegraph: a grab cone while winding up; a dim ring while frozen in recovery.
     if (t.status === 'windup') {
       ctx.fillStyle = 'rgba(255, 80, 60, 0.28)';
@@ -248,7 +262,7 @@ export function createRenderer(canvas) {
 
   function drawEffect(e, px) {
     if (e.kind === 'tracer') {
-      ctx.strokeStyle = e.team === 'squad' ? 'rgba(140,200,255,0.9)' : 'rgba(255,140,120,0.9)';
+      ctx.strokeStyle = fade(e.color ?? (e.team === 'squad' ? SQUAD : ENEMY), 0.9);
       ctx.lineWidth = 1.5 * px;
       ctx.beginPath();
       ctx.moveTo(e.x1, e.y1);
@@ -266,7 +280,7 @@ export function createRenderer(canvas) {
       ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
       ctx.fill();
     } else if (e.kind === 'death') {
-      ctx.strokeStyle = e.team === 'squad' ? 'rgba(74,163,255,0.5)' : 'rgba(255,93,93,0.5)';
+      ctx.strokeStyle = fade(e.color ?? (e.team === 'squad' ? SQUAD : ENEMY), 0.5);
       ctx.lineWidth = 2 * px;
       const r = Math.max(0.6, e.r * 0.8);
       ctx.beginPath();
@@ -298,5 +312,11 @@ export function createRenderer(canvas) {
   }
 
   return { resize, draw, toWorld };
+}
+
+// "#rrggbb" plus an alpha, as a colour the canvas understands.
+export function fade(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 

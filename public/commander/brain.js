@@ -65,8 +65,10 @@ export function createBrains() {
 
   // ---------- 1. commander orders ----------
 
-  async function interpretCommand(game, { text, gesture }) {
-    const names = aliveSquad(game).map(u => u.name);
+  // `only` names the one agent the order is for (first-person view); otherwise Jev works out
+  // who each order addresses.
+  async function interpretCommand(game, { text, gesture, only }) {
+    const names = only ? [only] : aliveSquad(game).map(u => u.name);
     const pointer = game.pointer && performance.now() - game.pointer.at < 8000 ? game.pointer : null;
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     const locations = Object.fromEntries(game.map.zones.map(z => [z.name, z.description]));
@@ -76,7 +78,7 @@ export function createBrains() {
     const questions = {};
     for (const name of names) {
       const key = name.toLowerCase();
-      questions[`${key}_addressed`] = {
+      if (!only) questions[`${key}_addressed`] = {
         type: 'boolean',
         // Tested against alternatives: this phrasing got 24/24 addressee checks right.
         instructions: `Does this order apply to ${name}? It does if ${name}'s name appears in it, or if it names no one (orders without names are for the whole squad).`,
@@ -89,6 +91,7 @@ export function createBrains() {
     }
     const state = {
       commander_says: text,
+      ...(only && { talking_to: only }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
       squad: Object.fromEntries(aliveSquad(game).map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
@@ -98,7 +101,7 @@ export function createBrains() {
     const plan = names.map(name => {
       const key = name.toLowerCase();
       const a = result.answers;
-      const addressed = a[`${key}_addressed`].probability;
+      const addressed = only ? 1 : a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
       const priority = a[`${key}_priority`];
