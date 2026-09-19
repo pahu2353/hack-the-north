@@ -110,6 +110,20 @@ Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice st
 
 **Legacy: Titan Siege.** The earlier Commander Erwin scenario (Levi, Mikasa, Hange, and Armin holding a gate against waves of titans) lives on as a standalone snapshot at `/legacy/erwin/` (`public/legacy/erwin/`).
 
+**Vs Bots: who commands the defenders.** Choosing **Vs Bots** asks which opponent you want:
+
+- **Scripted bots** (no key needed): hold posts, rotate to callouts, retake the spike.
+- **OpenAI commander**: an OpenAI model plans the defense every few seconds from the defenders'
+  own sightings, and replans when it loses someone, spots a push, or the spike goes down. Orders
+  are bounded (`hold`, `rotate`, `flank`, `retreat`, `regroup`, `retake` plus a zone) and
+  validated server-side, so a bad answer can never move a defender somewhere illegal. If the
+  model is slow or unavailable, the bots fall back to scripted tactics and the panel says so.
+  The side panel shows its current plan and why it replanned.
+
+It needs `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY` in `.env.local`; set `OPENAI_BOT_MODEL` to
+override the model (default `gpt-5.6-sol`). `npm run mock` (or `OPPONENT_MOCK=1`) plans without
+calling OpenAI, and `npm run test:bot-mode` runs the opponent's tests.
+
 ## Jev visualizer
 
 ```sh
@@ -132,6 +146,7 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 | File | What it is |
 | --- | --- |
 | `server.ts` | Serves `public/`, proxies `POST /api/evaluate` to Jev, and relays `/api/voice` to Deepgram, keeping both keys server-side |
+| `opponent.ts` | The OpenAI commander for the defender bots: snapshot validation, the plan schema, and the model call |
 | `multiplayer.ts` | Multiplayer rooms: invite codes, the server-side match loop, and per-team views over `/api/room` |
 | `public/commander/` | Jev Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js` (top-down), `pov.js` (first-person raycaster), `voice.js`, `gestures.js` |
 | `public/legacy/erwin/` | The Titan Siege (Commander Erwin) version, kept as a standalone snapshot |

@@ -155,6 +155,11 @@
   .agent .bar i { display: block; height: 100%; background: #2b5c8f; border-radius: 0 2px 2px 0; }
   .agent .prob.top .bar i { background: var(--agent); }
   .agent .brain { font-size: 11px; color: var(--muted); }
+  .opponent-panel { color: var(--ink-2); font-size: 12px; max-height: 150px; overflow: auto; }
+  .opponent-panel summary { cursor: pointer; color: var(--gold); }
+  .opponent-panel p { margin: 6px 0; }
+  .opponent-panel p:empty { display: none; }
+  .opponent-panel .order { color: var(--muted); }
 
   /* First-person view: scoreboard on top, minimap top-left, HUD at the bottom. */
   .arena[data-view="map"] #map { height: calc(100% - 56px); margin-top: 56px; }
@@ -258,10 +263,21 @@
         <h2>Jev Commander: Spike Rush</h2>
         <p>Command four agents with your voice, hand signals and typed orders. Jev turns each order into a plan for every agent and makes their split-second calls in fights.</p>
         <div class="choices">
-          <button id="playBots" class="primary big" type="button">🤖 Vs Bots<small>Attack four defender bots</small></button>
+          <button id="playBots" class="primary big" type="button">🤖 Vs Bots<small>Attack four defenders</small></button>
           <button id="playOnline" class="big" type="button">🌐 Multiplayer<small>Command against another player</small></button>
         </div>
         <button id="toggle3d" class="toggle" type="button" aria-pressed="false" title="3D view isn't built yet">3D: Off</button>
+      </section>
+
+      <section id="screenBots" hidden>
+        <h2>Vs Bots</h2>
+        <p>You attack with the spike. Choose who commands the four defenders.</p>
+        <div class="choices">
+          <button id="botsScripted" class="primary big" type="button">🎯 Scripted bots<small>Hold posts, rotate to callouts, retake the spike</small></button>
+          <button id="botsOpenAI" class="big" type="button">🧠 OpenAI commander<small>An OpenAI model plans the defense from what they see</small></button>
+        </div>
+        <div class="status" id="botsStatus"></div>
+        <button id="botsBack" class="link" type="button">← Back</button>
       </section>
 
       <section id="screenOnline" hidden>
@@ -330,6 +346,15 @@
         <button type="submit">Send</button>
       </form>
       <div class="status" id="micStatus"></div>
+    </div>
+    <div class="card" id="opponentCard" hidden>
+      <div class="card-head">Enemy commander <span class="status" id="opponentStatus"></span></div>
+      <details class="opponent-panel" id="opponentDetails">
+        <summary>Their current plan</summary>
+        <p id="opponentReason"></p>
+        <p id="opponentSummary"></p>
+        <div id="opponentOrders"></div>
+      </details>
     </div>
     <div class="card" style="min-height:0">
       <div class="card-head">Orders → Jev</div>

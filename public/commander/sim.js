@@ -1,6 +1,7 @@
 // Spike Rush simulation: attackers vs defenders, four each. A team is either commanded by a
 // player (agents steered by Jev) or, for defenders in bot mode, scripted bots. Runs in the
 // browser for bot games and on the server for multiplayer.
+import { defenderCombat, opponentDestination } from './opponent.js';
 import {
   MAPS, angleTo, buildGrid, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
@@ -21,7 +22,7 @@ const RIFLE = { range: 45, damage: 35, interval: 0.22, accuracy: 0.6 };
 const SIGHT = 45;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
-const ROUND_SECONDS = 100;
+export const ROUND_SECONDS = 100;
 const SPIKE_SECONDS = 35;
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
@@ -29,11 +30,12 @@ const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 0, y: 2.4 }];
 
 // defenders: 'bots' (scripted) or 'players' (a second commander's Jev agents).
-export function createGame({ defenders = 'bots' } = {}) {
+export function createGame({ defenders = 'bots', opponent = 'scripted' } = {}) {
   const map = MAPS.tactical;
   const game = {
     map,
     defenders,
+    opponent: defenders === 'bots' ? opponent : 'scripted',
     grids: new Map(),
     time: 0,
     units: [],
@@ -378,7 +380,42 @@ function pushOutOfRect(u, w) {
 // ---------- defender bots (scripted, bot mode only) ----------
 
 function controlBot(game, u, dt) {
-  const focus = u.visible[0];
+  const focus = u.visible.find(v => v.alive);
+  const planned = opponentDestination(game, u);
+  if (planned && ['retreat', 'regroup'].includes(u.botOrder.action)) {
+    // Spotting an enemy must not turn a withdrawal into another isolated fight.
+    u.botFallback = null;
+    moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    if (focus) shoot(game, u, focus);
+    return;
+  }
+  if (game.opponent === 'openai') {
+    const combat = defenderCombat(game, u);
+    const strength = combat.nearbyAllies + 1;
+    const overwhelmed = combat.visibleEnemies >= strength * 2
+      || (u.hp < 50 && combat.visibleEnemies > strength);
+    if (overwhelmed) {
+      if (!u.botFallback) {
+        u.botFallback = { point: findCover(game, u), recheckAt: game.time + 0.5 };
+      } else if (game.time >= u.botFallback.recheckAt) {
+        if (u.visible.some(v => v.alive && hasLineOfSight(game.map, v, u.botFallback.point))) {
+          u.botFallback.point = findCover(game, u);
+        }
+        u.botFallback.recheckAt = game.time + 0.5;
+      }
+      Object.assign(u.botFallback, { until: game.time + 4, enemies: combat.visibleEnemies, allies: strength });
+    } else if (u.botFallback && (game.time >= u.botFallback.until || strength >= u.botFallback.enemies)) {
+      u.botFallback = null;
+    }
+    if (u.botFallback) {
+      // Keep the escape point after breaking sight, rather than walking straight back
+      // into the same crossfire. Resume when support arrives or after a short recovery.
+      const safe = u.botFallback.point;
+      moveToward(game, u, dist(u, safe) < 0.8 ? null : safe, dt);
+      if (focus) shoot(game, u, focus);
+      return;
+    }
+  }
   if (focus) {
     // Outnumbered and hurt: fall back to cover instead of trading badly.
     if (u.hp < 50 && u.visible.length >= 2) {
@@ -391,11 +428,11 @@ function controlBot(game, u, dt) {
     return;
   }
   u.coverPoint = null;
-  let dest = u.post;
+  let dest = planned ?? u.post;
   const spike = game.spike;
-  if (spike.state === 'planted') {
+  if (!planned && spike.state === 'planted') {
     dest = { x: spike.x, y: spike.y };
-  } else if (u.post.rotate) {
+  } else if (!planned && u.post.rotate) {
     // Rotators fall back onto whichever site the latest callout threatens.
     const callout = [...game.intel.defend.values()].filter(i => game.time - i.t < 8).sort((a, b) => b.t - a.t)[0];
     if (callout) dest = ROTATE_SPOTS.reduce((a, b) => (dist(b, callout) < dist(a, callout) ? b : a));

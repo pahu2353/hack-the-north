@@ -4,6 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
+import { createOpponentPlan } from './opponent.ts';
 import {
   experimental_evaluate as evaluate,
   type Experimental_EvaluationQuestion as EvaluationQuestion,
@@ -41,6 +42,10 @@ const server = createServer(async (req, res) => {
       await handleEvaluate(req, res);
       return;
     }
+    if (req.method === 'POST' && pathname === '/api/opponent') {
+      await handleOpponent(req, res);
+      return;
+    }
     if (req.method === 'GET' && pathname === '/api/info') {
       sendJson(res, 200, { public: PUBLIC_URL, lan: lanUrls() });
       return;
@@ -56,6 +61,28 @@ const server = createServer(async (req, res) => {
     sendJson(res, 500, { error: String(error) });
   }
 });
+
+// The OpenAI commander that plans for the defender bots. The browser gets plans, never keys.
+async function handleOpponent(req: IncomingMessage, res: ServerResponse) {
+  const controller = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  const started = performance.now();
+  try {
+    let snapshot: unknown;
+    try {
+      snapshot = JSON.parse(await readBody(req, 16_384));
+    } catch {
+      sendJson(res, 400, { error: 'Opponent snapshot must be JSON under 16 KB' });
+      return;
+    }
+    const result = await createOpponentPlan(snapshot, {
+      mock: MOCK || process.env.OPPONENT_MOCK === '1', signal: controller.signal,
+    });
+    if (!res.destroyed) sendJson(res, 200, { ...result, latencyMs: Math.round(performance.now() - started) });
+  } catch (error: any) {
+    if (!res.destroyed) sendJson(res, error.statusCode ?? 502, { error: error.message ?? 'Opponent planning failed' });
+  }
+}
 
 async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
   let body: EvaluateRequest;
@@ -248,9 +275,14 @@ function seededRandom(seed: string) {
   };
 }
 
-async function readBody(req: IncomingMessage) {
+async function readBody(req: IncomingMessage, maxBytes = Infinity) {
   let body = '';
-  for await (const chunk of req) body += chunk;
+  let bytes = 0;
+  for await (const chunk of req) {
+    bytes += chunk.length;
+    if (bytes > maxBytes) throw new Error('Request body is too large');
+    body += chunk;
+  }
   return body;
 }
 
