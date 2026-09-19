@@ -88,9 +88,9 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | --- | --- |
 | Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
-| Pointing | Click the map, or point your index finger at the camera, to mark a spot. Then say or type "push there." |
+| Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." |
 | Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
-| Switching agents | Swipe your hand left or right, press ←/→ or 1–4, or click an agent on the top bar or their card. |
+| Switching agents | Point your index finger left or right (hold it to keep stepping), swipe your hand, press ←/→ or 1–4, or click an agent on the top bar or their card. |
 | Switching views | Pinch your thumb and index finger, press <kbd>Tab</kbd>, or use the **3D** button. |
 
 **First-person view.** The map is the default view. Switch to first-person and you watch over one

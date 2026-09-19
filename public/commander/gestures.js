@@ -10,6 +10,9 @@ const SWIPE_DIST = 0.15;
 const SWIPE_MS = 450;
 // Pinch: thumb and index fingertip closing together, like zooming on a phone. It fires once
 // when they meet and rearms when the hand opens again.
+// Pointing sideways: held this long to switch agent, then repeats while you keep holding it.
+const POINT_HOLD_MS = 300;
+const POINT_REPEAT_MS = 900;
 const PINCH_MS = 110; // fingertips have to stay together this long
 const PINCH_CLOSED = 0.45; // gap counting as closed, relative to hand size
 const PINCH_OPEN = 0.6; // and the gap that rearms it
@@ -33,6 +36,16 @@ function isPointing(hand) {
   return extended(8, 6) && !extended(12, 10) && !extended(16, 14) && !extended(20, 18);
 }
 
+// Where the index finger points: straight up aims at the map, sideways picks an agent.
+// The camera image is mirrored, so +x is the direction the person feels as their right.
+export function pointDirection(hand) {
+  if (!isPointing(hand)) return null;
+  const dx = hand[5].x - hand[8].x; // mirrored: tip further right than the knuckle
+  const dy = hand[5].y - hand[8].y; // image y grows downward, so up is positive
+  if (Math.abs(dy) > Math.abs(dx)) return dy > 0 ? 'up' : null; // pointing down means nothing
+  return dx > 0 ? 'right' : 'left';
+}
+
 // Thumb tip to index fingertip, relative to hand size (wrist to middle knuckle).
 function pinchGap(hand) {
   const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
@@ -46,7 +59,9 @@ function pinchClosed(hand) {
   return pinchGap(hand) < PINCH_CLOSED && d(8, 0) > d(5, 0) * 1.1 && d(12, 0) > d(9, 0) * 1.1;
 }
 
-export async function createGestures({ video, overlay, onPointer, onSignal, onSwipe, onPinch, onStatus }) {
+export async function createGestures({
+  video, overlay, onPointer, onSignal, onSwipe, onPinch, onPointDirection, onStatus,
+}) {
   onStatus('Loading hand tracking…', 'pending');
   const { FilesetResolver, GestureRecognizer, DrawingUtils } = await import(`${VISION}/vision_bundle.mjs`);
   const fileset = await FilesetResolver.forVisionTasks(`${VISION}/wasm`);
@@ -80,6 +95,9 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSw
   let quietUntil = 0;
   let pinchedSince = 0;
   let pinchArmed = true;
+  let pointing = null;
+  let pointingSince = 0;
+  let pointingFiredAt = -Infinity;
 
   function motion(now) {
     quietUntil = now + MOTION_QUIET_MS;
@@ -102,6 +120,7 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSw
       current = 'None';
       track = [];
       pinchedSince = 0;
+      pointing = null;
       onPointer(null, 'None');
       return;
     }
@@ -110,9 +129,28 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSw
 
     const top = result.gestures[0]?.[0];
     let name = top && top.score > SCORE ? top.categoryName : 'None';
-    if (name === 'None' && isPointing(hand)) name = 'Pointing_Up';
+    // Our own reading of the finger wins: MediaPipe calls any point "Pointing_Up", but only a
+    // finger that really points up aims, and a sideways one switches agents.
+    const direction = pointDirection(hand);
+    if (direction) name = { up: 'Pointing_Up', left: 'Point_Left', right: 'Point_Right' }[direction];
+    else if (name === 'Pointing_Up') name = 'None';
     // The preview is mirrored, so flip x to make pointing feel natural.
     onPointer(name === 'Pointing_Up' ? { x: 1 - hand[8].x, y: hand[8].y } : null, name);
+
+    // Point sideways to step through the squad; keep holding to keep stepping.
+    if (name === 'Point_Left' || name === 'Point_Right') {
+      if (name !== pointing) {
+        pointing = name;
+        pointingSince = now;
+        pointingFiredAt = -Infinity;
+      }
+      if (now - pointingSince > POINT_HOLD_MS && now - pointingFiredAt > POINT_REPEAT_MS && now > quietUntil) {
+        pointingFiredAt = now;
+        onPointDirection?.(name === 'Point_Right' ? 1 : -1);
+      }
+    } else {
+      pointing = null;
+    }
 
     // Swipe: palm centre moving fast sideways (not while aiming). Mirrored x, so moving
     // your hand to your right is +1.
@@ -120,7 +158,7 @@ export async function createGestures({ video, overlay, onPointer, onSignal, onSw
     track.push({ x: palmX, t: now });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
     const travel = palmX - track[0].x;
-    if (name !== 'Pointing_Up' && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
+    if (!direction && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
       motion(now);
       onSwipe?.(travel > 0 ? 1 : -1);
       return;
