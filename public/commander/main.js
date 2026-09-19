@@ -844,7 +844,6 @@ function stopCamera() {
     $('camOff').hidden = false;
     $('cam').hidden = true;
     $('previewBtn').hidden = true;
-    $('lastSign').textContent = '';
     $('sign').hidden = true;
     setStatus('camStatus', 'Camera off');
   }
@@ -864,7 +863,6 @@ async function startCamera() {
           const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
           $('sign').hidden = name === 'None';
           $('sign').textContent = label;
-          $('lastSign').textContent = label;
         }
         if (!p || is3d || !matchActive()) return; // aiming is map-view only
         // Use the middle of the camera frame so you don't have to reach the edges.
@@ -905,7 +903,6 @@ let signTimer = null;
 function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
-  $('lastSign').textContent = text;
   clearTimeout(signTimer);
   signTimer = setTimeout(() => { signTimer = null; }, 1200);
 }

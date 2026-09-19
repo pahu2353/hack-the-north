@@ -82,7 +82,12 @@
     overflow: auto; padding: 16px;
   }
   .overlay[hidden], .overlay section[hidden] { display: none; }
-  .overlay section { max-width: 520px; text-align: center; display: grid; gap: 14px; justify-items: center; }
+  .overlay section {
+    width: min(520px, 100%); text-align: center; display: grid; gap: 14px; justify-items: center;
+    align-content: start; padding-top: 40px; min-height: 300px;
+  }
+  /* Reserved, so screens with no line under the heading don't shift everything up. */
+  .overlay p { min-height: 18px; }
   .overlay h2 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
   .overlay p { margin: 0; color: var(--ink-2); }
   .overlay .win { color: var(--ok); }
@@ -121,14 +126,15 @@
   .status.error { color: var(--enemy); }
   .cam { position: relative; aspect-ratio: 4 / 3; background: #07080b; overflow: hidden; border: 1px solid var(--border); }
   .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-  .cam .sign { position: absolute; left: 8px; bottom: 6px; background: rgba(0, 0, 0, 0.6); padding: 1px 8px; font-weight: 700; }
+  .cam .sign {
+    position: absolute; left: 8px; bottom: 8px; background: rgba(8, 10, 14, 0.78); border: 1px solid var(--border);
+    padding: 3px 8px; font-weight: 700; font-size: 12px;
+  }
   .cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
   .card-head span { display: flex; gap: 6px; }
   .signs { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; color: var(--muted); }
   .signs span { background: var(--panel-2); padding: 2px 6px; white-space: nowrap; }
   .cam[hidden] { display: none; }
-  /* The last sign the camera saw, for when the preview is folded away. */
-  .last-sign { font-size: 12px; color: var(--ink-2); min-height: 17px; }
 
   .ptt {
     display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px; font-weight: 700; user-select: none;
@@ -287,8 +293,8 @@
 
     <div class="overlay" id="overlay">
       <section id="screenMenu">
-        <h2>Spike Rush</h2>
-        <p>Command four agents by voice, sign or text. Jev plans each order and makes their calls in fights.</p>
+        <h2>Choose game mode</h2>
+        <p></p>
         <div class="choices">
           <button id="playBots" class="primary big" type="button">Vs bots<small>Four scripted or AI defenders</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
@@ -296,8 +302,8 @@
       </section>
 
       <section id="screenBots" hidden>
-        <h2>Vs bots</h2>
-        <p>You attack with the spike. Choose who commands the defenders.</p>
+        <h2>Choose game mode</h2>
+        <p>You attack the spike. Who commands the defenders?</p>
         <div class="choices">
           <button id="botsScripted" class="primary big" type="button">Scripted<small>Hold posts, rotate, retake</small></button>
           <button id="botsOpenAI" class="big" type="button">OpenAI<small>Plans from what they see</small></button>
@@ -307,8 +313,8 @@
       </section>
 
       <section id="screenOnline" hidden>
-        <h2>Multiplayer</h2>
-        <p>One commander attacks, the other defends. Send the invite, or join with a code.</p>
+        <h2>Choose game mode</h2>
+        <p>One commander attacks, the other defends.</p>
         <button id="createRoom" class="primary big" type="button">Create game</button>
         <form class="join" id="joinForm">
           <input id="joinCode" maxlength="5" autocomplete="off" spellcheck="false" placeholder="CODE" aria-label="Invite code">
@@ -377,7 +383,6 @@
         <div class="off" id="camOff">Camera off</div>
         <div class="sign" id="sign" hidden></div>
       </div>
-      <div class="last-sign" id="lastSign"></div>
       <div class="signs" id="signs"></div>
       <div class="status" id="camStatus"></div>
     </div>
