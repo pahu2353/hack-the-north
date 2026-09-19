@@ -21,6 +21,8 @@
     --ok: #5bd17a;
   }
   * { box-sizing: border-box; }
+  /* Elements with their own display rule (e.g. the camera's "off" message) must still hide. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--page); color: var(--ink);
@@ -117,6 +119,8 @@
   .log { overflow: auto; padding-right: 4px; display: grid; gap: 8px; align-content: start; }
   .entry { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 4px; }
   .entry .said { font-weight: 600; }
+  .entry.ignored { opacity: 0.55; }
+  .entry.ignored .plan { grid-template-columns: 1fr; }
   .entry .src { color: var(--muted); font-weight: 400; margin-right: 4px; }
   .entry .meta { color: var(--muted); font-size: 11px; }
   .entry .err { color: var(--enemy); font-size: 12px; }
@@ -228,8 +232,8 @@
       <div class="status" id="camStatus"></div>
     </div>
     <div class="card">
-      <div class="card-head">Voice <button id="micBtn" type="button">Enable mic</button></div>
-      <button id="ptt" class="ptt" type="button">🎙 Hold <kbd>V</kbd> to talk<span class="level" id="level"></span></button>
+      <div class="card-head">Voice <button id="micBtn" type="button">Turn on mic</button></div>
+      <button id="listen" class="ptt" type="button" title="Click to mute or unmute"><span id="listenLabel">🎙 Mic off</span><span class="level" id="level"></span></button>
       <div class="caption" id="caption"></div>
       <form class="order" id="textForm">
         <input id="textInput" autocomplete="off" placeholder="Or type an order">

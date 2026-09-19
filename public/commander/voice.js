@@ -1,19 +1,16 @@
-// Push-to-talk voice orders: microphone → 16 kHz PCM → /api/voice (server relay) → Deepgram.
-// Audio is only sent while talking; a short pre-roll catches the first syllable, and
-// releasing the key sends Finalize so the full transcript comes back right away.
-const PREROLL_CHUNKS = 3; // 300 ms
-
+// Hands-free voice orders: microphone → 16 kHz PCM → /api/voice (server relay) → Deepgram.
+// While listening, audio streams continuously and each spoken sentence becomes an order as
+// soon as you pause (Deepgram's endpointing). While not listening (menus, muted), nothing is
+// sent except keep-alives.
 export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
   let ws = null;
   let ctx = null;
   let stream = null;
-  let talking = false;
+  let listening = false;
   let keyterms = [];
   let finals = [];
-  let finalizeTimer = null;
   let keepAlive = null;
-  const preroll = [];
-  const counters = { chunks: 0, sent: 0, results: 0 };
+  const counters = { chunks: 0, sent: 0, results: 0, orders: 0 };
 
   function connect() {
     const params = new URLSearchParams();
@@ -32,7 +29,12 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
 
   function handleMessage(message) {
     if (message.type === 'Ready') {
-      onStatus('Mic ready: hold V to talk', 'ok');
+      reportReady();
+      return;
+    }
+    // Deepgram also sends UtteranceEnd after a longer silence, in case speech_final was missed.
+    if (message.type === 'UtteranceEnd') {
+      dispatch();
       return;
     }
     if (message.type !== 'Results') return;
@@ -41,18 +43,18 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     if (message.is_final) {
       if (transcript) finals.push(transcript);
       onInterim(finals.join(' '));
-      if (message.from_finalize) dispatch();
-    } else {
+      if (message.speech_final || message.from_finalize) dispatch();
+    } else if (transcript) {
       onInterim([...finals, transcript].join(' '));
     }
   }
 
   function dispatch() {
-    clearTimeout(finalizeTimer);
-    finalizeTimer = null;
     const text = finals.join(' ').trim();
     finals = [];
-    if (text) onFinal(text);
+    if (!text) return;
+    counters.orders++;
+    onFinal(text);
   }
 
   function send(data) {
@@ -61,13 +63,27 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     if (data instanceof ArrayBuffer) counters.sent++;
   }
 
+  function reportReady() {
+    if (ctx?.state === 'suspended') onStatus('Click anywhere to turn the mic on', 'pending');
+    else onStatus(listening ? 'Listening: just talk' : 'Mic ready: listens during matches', 'ok');
+  }
+
   async function enable(terms) {
+    if (stream) return;
     keyterms = terms;
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
     ctx = new AudioContext({ sampleRate: 16000 });
-    await ctx.audioWorklet.addModule('/commander/pcm-worklet.js');
+    // Without a recent click (e.g. a guest whose match was started by the host), the browser
+    // keeps audio suspended until the next interaction.
+    if (ctx.state === 'suspended') {
+      const resume = () => ctx?.resume();
+      document.addEventListener('pointerdown', resume, { once: true });
+      document.addEventListener('keydown', resume, { once: true });
+      ctx.onstatechange = reportReady;
+    }
+    await ctx.audioWorklet.addModule(new URL('./pcm-worklet.js', import.meta.url));
     const source = ctx.createMediaStreamSource(stream);
     const capture = new AudioWorkletNode(ctx, 'pcm-capture');
     const mute = ctx.createGain();
@@ -75,23 +91,30 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     source.connect(capture).connect(mute).connect(ctx.destination);
     capture.port.onmessage = ({ data }) => {
       counters.chunks++;
+      if (!listening) return;
+      send(data);
       const pcm = new Int16Array(data);
-      if (talking) {
-        send(data);
-        let sum = 0;
-        for (let i = 0; i < pcm.length; i += 8) sum += (pcm[i] / 32768) ** 2;
-        onLevel(Math.min(1, Math.sqrt(sum / (pcm.length / 8)) * 4));
-      } else {
-        preroll.push(data);
-        if (preroll.length > PREROLL_CHUNKS) preroll.shift();
-      }
+      let sum = 0;
+      for (let i = 0; i < pcm.length; i += 8) sum += (pcm[i] / 32768) ** 2;
+      onLevel(Math.min(1, Math.sqrt(sum / (pcm.length / 8)) * 4));
     };
-    keepAlive = setInterval(() => !talking && send(JSON.stringify({ type: 'KeepAlive' })), 4000);
+    keepAlive = setInterval(() => !listening && send(JSON.stringify({ type: 'KeepAlive' })), 4000);
     onStatus('Connecting to Deepgram…', 'pending');
     connect();
   }
 
+  function setListening(on) {
+    if (on === listening || !stream) return;
+    listening = on;
+    if (!on) {
+      send(JSON.stringify({ type: 'Finalize' })); // flush anything half-said
+      onLevel(0);
+    }
+    if (ws?.readyState === WebSocket.OPEN) reportReady();
+  }
+
   function setKeyterms(terms) {
+    if (terms.join() === keyterms.join()) return;
     keyterms = terms;
     if (ws) {
       const old = ws;
@@ -101,35 +124,23 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     }
   }
 
-  function startTalking() {
-    if (!stream || talking) return;
-    talking = true;
-    finals = [];
-    for (const chunk of preroll.splice(0)) send(chunk);
-    onInterim('');
-  }
-
-  function stopTalking() {
-    if (!talking) return;
-    talking = false;
-    onLevel(0);
-    send(JSON.stringify({ type: 'Finalize' }));
-    finalizeTimer = setTimeout(dispatch, 1500); // in case the from_finalize result never arrives
-  }
-
   function disable() {
+    listening = false;
     clearInterval(keepAlive);
     stream?.getTracks().forEach(track => track.stop());
     stream = null;
     ctx?.close();
+    ctx = null;
     const old = ws;
     ws = null;
     old?.close();
+    onLevel(0);
   }
 
   return {
-    enable, disable, setKeyterms, startTalking, stopTalking,
+    enable, disable, setKeyterms, setListening,
     get enabled() { return Boolean(stream); },
-    get debug() { return { audio: ctx?.state, socket: ws?.readyState, talking, ...counters }; },
+    get listening() { return listening; },
+    get debug() { return { audio: ctx?.state, socket: ws?.readyState, listening, ...counters }; },
   };
 }

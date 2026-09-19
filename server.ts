@@ -160,7 +160,9 @@ function relayVoice(client: WebSocket, keyterms: string[]) {
     sample_rate: '16000',
     interim_results: 'true',
     smart_format: 'true',
-    endpointing: '300',
+    // Hands-free orders: a 500 ms pause ends a sentence; 1 s of silence is the backstop.
+    endpointing: '500',
+    utterance_end_ms: '1000',
   });
   for (const term of keyterms.slice(0, 50)) params.append('keyterm', term);
   const upstream = new WebSocket(`${DEEPGRAM_URL}?${params}`, { headers: { Authorization: `Token ${key}` } });

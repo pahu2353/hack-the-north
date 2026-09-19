@@ -9,11 +9,22 @@ import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
 
+// The orchestrator question: with a hands-free mic, most of what Jev hears is not an order.
+// On labelled commands this scores chatter at 8-14% and real orders at 89-97%.
+const ORDER_GATE = {
+  type: 'boolean',
+  instructions: 'Is the commander giving their squad an order, or just talking (thinking out loud, reacting to the game, chatting)?',
+  criteria: {
+    true: 'an order for the squad to carry out',
+    false: 'not an order: chatter, a question, a reaction, or thinking out loud',
+  },
+};
+
 const ORDERS = {
   attack: {
     push: 'go to / rush / attack / take / move to the location',
     hold: 'hold / defend / watch / stay at the location',
-    flank: 'take a side route to hit enemies from an unexpected angle',
+    flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
     plant: 'plant the spike (only when told to plant)',
@@ -21,7 +32,7 @@ const ORDERS = {
   defend: {
     push: 'go to / rush / retake / attack / move to the location',
     hold: 'hold / defend / watch / stay at the location',
-    flank: 'take a side route to hit enemies from an unexpected angle',
+    flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
     defuse: 'go defuse the planted spike (only when told to defuse)',
@@ -66,7 +77,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const squad = aliveTeam(game, team);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
-    const locations = Object.fromEntries(game.map.zones.map(z => [z.name, z.description]));
+    // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
+    const ownSpawn = team === 'attack' ? 'Attacker Spawn' : 'Defender Spawn';
+    const locations = Object.fromEntries(game.map.zones.map(z => [
+      z.name,
+      z.name.endsWith('Spawn')
+        ? (z.name === ownSpawn ? 'your own spawn, where your squad started' : "the enemy's spawn, on their side of the map")
+        : z.description,
+    ]));
     if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone})`;
     locations.current = 'stay where they are now';
 
@@ -75,12 +93,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       const key = name.toLowerCase();
       questions[`${key}_addressed`] = {
         type: 'boolean',
-        // Tested against alternatives: this phrasing got 24/24 addressee checks right.
-        instructions: `Does this order apply to ${name}? It does if ${name}'s name appears in it, or if it names no one (orders without names are for the whole squad).`,
+        // Wording picked by measurement: it handles orders that give different jobs to
+        // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
+        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, or if it says "everyone else" / "the rest".`,
       };
       questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[team] };
       questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
     }
+    questions.is_order = ORDER_GATE;
     const state = {
       commander_says: text,
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
@@ -88,7 +108,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
     };
 
-    const result = await ask(state, questions, 2);
+    // Jev occasionally 500s on a question with no clear winner, so give it one more go.
+    const result = await ask(state, questions, 2).catch(() => ask(state, questions, 2));
+    const isOrder = result.answers.is_order.probability;
+    if (isOrder < 0.5) {
+      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
+    }
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
@@ -121,7 +146,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
-    return { plan, latency: result.latency, tokens: result.usage?.inputTokens };
+    return { plan, isOrder, latency: result.latency, tokens: result.usage?.inputTokens };
   }
 
   // ---------- 2. per-agent decision loops ----------

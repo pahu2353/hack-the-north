@@ -86,14 +86,14 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 
 | Input | How |
 | --- | --- |
-| Voice | Click **Enable mic**, then hold **V** (or the talk button) and speak: "Alpha and Bravo push B, Charlie hold mid, Delta flank A." |
+| Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
 | Pointing | Click the map, or point your index finger at the camera, to mark a spot. Then say or type "push there." |
 | Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
 
 **How Jev is used.** Two layers, both plain typed questions:
 
-1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call, with three questions per agent: does the order apply to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant or defuse), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was.
+1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call. One question asks whether it's an order at all, which matters with a hands-free mic: on labelled examples, chatter like "nice shot" scores 5–14% while real orders score 89–97%, so chatter is ignored and shown greyed out in the log. Three more questions per agent ask whether the order applies to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant or defuse), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was.
 2. **Agent brains.** Like Jev playing Doom, each agent in a fight sends its situation to Jev about twice a second: health, order, enemies in sight, teammates in fights, and the spike. It gets back an action (fight, take cover, advance, hold, support) and which enemy to shoot. Each card at the bottom shows an agent's current action probabilities. Out of contact, agents just follow orders without calling Jev.
 
 Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice streams through the local server to Deepgram, so the key never reaches the browser.

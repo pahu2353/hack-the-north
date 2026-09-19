@@ -226,6 +226,7 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
+  ensureMic();
   resultShown = false;
   positions.clear();
   $('log').replaceChildren();
@@ -274,10 +275,10 @@ async function issueCommand({ source, text, gesture }) {
   const p = activePointer();
   const request = { text, gesture, pointer: p && { x: p.x, y: p.y } };
   try {
-    const { plan, latency, tokens } = session.kind === 'bots'
+    const result = session.kind === 'bots'
       ? await brains.interpretCommand(game, 'attack', request)
       : await sendCommand(request);
-    renderPlan(entry, plan, latency, tokens);
+    renderPlan(entry, result);
   } catch (error) {
     entry.querySelector('.plan').replaceChildren();
     entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
@@ -310,8 +311,15 @@ function addLogEntry(source, text, gesture) {
   return entry;
 }
 
-function renderPlan(entry, plan, latency, tokens) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder }) {
   const pct = v => `${Math.round(v * 100)}%`;
+  if (ignored) {
+    entry.querySelector('.plan').replaceChildren(
+      el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
+    entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+    entry.classList.add('ignored');
+    return;
+  }
   const rows = plan.flatMap(p => {
     if (!p.applied) {
       return [
@@ -362,6 +370,7 @@ function frame(now) {
   if (now - lastHud > 100) {
     lastHud = now;
     updateHud();
+    syncListening();
   }
   requestAnimationFrame(frame);
 }
@@ -461,46 +470,41 @@ const voice = createVoice({
   onLevel: level => { $('level').style.width = `${level * 100}%`; },
 });
 
-$('micBtn').onclick = async () => {
-  if (voice.enabled) {
-    voice.disable();
-    $('micBtn').textContent = 'Enable mic';
-    setStatus('micStatus', 'Mic off');
-    return;
-  }
+// Voice is hands-free: the mic turns on when a match starts and listens only during matches.
+// Each sentence becomes an order when you pause. Muting keeps it off until you unmute.
+let micMuted = false;
+async function ensureMic() {
+  if (voice.enabled || !window.isSecureContext) return;
   try {
     await voice.enable(keytermsFor(session?.team ?? 'attack'));
-    $('micBtn').textContent = 'Disable mic';
   } catch (error) {
     setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error');
   }
-};
+}
 
-function startTalking() {
+function syncListening() {
+  const inMatch = Boolean(session && view && !view.result);
+  voice.setListening(inMatch && !micMuted);
+  const label = !voice.enabled ? '🎙 Mic off'
+    : micMuted ? '🔇 Muted: click to unmute'
+    : inMatch ? '🎙 Listening: just talk'
+    : '🎙 Mic on: listens during matches';
+  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
+  $('listen').classList.toggle('live', voice.listening);
+  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
+}
+
+async function toggleMic() {
   if (!voice.enabled) {
-    setStatus('micStatus', 'Enable the mic first (or type the order).', 'error');
-    return;
+    micMuted = false;
+    await ensureMic();
+  } else {
+    micMuted = !micMuted;
   }
-  $('ptt').classList.add('live');
-  voice.startTalking();
+  syncListening();
 }
-function stopTalking() {
-  $('ptt').classList.remove('live');
-  voice.stopTalking();
-}
-const typing = () => document.activeElement?.tagName === 'INPUT';
-document.addEventListener('keydown', e => {
-  if (e.code === 'KeyV' && !e.repeat && !typing()) {
-    e.preventDefault();
-    startTalking();
-  }
-});
-document.addEventListener('keyup', e => {
-  if (e.code === 'KeyV' && !typing()) stopTalking();
-});
-$('ptt').addEventListener('pointerdown', startTalking);
-$('ptt').addEventListener('pointerup', stopTalking);
-$('ptt').addEventListener('pointerleave', () => $('ptt').classList.contains('live') && stopTalking());
+$('micBtn').onclick = toggleMic;
+$('listen').onclick = toggleMic;
 
 $('textForm').onsubmit = e => {
   e.preventDefault();
@@ -572,6 +576,7 @@ if (!window.isSecureContext) {
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
+  $('listen').disabled = true;
   $('camBtn').disabled = true;
 }
 
