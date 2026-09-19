@@ -13,6 +13,7 @@ export type Evaluate = (state: unknown, questions: any, maxRetries: number) => P
 
 type Room = {
   code: string;
+  host: WebSocket;
   players: Partial<Record<Team, WebSocket>>;
   game: any;
   brains: Record<Team, Brains>;
@@ -44,7 +45,7 @@ export function createRooms(evaluate: Evaluate) {
     let code: string;
     do code = randomCode();
     while (rooms.has(code));
-    const room: Room = { code, players: {}, game: null, brains: { attack: newBrains(), defend: newBrains() }, loop: null };
+    const room: Room = { code, host: ws, players: {}, game: null, brains: { attack: newBrains(), defend: newBrains() }, loop: null };
     rooms.set(code, room);
     seat(room, 'attack', ws);
   }
@@ -52,14 +53,15 @@ export function createRooms(evaluate: Evaluate) {
   function join(ws: WebSocket, code: string) {
     const room = rooms.get(code);
     if (!room) return fail(ws, `There's no game with code ${code}.`);
-    if (room.players.defend) return fail(ws, 'That game already has two commanders.');
-    seat(room, 'defend', ws);
+    const openTeam = TEAM_LIST.find(team => !room.players[team]);
+    if (!openTeam || room.host.readyState !== WebSocket.OPEN) return fail(ws, 'That game is full or closing.');
+    seat(room, openTeam, ws);
   }
 
-  // The room's creator commands the attackers and is the host (starts matches and rematches).
+  // Host ownership follows the connection, independently of the side it commands.
   function seat(room: Room, team: Team, ws: WebSocket) {
     room.players[team] = ws;
-    send(ws, { type: 'joined', code: room.code, team, host: team === 'attack' });
+    send(ws, { type: 'joined', code: room.code, team, host: ws === room.host });
     broadcastLobby(room);
     ws.on('message', data => {
       let message: any;
@@ -68,10 +70,27 @@ export function createRooms(evaluate: Evaluate) {
       } catch {
         return;
       }
-      if (message.type === 'start' && team === 'attack' && room.players.defend) startMatch(room);
-      else if (message.type === 'command') command(room, team, message);
+      const currentTeam = TEAM_LIST.find(side => room.players[side] === ws);
+      if (!currentTeam) return;
+      if (message.type === 'start' && ws === room.host && room.players.attack && room.players.defend
+          && (!room.game || room.game.result)) startMatch(room);
+      else if (message.type === 'side' && ws === room.host) chooseSide(room, message.team);
+      else if (message.type === 'command') command(room, currentTeam, message);
     });
-    ws.on('close', () => leave(room, team, ws));
+    ws.on('close', () => {
+      const currentTeam = TEAM_LIST.find(side => room.players[side] === ws);
+      if (currentTeam) leave(room, currentTeam, ws);
+    });
+  }
+
+  function chooseSide(room: Room, team: Team) {
+    if (!TEAM_LIST.includes(team) || (room.game && !room.game.result) || room.players[team] === room.host) return;
+    stopLoop(room);
+    const other = room.players[team];
+    room.players = { [team]: room.host, ...(other && { [otherTeam(team)]: other }) };
+    room.game = null;
+    for (const side of TEAM_LIST) send(room.players[side], { type: 'sides', team: side });
+    broadcastLobby(room);
   }
 
   function startMatch(room: Room) {
@@ -137,7 +156,7 @@ export function createRooms(evaluate: Evaluate) {
       // Forfeit: the loop sends the final state to whoever is still here, then stops.
       game.result = { winner: otherTeam(team), reason: `The ${TEAMS[team].label.toLowerCase()}' commander left`, time: game.time };
     }
-    if (team === 'attack' || !other) {
+    if (ws === room.host || !other) {
       // Without the host there's nobody to start matches, so the room closes.
       if (other) send(other, { type: 'closed', reason: 'The host left the game.' });
       setTimeout(() => {

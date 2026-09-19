@@ -56,9 +56,10 @@ async function evaluateOverHttp(state, questions, maxRetries) {
 
 export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS } = {}) {
   const stats = { calls: 0, ok: 0, failed: 0, lastError: '', latencies: [], recent: [] };
-  // Orders can be interpreted out of order (a guess at partial speech can land after the
-  // finished sentence), so a lower sequence number never overwrites a higher one.
-  let appliedSeq = 0;
+  let commandSequence = 0;
+  // Track accepted orders per unit: chatter or an order for Bravo must not cancel Alpha's.
+  // Explicit sequences also prevent a partial voice guess from replacing its final sentence.
+  const lastAppliedCommand = new WeakMap();
 
   async function ask(state, questions, maxRetries = 0) {
     stats.calls++;
@@ -80,9 +81,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
-  async function interpretCommand(game, team, { text, gesture, pointer, only, seq = Infinity }) {
+  async function interpretCommand(game, team, { text, gesture, pointer, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
+    const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
+    commandSequence = Math.max(commandSequence, commandId);
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
     const ownSpawn = team === 'attack' ? 'Attacker Spawn' : 'Defender Spawn';
@@ -122,17 +125,18 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     if (isOrder < 0.5) {
       return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
     }
-    if (seq < appliedSeq) {
-      return { stale: true, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
-    }
-    appliedSeq = seq;
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
       const addressed = only ? 1 : a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
-      const applied = addressed >= 0.5 && unit.alive;
+      const skipReason = addressed < 0.5 ? 'not addressed'
+        : !unit.alive ? 'agent eliminated'
+        : game.result ? 'round ended'
+        : commandId < (lastAppliedCommand.get(unit) ?? 0) ? 'newer order already applied'
+        : null;
+      const applied = skipReason === null;
       if (applied) {
         let point;
         let zone = target.choice;
@@ -146,19 +150,22 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
           point = zoneByName(game.map, target.choice).center;
         }
         setOrder(game, unit, { type: order.choice, zone, point });
+        lastAppliedCommand.set(unit, commandId);
         unit.action = order.choice === 'hold' ? 'hold' : 'advance';
       }
       return {
         name: unit.name,
         addressed,
         applied,
+        ...(skipReason && { skipReason }),
         order: order.choice,
         orderP: order.probabilities?.[order.choice] ?? 1,
         target: target.choice === 'pointed' ? `☝ ${pointerZone}` : target.choice,
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
-    return { plan, isOrder, latency: result.latency, tokens: result.usage?.inputTokens };
+    const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
+    return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens };
   }
 
   // ---------- 2. per-agent decision loops ----------

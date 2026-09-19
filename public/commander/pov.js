@@ -24,6 +24,16 @@ export function createPovRenderer(canvas) {
   let cam = null;
   // When each enemy was last in view, so they don't flicker at corners.
   const lastSeen = new Map();
+  let watchedId = null;
+  let lastViewTime = -Infinity;
+
+  function reset() {
+    lastSeen.clear();
+    watchedId = null;
+    lastViewTime = -Infinity;
+    cam = null;
+    pointer = null;
+  }
 
   function fit() {
     const dpr = window.devicePixelRatio || 1;
@@ -40,6 +50,10 @@ export function createPovRenderer(canvas) {
   // view: a teamView snapshot. unit: the agent you're watching (one of view.units).
   // at: optional unit id → smoothed position, the same interpolation the map uses.
   function draw(view, unit, camera, at = u => u) {
+    // A different agent has different sightlines. A new round reuses unit IDs and time.
+    if (unit.id !== watchedId || view.time < lastViewTime) lastSeen.clear();
+    watchedId = unit.id;
+    lastViewTime = view.time;
     const dpr = fit();
     if (!W || !H) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -132,7 +146,8 @@ export function createPovRenderer(canvas) {
       lastSeen.set(u.id, view.time);
       return true;
     }
-    return view.time - (lastSeen.get(u.id) ?? -Infinity) < LINGER;
+    const age = view.time - (lastSeen.get(u.id) ?? -Infinity);
+    return age >= 0 && age < LINGER;
   }
 
   // Nearest wall hit along a ray (slab test against each rectangle).
@@ -391,7 +406,7 @@ export function createPovRenderer(canvas) {
     ctx.stroke();
   }
 
-  return { draw, toWorld, setPointer };
+  return { draw, toWorld, setPointer, reset };
 }
 
 // A camera that follows a unit but eases its turns, since Jev can snap an agent's facing.

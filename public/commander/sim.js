@@ -1,7 +1,7 @@
 // Spike Rush simulation: attackers vs defenders, four each. A team is either commanded by a
 // player (agents steered by Jev) or, for defenders in bot mode, scripted bots. Runs in the
 // browser for bot games and on the server for multiplayer.
-import { defenderCombat, opponentDestination } from './opponent.js';
+import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
   MAPS, angleTo, buildGrid, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
@@ -37,12 +37,13 @@ export const GRENADE = {
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
 const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 0, y: 2.4 }];
 
-// defenders: 'bots' (scripted) or 'players' (a second commander's Jev agents).
-export function createGame({ defenders = 'bots', opponent = 'scripted' } = {}) {
+// defenders selects bot mode or multiplayer; playerTeam chooses the human's side in bot mode.
+export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack' } = {}) {
   const map = MAPS.tactical;
   const game = {
     map,
     defenders,
+    botTeam: defenders === 'bots' ? otherTeam(playerTeam) : null,
     opponent: defenders === 'bots' ? opponent : 'scripted',
     grids: new Map(),
     time: 0,
@@ -55,15 +56,14 @@ export function createGame({ defenders = 'bots', opponent = 'scripted' } = {}) {
     grenades: [],
     knownDown: { attack: new Set(), defend: new Set() },
   };
-  TEAMS.attack.names.forEach((name, i) => game.units.push(makeAgent(game, 'attack', name, map.spawns.attack[i], i)));
-  map.spawns.defend.forEach((post, i) => {
-    if (defenders === 'bots') {
+  for (const team of ['attack', 'defend']) map.spawns[team].forEach((post, i) => {
+    if (team === game.botTeam) {
       game.units.push(makeUnit(game, {
-        team: 'defend', kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp: 100, maxHp: 100,
-        speed: 4.5, reaction: 0.28 + Math.random() * 0.12, facing: Math.PI / 2,
+        team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp: 100, maxHp: 100,
+        speed: 4.5, reaction: 0.28 + Math.random() * 0.12, facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
       }));
     } else {
-      game.units.push(makeAgent(game, 'defend', TEAMS.defend.names[i], post, i));
+      game.units.push(makeAgent(game, team, TEAMS[team].names[i], post, i));
     }
   });
   game.spike = { state: 'carried', carrierId: teamUnits(game, 'attack')[0].id, x: 0, y: 0, progress: 0, timer: SPIKE_SECONDS, defuse: 0, site: null };
@@ -181,6 +181,7 @@ export function stepGame(game, dt) {
   if (game.result) return;
   game.time += dt;
   updateVision(game);
+  updateOpponentTactics(game);
   for (const u of game.units) {
     if (!u.alive) continue;
     u.cooldown = Math.max(0, u.cooldown - dt);
@@ -425,7 +426,7 @@ function pushOutOfRect(u, w) {
   u.y += ey * (depth + u.r);
 }
 
-// ---------- defender bots (scripted, bot mode only) ----------
+// ---------- bots (scripted execution, with optional OpenAI objectives) ----------
 
 function controlBot(game, u, dt) {
   const focus = u.visible.find(v => v.alive);
@@ -477,6 +478,13 @@ function controlBot(game, u, dt) {
       return;
     }
   }
+  const group = game.botRetake;
+  if (planned && group?.unitIds.includes(u.id)) {
+    // Gather under fire, then advance together. The survival reflex above still takes priority.
+    moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    if (focus) shoot(game, u, focus);
+    return;
+  }
   if (focus) {
     // Outnumbered and hurt: fall back to cover instead of trading badly.
     if (u.hp < 50 && u.visible.length >= 2) {
@@ -491,7 +499,17 @@ function controlBot(game, u, dt) {
   u.coverPoint = null;
   let dest = planned ?? u.post;
   const spike = game.spike;
-  if (!planned && spike.state === 'planted') {
+  if (u.team === 'attack') {
+    if (!planned) {
+      const site = zoneByName(game.map, spike.site ?? 'B Site');
+      const slot = SLOTS[u.slot % SLOTS.length];
+      dest = { x: site.center.x + slot.x, y: site.center.y + slot.y };
+    }
+    if (spike.state === 'dropped') {
+      const picker = aliveTeam(game, 'attack').reduce((a, b) => dist(a, spike) <= dist(b, spike) ? a : b);
+      if (u === picker) dest = { x: spike.x, y: spike.y };
+    }
+  } else if (!planned && spike.state === 'planted') {
     dest = { x: spike.x, y: spike.y };
   } else if (!planned && u.post.rotate) {
     // Rotators fall back onto whichever site the latest callout threatens.
