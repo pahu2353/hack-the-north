@@ -120,6 +120,7 @@ export function createRooms(evaluate: Evaluate) {
         gesture,
         pointer,
         only,
+        seq: Number(message.id) || undefined,
       });
       send(ws, { type: 'plan', id: message.id, ...result });
     } catch (error: any) {

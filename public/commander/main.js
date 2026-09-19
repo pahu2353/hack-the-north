@@ -240,15 +240,24 @@ $('permsBtn').onclick = async () => {
   syncPerms();
 };
 
-// The card stays out of the way once both are running.
+// The card stays out of the way once both are running, and nothing can start without them:
+// you command the squad by voice and hand signal, so half the controls is not a game.
 function syncPerms() {
-  const on = voice.enabled && Boolean(gestures);
-  $('permsCard').hidden = on || !window.isSecureContext;
-  if (!on) {
+  const ready = playable();
+  $('permsCard').hidden = ready || !window.isSecureContext;
+  if (!ready) {
     const missing = [voice.enabled ? null : 'mic', gestures ? null : 'camera'].filter(Boolean);
-    setStatus('permsStatus', `Needed for voice orders and hand signals (${missing.join(' and ')}).`);
+    setStatus('permsStatus', `Needed to play (${missing.join(' and ')}).`);
   }
+  const blocked = !ready && window.isSecureContext;
+  for (const id of ['playBots', 'playOnline', 'botsScripted', 'botsOpenAI', 'createRoom']) $(id).disabled = blocked;
+  $('joinCode').disabled = blocked;
+  $('joinForm').querySelector('button').disabled = blocked;
+  $('menuNote').textContent = blocked ? 'Allow the mic and camera to play.' : '';
 }
+
+// Without a secure page the browser won't give us either, so don't lock someone out entirely.
+const playable = () => (voice.enabled && Boolean(gestures)) || !window.isSecureContext;
 
 // On later visits, turn back on whatever was wanted last time. The browser only reopens the
 // devices without a click because it already granted this page permission.
@@ -437,26 +446,114 @@ function updateResultActions() {
 
 // ---------- orders ----------
 
-async function issueCommand({ source, text, gesture }) {
+// Speaking takes seconds, so waiting for the finished sentence makes the squad feel slow.
+// Instead we interpret the partial transcript while you're still talking, apply it, and
+// reconcile when the final transcript arrives (identical text costs nothing extra).
+const SPECULATE_AFTER_MS = 120; // the partial must stop changing for this long
+const SPECULATE_MIN_WORDS = 3;
+let guess = null; // { text, entry, promise, applied, stale, seq }
+let speculateTimer = null;
+let speculateEnabled = true;
+let commandSeq = 0;
+// One record per spoken utterance, for measuring how quickly the squad reacts.
+let utterance = null;
+const utterances = [];
+const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() === b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+function onInterimTranscript(text) {
+  $('caption').textContent = text;
+  if (!text.trim()) return;
+  utterance ??= { heardAt: performance.now(), actedAt: 0 };
+  clearTimeout(speculateTimer);
+  if (!speculateEnabled || !canCommand()) return;
+  if (text.trim().split(/\s+/).length < SPECULATE_MIN_WORDS) return;
+  if (guess && sameWords(guess.text, text)) return;
+  speculateTimer = setTimeout(() => speculate(text), SPECULATE_AFTER_MS);
+}
+
+function speculate(text) {
+  if (guess?.promise) return; // one guess in flight at a time
+  const entry = guess?.entry ?? addLogEntry('voice', text, null, true);
+  const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq };
+  guess = g;
+  setEntryText(entry, text, '⚡');
+  g.promise = interpret({ text, seq: g.seq, only: commandTarget() })
+    .then(result => {
+      if (result.stale) return;
+      renderPlan(entry, result, true);
+      g.applied = !result.ignored;
+      // the first moment the squad moved on this utterance
+      if (g.applied && !g.stale && utterance) utterance.actedAt ||= performance.now();
+    })
+    .catch(error => showEntryError(entry, error))
+    .finally(() => { g.promise = null; });
+}
+
+// The finished sentence. If we already acted on exactly these words, keep those orders.
+async function onFinalTranscript(text) {
+  clearTimeout(speculateTimer);
+  $('caption').textContent = text;
+  const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
+  utterance = null;
+  u.finalAt = performance.now();
+  const g = guess;
+  guess = null;
+  let reused = false;
+  if (g && sameWords(g.text, text)) {
+    await g.promise; // nearly always already resolved
+    reused = g.applied;
+  }
+  if (reused) {
+    setEntryText(g.entry, text, '');
+  } else if (g) {
+    g.stale = true; // its orders must not overwrite the finished sentence's
+    setEntryText(g.entry, text, '');
+    await runCommand(g.entry, { text, seq: ++commandSeq });
+  } else {
+    await issueCommand({ source: 'voice', text, seq: ++commandSeq });
+  }
+  u.settledAt = performance.now();
+  utterances.push({
+    text,
+    speculated: reused || Boolean(u.actedAt),
+    reusedGuess: reused,
+    // how long after we first heard you the squad moved, and when the final orders landed
+    actedAfterMs: Math.round((u.actedAt || u.settledAt) - u.heardAt),
+    settledAfterMs: Math.round(u.settledAt - u.heardAt),
+    afterYouStopMs: Math.round(u.settledAt - u.finalAt),
+  });
+  if (utterances.length > 20) utterances.shift();
+}
+
+const canCommand = () => matchActive();
+// First-person is one agent's view, so every order given there is for them alone.
+const commandTarget = () => (is3d ? watched()?.name : undefined);
+const interpret = request => (session.kind === 'bots'
+  ? brains.interpretCommand(game, session.team, request)
+  : sendCommand(request));
+
+async function issueCommand({ source, text, gesture, seq }) {
   if (!text?.trim()) return;
   if (!session || !view || view.result) {
     setStatus('micStatus', 'Start a match first.', 'error');
     return;
   }
-  // First-person is one agent's view, so every order given there is for them alone.
-  const only = is3d ? watched()?.name : undefined;
-  const entry = addLogEntry(source, only ? `→ ${only}: ${text}` : text, gesture);
+  const only = commandTarget();
+  await runCommand(addLogEntry(source, only ? `→ ${only}: ${text}` : text, gesture), { text, gesture, seq, only });
+}
+
+async function runCommand(entry, { text, gesture, seq = ++commandSeq, only = commandTarget() }) {
   const p = activePointer();
-  const request = { text, gesture, pointer: p && { x: p.x, y: p.y }, only };
   try {
-    const result = session.kind === 'bots'
-      ? await brains.interpretCommand(game, session.team, request)
-      : await sendCommand(request);
-    renderPlan(entry, result);
+    renderPlan(entry, await interpret({ text, gesture, pointer: p && { x: p.x, y: p.y }, only, seq }));
   } catch (error) {
-    entry.querySelector('.plan').replaceChildren();
-    entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
+    showEntryError(entry, error);
   }
+}
+
+function showEntryError(entry, error) {
+  entry.querySelector('.plan').replaceChildren();
+  entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
 }
 
 function sendCommand(request) {
@@ -472,9 +569,15 @@ function sendCommand(request) {
   });
 }
 
-function addLogEntry(source, text, gesture) {
+function setEntryText(entry, text, mark) {
+  const said = entry.querySelector('.said');
+  said.replaceChildren(el('span', { className: 'src', textContent: said.querySelector('.src').textContent }), text);
+  entry.classList.toggle('early', Boolean(mark));
+}
+
+function addLogEntry(source, text, gesture, early = false) {
   const icon = { voice: 'Voice', text: 'Typed', hand: 'Sign' }[source];
-  const entry = el('div', { className: 'entry' }, [
+  const entry = el('div', { className: `entry${early ? ' early' : ''}` }, [
     el('div', { className: 'said' }, [el('span', { className: 'src', textContent: icon }), text]),
     el('div', { className: 'plan', textContent: 'Jev is reading the order…' }),
     el('div', { className: 'meta' }),
@@ -485,8 +588,13 @@ function addLogEntry(source, text, gesture) {
   return entry;
 }
 
-function renderPlan(entry, { plan, latency, tokens, ignored, isOrder }) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, early = false) {
   const pct = v => `${Math.round(v * 100)}%`;
+  if (stale) {
+    entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
+    entry.classList.add('ignored');
+    return;
+  }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
       el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
@@ -509,7 +617,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder }) {
     ];
   });
   entry.querySelector('.plan').replaceChildren(...rows);
-  entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+  entry.querySelector('.meta').textContent = `${early ? 'acting early · ' : ''}Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
 }
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
@@ -793,11 +901,8 @@ function updateHud() {
 // ---------- inputs ----------
 
 const voice = createVoice({
-  onInterim: text => { $('caption').textContent = text; },
-  onFinal: text => {
-    $('caption').textContent = text;
-    issueCommand({ source: 'voice', text });
-  },
+  onInterim: onInterimTranscript,
+  onFinal: onFinalTranscript,
   onStatus: (text, kind) => setStatus('micStatus', text, kind),
   onLevel: level => { $('level').style.width = `${level * 100}%`; },
 });
@@ -1020,6 +1125,8 @@ window.commander = {
   get is3d() { return is3d; },
   setView,
   cycleAgent,
+  get utterances() { return [...utterances]; },
+  setSpeculative: on => { speculateEnabled = on; },
   point: (x, y) => { pointer = { x, y, at: performance.now() }; },
   voice,
 };

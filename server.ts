@@ -188,7 +188,7 @@ function relayVoice(client: WebSocket, keyterms: string[]) {
     interim_results: 'true',
     smart_format: 'true',
     // Hands-free orders: a 500 ms pause ends a sentence; 1 s of silence is the backstop.
-    endpointing: '500',
+    endpointing: '400',
     utterance_end_ms: '1000',
   });
   for (const term of keyterms.slice(0, 50)) params.append('keyterm', term);

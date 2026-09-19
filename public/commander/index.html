@@ -157,6 +157,8 @@
   .entry { background: var(--panel); border: 1px solid var(--border); padding: 8px; display: grid; gap: 4px; }
   .entry .said { font-weight: 600; }
   .entry.ignored { opacity: 0.55; }
+  .entry.early { border-color: var(--gold); }
+  .entry.early .said::after { content: ' ⚡'; }
   .entry.ignored .plan { grid-template-columns: 1fr; }
   .entry .src { color: var(--muted); font-weight: 400; margin-right: 4px; }
   .entry .meta { color: var(--muted); font-size: 11px; }
@@ -304,7 +306,7 @@
     <div class="overlay" id="overlay">
       <section id="screenMenu">
         <h2>Choose game mode</h2>
-        <p></p>
+        <p id="menuNote"></p>
         <div class="choices">
           <button id="playBots" class="primary big" type="button">Vs bots<small>Four scripted or AI defenders</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
