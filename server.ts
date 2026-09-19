@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -7,9 +8,13 @@ import {
   experimental_evaluate as evaluate,
   type Experimental_EvaluationQuestion as EvaluationQuestion,
 } from 'ai';
+import { createRooms } from './multiplayer.ts';
 
 const MODEL = 'typesafe-ai/jev';
 const PORT = Number(process.env.PORT ?? 3000);
+// Localhost only by default: this server spends your AI Gateway credits. Set HOST=0.0.0.0 to let
+// other machines on your network join multiplayer games.
+const HOST = process.env.HOST ?? '127.0.0.1';
 const MOCK = process.env.JEV_MOCK === '1';
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
@@ -32,6 +37,10 @@ const server = createServer(async (req, res) => {
     const { pathname } = new URL(req.url ?? '/', 'http://localhost');
     if (req.method === 'POST' && pathname === '/api/evaluate') {
       await handleEvaluate(req, res);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/api/info') {
+      sendJson(res, 200, { lan: lanUrls() });
       return;
     }
     if (req.method === 'GET' && pathname === '/commander') {
@@ -61,15 +70,7 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
 
   const started = performance.now();
   try {
-    const result = MOCK
-      ? await mockEvaluate(JSON.stringify(body.state), body.questions)
-      : await evaluate({
-          model: MODEL,
-          state: body.state as string,
-          questions: body.questions,
-          // No retries by default so failures (e.g. 429s) surface immediately; callers opt in (max 2).
-          maxRetries: Math.min(2, Math.max(0, Number(body.maxRetries) || 0)),
-        });
+    const result = await callJev(body.state, body.questions, body.maxRetries);
     sendJson(res, 200, {
       model: MODEL,
       mock: MOCK,
@@ -87,6 +88,32 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse) {
       rateLimit: pickRateLimitHeaders(error?.cause?.responseHeaders),
     });
   }
+}
+
+function callJev(state: unknown, questions: Record<string, EvaluationQuestion>, maxRetries?: number) {
+  if (MOCK) return mockEvaluate(JSON.stringify(state), questions);
+  return evaluate({
+    model: MODEL,
+    state: state as string,
+    questions,
+    // No retries by default so failures (e.g. 429s) surface immediately; callers opt in (max 2).
+    maxRetries: Math.min(2, Math.max(0, Number(maxRetries) || 0)),
+  });
+}
+
+// Multiplayer rooms call Jev directly (no HTTP hop) for both teams' brains.
+const rooms = createRooms(async (state, questions, maxRetries) => {
+  const started = performance.now();
+  const result = await callJev(state, questions, maxRetries);
+  return { answers: result.answers, usage: result.usage, latency: performance.now() - started };
+});
+
+function lanUrls() {
+  if (HOST !== '0.0.0.0') return [];
+  return Object.values(networkInterfaces())
+    .flat()
+    .filter(net => net && net.family === 'IPv4' && !net.internal)
+    .map(net => `http://${net!.address}:${PORT}`);
 }
 
 // Serves files under public/, reading on every request so edits show up without a restart.
@@ -110,11 +137,13 @@ async function serveStatic(pathname: string, res: ServerResponse) {
 const voiceServer = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
-  if (url.pathname !== '/api/voice') {
+  if (url.pathname === '/api/voice') {
+    voiceServer.handleUpgrade(req, socket, head, client => relayVoice(client, url.searchParams.getAll('keyterm')));
+  } else if (url.pathname === '/api/room') {
+    rooms.handleUpgrade(req, socket, head, url);
+  } else {
     socket.destroy();
-    return;
   }
-  voiceServer.handleUpgrade(req, socket, head, client => relayVoice(client, url.searchParams.getAll('keyterm')));
 });
 
 function relayVoice(client: WebSocket, keyterms: string[]) {
@@ -226,8 +255,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-// Bound to localhost only: this server spends your AI Gateway credits.
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, HOST, () => {
   console.log(`Jev visualizer → http://localhost:${PORT}${MOCK ? '  (mock mode)' : ''}`);
   console.log(`Jev Commander  → http://localhost:${PORT}/commander/`);
+  for (const url of lanUrls()) console.log(`On your network → ${url}/commander/  (anyone on this network can use your Jev credits)`);
 });

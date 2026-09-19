@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jev Commander</title>
+<title>Jev Commander (Legacy)</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎖️</text></svg>">
 <style>
   :root {
@@ -31,22 +31,15 @@
   button {
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer;
   }
-  button:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.25); }
-  button:disabled { opacity: 0.5; cursor: default; }
+  button:hover { border-color: rgba(255, 255, 255, 0.25); }
   button.primary { background: var(--squad); border-color: var(--squad); color: #051222; font-weight: 700; }
-  button.big { padding: 12px 18px; font-size: 15px; border-radius: 10px; }
-  button.link { background: none; border: 0; color: var(--muted); padding: 2px 4px; }
-  button.link:hover { color: var(--ink); }
-  button.toggle[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
-  button:focus-visible, input:focus-visible { outline: 2px solid var(--squad); outline-offset: 1px; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--squad); outline-offset: 1px; }
   kbd { font: 11px ui-monospace, monospace; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; }
 
   .topbar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .brand { font-weight: 800; letter-spacing: 0.02em; font-size: 15px; }
   .brand span { color: var(--squad); }
-  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); }
-  .badge.attack { border-color: var(--squad); color: var(--squad); }
-  .badge.defend { border-color: var(--gold); color: var(--gold); }
+  .topbar select { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; }
   .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; min-width: 52px; text-align: center; }
   .round-label { color: var(--ink-2); }
   .jev { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -57,39 +50,18 @@
   #map { width: 100%; height: 100%; display: block; cursor: crosshair; }
   .feed { position: absolute; top: 10px; right: 12px; display: grid; gap: 4px; justify-items: end; pointer-events: none; }
   .feed div { background: rgba(10, 12, 16, 0.8); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
-  .feed .own { border-left: 3px solid var(--squad); }
-  .feed .other { border-left: 3px solid var(--enemy); }
+  .feed .squad { border-left: 3px solid var(--squad); }
+  .feed .enemy { border-left: 3px solid var(--enemy); }
   .hint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px; pointer-events: none; }
-
   .overlay {
-    position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8, 10, 14, 0.82); backdrop-filter: blur(2px);
-    overflow: auto; padding: 16px;
+    position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8, 10, 14, 0.78); backdrop-filter: blur(2px);
   }
-  .overlay[hidden], .overlay section[hidden] { display: none; }
-  .overlay section { max-width: 540px; text-align: center; display: grid; gap: 14px; justify-items: center; }
+  .overlay[hidden] { display: none; }
+  .overlay .box { max-width: 520px; padding: 24px; text-align: center; display: grid; gap: 12px; }
   .overlay h2 { margin: 0; font-size: 26px; }
   .overlay p { margin: 0; color: var(--ink-2); }
   .overlay .win { color: var(--ok); }
   .overlay .lose { color: var(--enemy); }
-  .choices { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
-  .choices button { min-width: 180px; display: grid; gap: 2px; }
-  .choices small { font-size: 12px; font-weight: 400; opacity: 0.8; }
-  .join { display: flex; gap: 6px; }
-  .join input {
-    width: 150px; text-align: center; text-transform: uppercase; letter-spacing: 0.2em; font-weight: 700;
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
-  }
-  .code { font: 800 40px/1 ui-monospace, monospace; letter-spacing: 0.18em; color: var(--gold); }
-  .invite { display: flex; gap: 6px; width: min(460px, 100%); }
-  .invite input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--ink-2); }
-  .seats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: min(420px, 100%); }
-  .seat { border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: grid; gap: 2px; }
-  .seat b { font-size: 14px; }
-  .seat .who { color: var(--muted); }
-  .seat.filled .who { color: var(--ok); }
-  .note { font-size: 12px; color: var(--muted); }
-  .overlay .status { min-height: 18px; }
-  .overlay .status.error { color: var(--enemy); }
 
   .side { border-left: 1px solid var(--border); display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; }
   .card { padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; min-height: 0; }
@@ -111,8 +83,8 @@
   .ptt.live { border-color: var(--enemy); color: #fff; }
   .ptt .level { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--enemy); width: 0; transition: width 80ms; }
   .caption { min-height: 20px; color: var(--gold); font-style: italic; }
-  form.order { display: flex; gap: 6px; }
-  form.order input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  form { display: flex; gap: 6px; }
+  form input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
 
   .log { overflow: auto; padding-right: 4px; display: grid; gap: 8px; align-content: start; }
   .entry { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; gap: 4px; }
@@ -151,12 +123,14 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">Jev <span>Commander</span></div>
-  <span class="badge" id="teamBadge" hidden></span>
+  <div class="brand">Jev <span>Commander</span> · Legacy</div>
+  <select id="mode" aria-label="Scenario">
+    <option value="titan">Titan Siege: Commander Erwin</option>
+  </select>
+  <button id="restart" type="button">Restart</button>
   <div class="clock" id="clock">–</div>
   <div class="round-label" id="roundLabel"></div>
-  <div class="jev" id="jevStats"></div>
-  <button id="menuBtn" type="button">Menu</button>
+  <div class="jev" id="jevStats">Jev idle</div>
 </header>
 
 <main class="layout">
@@ -164,54 +138,12 @@
     <canvas id="map" aria-label="Battle map"></canvas>
     <div class="feed" id="feed"></div>
     <div class="hint">Click the map (or point at the camera) to mark a spot, then say “push there”.</div>
-
     <div class="overlay" id="overlay">
-      <section id="screenMenu">
-        <h2>Jev Commander: Spike Rush</h2>
-        <p>Command four agents with your voice, hand signals and typed orders. Jev turns each order into a plan for every agent and makes their split-second calls in fights.</p>
-        <div class="choices">
-          <button id="playBots" class="primary big" type="button">🤖 Vs Bots<small>Attack four defender bots</small></button>
-          <button id="playOnline" class="big" type="button">🌐 Multiplayer<small>Command against another player</small></button>
-        </div>
-        <button id="toggle3d" class="toggle" type="button" aria-pressed="false" title="3D view isn't built yet">3D: Off</button>
-      </section>
-
-      <section id="screenOnline" hidden>
-        <h2>Multiplayer</h2>
-        <p>One commander attacks with the spike, the other defends. Create a game and send the invite, or join with a code.</p>
-        <button id="createRoom" class="primary big" type="button">Create game</button>
-        <form class="join" id="joinForm">
-          <input id="joinCode" maxlength="5" autocomplete="off" spellcheck="false" placeholder="CODE" aria-label="Invite code">
-          <button type="submit">Join</button>
-        </form>
-        <div class="status" id="onlineStatus"></div>
-        <button id="onlineBack" class="link" type="button">← Back</button>
-      </section>
-
-      <section id="screenLobby" hidden>
-        <p id="lobbyIntro">Share this code or link with your opponent:</p>
-        <div class="code" id="lobbyCode">·····</div>
-        <div class="invite">
-          <input id="inviteLink" readonly aria-label="Invite link">
-          <button id="copyInvite" type="button">Copy link</button>
-        </div>
-        <div class="note" id="inviteNote"></div>
-        <div class="seats">
-          <div class="seat" id="seatAttack"><b>Attackers</b><span class="who"></span></div>
-          <div class="seat" id="seatDefend"><b>Defenders</b><span class="who"></span></div>
-        </div>
-        <button id="startMatch" class="primary big" type="button" disabled>Start match</button>
-        <div class="status" id="lobbyStatus"></div>
-        <button id="lobbyLeave" class="link" type="button">Leave game</button>
-      </section>
-
-      <section id="screenResult" hidden>
-        <h2 id="resultTitle">Victory</h2>
-        <p id="resultText"></p>
-        <button id="again" class="primary big" type="button">Play again</button>
-        <div class="status" id="resultStatus"></div>
-        <button id="resultMenu" class="link" type="button">Main menu</button>
-      </section>
+      <div class="box">
+        <h2 id="overlayTitle">Jev Commander</h2>
+        <p id="overlayText"></p>
+        <div><button id="start" class="primary" type="button">Start</button></div>
+      </div>
     </div>
   </section>
 
@@ -231,8 +163,8 @@
       <div class="card-head">Voice <button id="micBtn" type="button">Enable mic</button></div>
       <button id="ptt" class="ptt" type="button">🎙 Hold <kbd>V</kbd> to talk<span class="level" id="level"></span></button>
       <div class="caption" id="caption"></div>
-      <form class="order" id="textForm">
-        <input id="textInput" autocomplete="off" placeholder="Or type an order">
+      <form id="textForm">
+        <input id="textInput" autocomplete="off" placeholder="Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”">
         <button type="submit">Send</button>
       </form>
       <div class="status" id="micStatus"></div>

@@ -1,17 +1,16 @@
 // Jev brains. Two layers, both plain typed questions against a text/JSON state:
-//   1. interpretCommand: one call turns a commander order (voice, text, or hand signal)
-//      into an order + target location for each squad member.
-//   2. think: every squad member runs its own decision loop (like Jev playing Doom):
-//      its local situation in, a choice of action (and who to target) out, several times a second.
-import { SQUADS, aliveSquad, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
-import { angleDiff, angleTo, dist, zoneAt, zoneByName } from './world.js';
+//   1. interpretCommand: one call turns a commander's order (voice, text, or hand signal)
+//      into an order + target location for each of their agents.
+//   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
+//      its local situation in, a choice of action (and who to shoot) out, about twice a second.
+// Works for either team, in the browser (bot games) or on the server (multiplayer).
+import { aliveTeam, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
+import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
-// Until Jev's first answer arrives after contact starts, agents default to this.
-const CONTACT_DEFAULT = { tactical: 'fight', titan: 'flank' };
 
 const ORDERS = {
-  tactical: {
+  attack: {
     push: 'go to / rush / attack / take / move to the location',
     hold: 'hold / defend / watch / stay at the location',
     flank: 'take a side route to hit enemies from an unexpected angle',
@@ -19,43 +18,41 @@ const ORDERS = {
     regroup: 'group up / stack together with the squad',
     plant: 'plant the spike (only when told to plant)',
   },
-  titan: {
-    attack: 'hunt / kill / cut down titans at the location',
-    hold: 'hold / defend / stay at the location',
-    flank: 'circle around to hit titans from behind',
-    retreat: 'fall back toward the gate',
+  defend: {
+    push: 'go to / rush / retake / attack / move to the location',
+    hold: 'hold / defend / watch / stay at the location',
+    flank: 'take a side route to hit enemies from an unexpected angle',
+    retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
-    protect: 'defend the gate',
+    defuse: 'go defuse the planted spike (only when told to defuse)',
   },
 };
 
-const PRIORITIES = {
-  any: 'no particular titan type',
-  small: 'small titans',
-  big: 'big titans',
-  abnormal: 'abnormal titans',
-};
+// Calls Jev through the local server. The server passes its own evaluate that calls Jev directly.
+async function evaluateOverHttp(state, questions, maxRetries) {
+  const started = performance.now();
+  const res = await fetch('/api/evaluate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ state, questions, maxRetries }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${data.error}`);
+  return { ...data, latency: performance.now() - started };
+}
 
-export function createBrains() {
+export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS } = {}) {
   const stats = { calls: 0, ok: 0, failed: 0, lastError: '', latencies: [], recent: [] };
 
-  async function evaluate(state, questions, maxRetries = 0) {
-    const started = performance.now();
+  async function ask(state, questions, maxRetries = 0) {
     stats.calls++;
     stats.recent.push(Date.now());
     try {
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ state, questions, maxRetries }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${data.error}`);
+      const result = await evaluate(state, questions, maxRetries);
       stats.ok++;
-      const latency = performance.now() - started;
-      stats.latencies.push(latency);
+      stats.latencies.push(result.latency);
       if (stats.latencies.length > 50) stats.latencies.shift();
-      return { ...data, latency };
+      return result;
     } catch (error) {
       stats.failed++;
       stats.lastError = error.message;
@@ -65,44 +62,39 @@ export function createBrains() {
 
   // ---------- 1. commander orders ----------
 
-  async function interpretCommand(game, { text, gesture }) {
-    const names = aliveSquad(game).map(u => u.name);
-    const pointer = game.pointer && performance.now() - game.pointer.at < 8000 ? game.pointer : null;
+  async function interpretCommand(game, team, { text, gesture, pointer }) {
+    const squad = aliveTeam(game, team);
+    if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     const locations = Object.fromEntries(game.map.zones.map(z => [z.name, z.description]));
     if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone})`;
     locations.current = 'stay where they are now';
 
     const questions = {};
-    for (const name of names) {
+    for (const { name } of squad) {
       const key = name.toLowerCase();
       questions[`${key}_addressed`] = {
         type: 'boolean',
         // Tested against alternatives: this phrasing got 24/24 addressee checks right.
         instructions: `Does this order apply to ${name}? It does if ${name}'s name appears in it, or if it names no one (orders without names are for the whole squad).`,
       };
-      questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[game.mode] };
+      questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[team] };
       questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
-      if (game.mode === 'titan') {
-        questions[`${key}_priority`] = { type: 'choice', instructions: `Which titans should ${name} go after first?`, criteria: PRIORITIES };
-      }
     }
     const state = {
       commander_says: text,
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
-      squad: Object.fromEntries(aliveSquad(game).map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
+      squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
     };
 
-    const result = await evaluate(state, questions, 2);
-    const plan = names.map(name => {
-      const key = name.toLowerCase();
+    const result = await ask(state, questions, 2);
+    const plan = squad.map(unit => {
+      const key = unit.name.toLowerCase();
       const a = result.answers;
       const addressed = a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
-      const priority = a[`${key}_priority`];
-      const unit = game.units.find(u => u.name === name);
       const applied = addressed >= 0.5 && unit.alive;
       if (applied) {
         let point;
@@ -116,18 +108,17 @@ export function createBrains() {
         } else {
           point = zoneByName(game.map, target.choice).center;
         }
-        setOrder(game, unit, { type: order.choice, zone, point, priority: priority?.choice ?? 'any' });
+        setOrder(game, unit, { type: order.choice, zone, point });
         unit.action = order.choice === 'hold' ? 'hold' : 'advance';
       }
       return {
-        name,
+        name: unit.name,
         addressed,
         applied,
         order: order.choice,
         orderP: order.probabilities?.[order.choice] ?? 1,
         target: target.choice === 'pointed' ? `☝ ${pointerZone}` : target.choice,
         targetP: target.probabilities?.[target.choice] ?? 1,
-        priority: priority?.choice,
       };
     });
     return { plan, latency: result.latency, tokens: result.usage?.inputTokens };
@@ -135,12 +126,13 @@ export function createBrains() {
 
   // ---------- 2. per-agent decision loops ----------
 
-  function update(game) {
+  function update(game, team) {
     const now = performance.now();
-    aliveSquad(game).forEach((u, i) => {
-      u.brain ??= { pending: false, nextAt: now + (i * THINK_MS) / 4, calls: 0, failed: 0 };
+    aliveTeam(game, team).forEach((u, i) => {
+      if (u.kind !== 'agent') return;
+      u.brain ??= { pending: false, nextAt: now + (i * thinkMs) / 4 };
       if (u.brain.pending) return;
-      const tick = game.mode === 'tactical' ? tacticalTick(game, u) : titanTick(game, u);
+      const tick = agentTick(game, u);
       // Nothing to decide (no contact): follow the commander's order without a Jev call.
       if (!tick) {
         if (!u.decision?.local) u.decision = { action: 'advance', probabilities: { advance: 1 }, local: true };
@@ -148,68 +140,65 @@ export function createBrains() {
         return;
       }
       if (u.decision?.local) {
-        u.action = CONTACT_DEFAULT[game.mode];
+        u.action = 'fight'; // until Jev's first answer after contact arrives
         u.decision = null;
-        u.brain.nextAt = now; // think right away when contact starts
+        u.brain.nextAt = now;
       }
       if (now < u.brain.nextAt) return;
       u.brain.pending = true;
-      u.brain.nextAt = now + THINK_MS;
+      u.brain.nextAt = now + thinkMs;
       const { state, questions, targets } = tick;
-      u.brain.calls++;
-      evaluate(state, questions)
+      ask(state, questions)
         .then(({ answers, latency }) => {
           if (!u.alive || game.result) return;
           const { action, target } = answers;
           if (action.choice !== u.action) u.coverPoint = null;
           u.action = action.choice;
           if (target) u.focusId = targets[target.choice] ?? null;
-          else if (targets && Object.keys(targets).length === 1) u.focusId = Object.values(targets)[0];
+          else if (Object.keys(targets).length === 1) u.focusId = Object.values(targets)[0];
           u.decision = {
             action: action.choice,
             probabilities: action.probabilities ?? { [action.choice]: 1 },
             target: target?.choice ?? null,
             latency,
-            at: game.time,
           };
         })
-        .catch(() => {
-          u.brain.failed++;
-        })
+        .catch(() => {})
         .finally(() => {
           u.brain.pending = false;
         });
     });
   }
 
-  function tacticalTick(game, u) {
-    const objective = orderDestination(game, u);
-    const toObjective = Math.round(dist(u, objective));
+  function agentTick(game, u) {
     const enemies = u.visible.slice(0, 4).map(e => ({
       id: e.name,
       distance_m: Math.round(dist(u, e)),
       hp: Math.round(e.hp),
       shooting_at_you: e.targetId === u.id && game.time - e.lastShotAt < 1,
     }));
-    const mates = aliveSquad(game).filter(m => m !== u);
+    const mates = aliveTeam(game, u.team).filter(m => m !== u);
     const fightingMate = mates.filter(m => m.visible.length).sort((a, b) => dist(u, a) - dist(u, b))[0];
-    const spike = game.spike;
+    if (!enemies.length && !fightingMate) return null;
+
+    const objective = orderDestination(game, u);
+    const toObjective = Math.round(dist(u, objective));
     const state = {
       you: {
         name: u.name,
+        side: u.team === 'attack' ? 'attacker' : 'defender',
         hp: Math.round(u.hp),
         location: zoneAt(game.map, u).name,
         moving: u.moving,
-        carrying_spike: spike.state === 'carried' && spike.carrierId === u.id,
+        ...(u.team === 'attack' && { carrying_spike: game.spike.state === 'carried' && game.spike.carrierId === u.id }),
       },
       commander_order: orderLabel(u),
       meters_to_ordered_position: toObjective,
       enemies_in_sight: enemies,
       teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
-      spike: spike.state === 'planted' ? `planted on ${spike.site}, ${Math.round(spike.timer)}s to detonation — defend it` : spike.state,
+      spike: spikeBriefing(game, u.team),
     };
-    if (!enemies.length && !fightingMate) return null;
-    // Each option says when it applies: Jev follows these conditions closely (tested on labelled situations).
+    // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled situations).
     const actions = {
       advance: `keep moving to your ordered position (${u.order.zone}, ${toObjective}m away): when no enemy is in sight`,
       hold: 'stay put and watch this angle: when no enemy is in sight but one could appear',
@@ -231,52 +220,6 @@ export function createBrains() {
     return { state, questions, targets };
   }
 
-  function titanTick(game, u) {
-    const objective = orderDestination(game, u);
-    const toObjective = Math.round(dist(u, objective));
-    const titans = u.visible.slice(0, 4).map(t => ({
-      id: t.name,
-      type: t.class,
-      doing: { walking: 'walking', windup: 'winding up a grab', recovering: 'recovering from a grab: frozen and open' }[t.status],
-      distance_m: Math.round(dist(u, t) - t.r),
-      hp: Math.round(t.hp),
-      facing_you: angleDiff(t.facing, angleTo(t, u)) < 1.2,
-      you_are_behind_it: angleDiff(t.facing, angleTo(t, u)) > 1.9,
-      within_its_reach: dist(u, t) - t.r <= t.reach + 1,
-    }));
-    const gateThreat = game.units.some(t => t.alive && t.kind === 'titan' && t.y > game.gate.y - 8);
-    const state = {
-      you: { name: u.name, hp: Math.round(u.hp), location: zoneAt(game.map, u).name },
-      commander_order: orderLabel(u),
-      commander_priority: u.order.priority === 'any' ? 'none' : `${u.order.priority} titans first`,
-      meters_to_ordered_position: toObjective,
-      titans_nearby: titans,
-      gate: `${Math.round(game.gate.hp)} / ${game.gate.maxHp} HP${gateThreat ? ', titans are at the gate' : ''}`,
-      squadmates: aliveSquad(game).filter(m => m !== u).map(m => ({ name: m.name, hp: Math.round(m.hp), distance_m: Math.round(dist(u, m)) })),
-    };
-    if (!titans.length) return null;
-    // Each option says when it applies: Jev follows these conditions closely (8/8 on labelled situations).
-    const actions = {
-      strike: 'cut the titan\'s nape now: only when you are behind it or it is frozen recovering from a grab',
-      flank: 'circle around behind the titan out of its reach: when it is facing you or walking toward you and your HP is above 40',
-      evade: 'retreat out of reach: when your HP is below 40, or two or more titans are within 6m of you',
-    };
-    if (toObjective > 5) actions.advance = `ignore the titans and move to your ordered position (${u.order.zone}, ${toObjective}m away): only when no titan is close to you`;
-    if (gateThreat) actions.protect = 'rush back to defend the gate: when titans are attacking it and you are far from it';
-    const questions = {
-      action: { type: 'choice', instructions: `You are ${u.name} of the Scout Regiment. What should you do right now?`, criteria: actions },
-    };
-    if (titans.length >= 2) {
-      questions.target = {
-        type: 'choice',
-        instructions: 'Which titan should you go after?',
-        criteria: Object.fromEntries(titans.map(t => [t.id, `${t.type} titan, ${t.distance_m}m away, ${t.hp} HP, ${t.doing}${t.you_are_behind_it ? ', you are behind it' : t.facing_you ? ', facing you' : ''}`])),
-      };
-    }
-    const targets = Object.fromEntries(u.visible.slice(0, 4).map(t => [t.name, t.id]));
-    return { state, questions, targets };
-  }
-
   function summary() {
     const cutoff = Date.now() - 60_000;
     stats.recent = stats.recent.filter(t => t > cutoff);
@@ -290,8 +233,17 @@ export function createBrains() {
     };
   }
 
-  return { interpretCommand, update, summary, stats };
+  return { interpretCommand, update, summary };
 }
 
-// For the spike carrier's name in hand-signal orders.
-export const spikeCarrierName = game => unitById(game, game.spike?.carrierId)?.name;
+function spikeBriefing(game, team) {
+  const s = game.spike;
+  if (s.state === 'planted') {
+    return team === 'attack'
+      ? `planted on ${s.site}, ${Math.round(s.timer)}s to detonation: protect it`
+      : `planted on ${s.site}, ${Math.round(s.timer)}s to detonation: defuse it (stand on it with no enemy in sight)`;
+  }
+  return team === 'attack' ? `${s.state}: get it planted on a site` : 'not planted yet: stop them from planting';
+}
+
+export const spikeCarrierName = game => unitById(game, game.spike.carrierId)?.name;
