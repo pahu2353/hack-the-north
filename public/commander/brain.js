@@ -4,7 +4,7 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, grenadeSpot, incomingGrenade, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
+import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -176,6 +176,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       if (u.kind !== 'agent') return;
       u.brain ??= { pending: false, nextAt: now + (i * thinkMs) / 4 };
       if (u.brain.pending) return;
+      // A fresh order is carried out, not debated: the simulation is already doing exactly
+      // what the commander said. The exception is a grenade about to go off, where standing
+      // there to obey would just get them killed.
+      if (obeying(game, u) && !incomingGrenade(game, u)) {
+        u.decision = { action: u.action, probabilities: { [u.action]: 1 }, obeying: true };
+        u.brain.nextAt = now;
+        return;
+      }
       const tick = agentTick(game, u);
       // Nothing to decide (no contact): follow the commander's order without a Jev call.
       if (!tick) {
@@ -247,22 +255,29 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       ...(clump && { enemies_bunched_together: `${clump.caught} of them are standing within 5m of each other, in grenade range` }),
       ...(bomb && { grenade_about_to_go_off: `${Math.max(0, bomb.explodeAt - game.time).toFixed(1)}s, ${Math.round(Math.hypot(bomb.x - u.x, bomb.y - u.y))}m away` }),
     };
-    // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled situations).
+    // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled
+    // situations). The one that carries out the commander's order says so.
+    const ordered = { hold: 'hold', grenade: 'nade' }[u.order.type] ?? 'advance';
+    const carriesOut = name => (name === ordered ? 'carry out your order: ' : '');
     const actions = {
-      advance: `keep moving to your ordered position (${u.order.zone}, ${toObjective}m away): when no enemy is in sight`,
-      hold: 'stay put and watch this angle: when no enemy is in sight but one could appear',
-      cover: 'break line of sight behind cover: when you are hurt and outnumbered',
+      advance: `${carriesOut('advance')}keep moving to your ordered position (${u.order.zone}, ${toObjective}m away)`,
+      hold: `${carriesOut('hold')}stay put and watch this angle`,
+      cover: 'break line of sight behind cover: only when you are hurt and outnumbered, and it puts your order on hold',
     };
     if (enemies.length) {
       actions.fight = clump?.caught >= 2
         ? 'stop and shoot one of them: only hurts the one you aim at'
-        : 'stop and shoot the enemy: whenever an enemy is in sight (standing still makes you far more accurate)';
+        : 'stop and shoot the enemy in sight: standing still makes you far more accurate, but it puts your order on hold';
     }
-    if (clump?.caught >= 2 && !bomb) actions.nade = `throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
+    if (clump?.caught >= 2 && !bomb) actions.nade = `${carriesOut('nade')}throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
     if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
     const questions = {
-      action: { type: 'choice', instructions: `You are ${u.name}. What should you do right now?`, criteria: actions },
+      action: {
+        type: 'choice',
+        instructions: `You are ${u.name}. Your commander ordered you to ${orderLabel(u)}, and that order outranks your own judgement: carry it out unless doing so right now would get you killed or you cannot carry it out from here. What should you do?`,
+        criteria: actions,
+      },
     };
     if (enemies.length >= 2) {
       questions.target = {

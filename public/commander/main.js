@@ -925,8 +925,10 @@ function updateHud() {
     card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
     card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
     card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}${u.grenades ? ' · 💣' : ''}` : '';
-    card.querySelector('.brain').textContent = !u.alive ? '' : !u.decision ? '…'
-      : u.decision.local ? 'no contact' : `Jev ${Math.round(u.decision.latency)} ms`;
+    card.querySelector('.brain').textContent = !u.alive ? ''
+      : u.decision?.obeying ? 'following your order'
+      : !u.decision ? 'thinking…'
+      : u.decision.local ? 'no contact: following order' : `Jev ${Math.round(u.decision.latency)} ms`;
     // Just the chosen action's confidence: the full spread was more noise than signal.
     const [action, p] = (u.alive ? Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] : null) ?? [];
     card.querySelector('.probs').replaceChildren(...(action ? [

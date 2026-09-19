@@ -4,8 +4,8 @@ import {
   aliveTeam, createGame, grenadeSpot, incomingGrenade, setOrder, stepGame, teamUnits, teamView, throwGrenade,
 } from '../public/commander/sim.js';
 
-const RADIUS = 5;
-const FUSE = 1.2;
+const RADIUS = 6;
+const FUSE = 1.5;
 const step = (game, seconds) => {
   for (let t = 0; t < seconds; t += 1 / 60) stepGame(game, 1 / 60);
 };
@@ -39,7 +39,7 @@ test('a grenade hurts everyone standing together, hardest at the centre', () => 
   step(game, 2.5);
 
   const [centre, near, edge, away] = teamUnits(game, 'defend');
-  assert.ok(centre.hp < 45, `centre took the worst of it (hp ${centre.hp})`);
+  assert.ok(centre.hp < 25, `centre took the worst of it (hp ${centre.hp})`);
   assert.ok(near.hp > centre.hp && near.hp < 100, `1.5m away took less (hp ${near.hp})`);
   assert.ok(edge.hp > near.hp && edge.hp < 100, `4m away took least (hp ${edge.hp})`);
   assert.equal(away.hp, 100, 'someone 22m away is untouched');

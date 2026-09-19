@@ -20,18 +20,23 @@ export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd'];
 export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37'];
 
-const RIFLE = { range: 45, damage: 35, interval: 0.22, accuracy: 0.6 };
+// Rifles are deliberately weak: four hits to kill, and misses are common. Fights last long
+// enough that positioning and grenades decide them rather than whoever fires first.
+export const RIFLE = { range: 45, damage: 28, interval: 0.22, accuracy: 0.55 };
 const SIGHT = 45;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
 export const ROUND_SECONDS = 100;
 const SPIKE_SECONDS = 35;
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
+// A fresh order is carried out first and argued with later: for this long the agent does what
+// it was told, and Jev isn't asked. The one exception is diving away from a live grenade.
+const OBEY_SECONDS = 3;
 // Grenades are the answer to a squad that just walks around as one clump: one throw reaches
 // everyone standing together. The fuse is long enough that Jev can decide to scatter in time.
 export const GRENADE = {
-  carried: 1, range: 26, radius: 5, centreDamage: 72, edgeDamage: 20,
-  speed: 17, fuse: 1.2, cooldown: 1.5, clusterGap: 5,
+  carried: 1, range: 26, radius: 6, centreDamage: 85, edgeDamage: 30,
+  speed: 17, fuse: 1.5, cooldown: 1.5, clusterGap: 5,
 };
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
@@ -149,10 +154,15 @@ export function setOrder(game, u, order) {
     if (detour < dist(u, o.point) * maxDetour) o.via = viaZone.center;
   }
   u.order = o;
+  u.obeyUntil = game.time + OBEY_SECONDS;
   u.path = [];
   u.pathGoal = null;
   u.coverPoint = null;
 }
+
+// What carrying out the current order looks like, as an action.
+const ORDER_ACTION = { hold: 'hold', grenade: 'nade' };
+export const obeying = (game, u) => game.time < (u.obeyUntil ?? 0);
 
 export function orderLabel(u) {
   const { type, zone } = u.order;
@@ -217,6 +227,11 @@ function updateVision(game) {
 
 function controlAgent(game, u, dt) {
   const focus = u.visible.find(e => e.id === u.focusId) ?? u.visible[0] ?? null;
+  // Your order comes first: while it is fresh the agent simply carries it out. A grenade
+  // about to go off is the one thing worth asking Jev about, so that decision is left alone.
+  if (obeying(game, u) && !incomingGrenade(game, u)) {
+    u.action = ORDER_ACTION[u.order.type] ?? 'advance';
+  }
   const objective = orderDestination(game, u);
   let dest = null;
   switch (u.action) {
@@ -235,8 +250,11 @@ function controlAgent(game, u, dt) {
     case 'nade': {
       const target = u.order.type === 'grenade' ? { spot: u.order.point } : grenadeSpot(game, u);
       if (!target) dest = objective;
-      else if (throwGrenade(game, u, target.spot)) dest = null;
-      else dest = target.spot; // out of range or no line: walk it in
+      else if (throwGrenade(game, u, target.spot)) {
+        dest = null;
+        // The order was "grenade that spot", and it is done: hold here instead of re-throwing.
+        if (u.order.type === 'grenade') setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
+      } else dest = target.spot; // out of range or no line: walk it in
       break;
     }
     case 'scatter': {
@@ -271,9 +289,12 @@ function controlAgent(game, u, dt) {
   if (focus) shoot(game, u, focus);
 }
 
-// Somewhere clear of a blast, in the walkable direction away from it.
+// Somewhere clear of a blast, in the walkable direction away from it. A grenade landing right
+// at your feet has no "away", so run from the squad instead, which also breaks up the clump.
 function evadePoint(game, u, from) {
-  const away = angleTo(from, u);
+  const squad = aliveTeam(game, u.team).filter(m => m !== u);
+  const reference = dist(from, u) > 0.5 || !squad.length ? from : average(squad);
+  const away = dist(reference, u) > 0.1 ? angleTo(reference, u) : Math.random() * Math.PI * 2;
   const g = gridFor(game);
   for (const angle of [0, 0.6, -0.6, 1.2, -1.2, 2]) {
     const p = { x: u.x + Math.cos(away + angle) * (GRENADE.radius + 2.5), y: u.y + Math.sin(away + angle) * (GRENADE.radius + 2.5) };
@@ -744,6 +765,7 @@ function ownUnit(game, u) {
     id: u.id, team: u.team, name: u.name, kind: u.kind, x: u.x, y: u.y, facing: u.facing,
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
     hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
+    obeying: obeying(game, u),
     firing: game.time - u.lastShotAt < 0.08,
     orderLabel: u.order ? orderLabel(u) : null,
     dest: u.alive && u.order ? orderDestination(game, u) : null,
