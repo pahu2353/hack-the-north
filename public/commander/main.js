@@ -661,6 +661,18 @@ function updateOpponentHud() {
   }
 }
 
+// Kill-feed lines name agents, so each name is drawn in that agent's own colour.
+function colorizeNames(text) {
+  const colors = new Map();
+  for (const u of [...(view.units ?? []), ...(view.roster ?? [])]) if (u.color) colors.set(u.name, u.color);
+  const names = [...colors.keys()].sort((a, b) => b.length - a.length);
+  if (!names.length) return [text];
+  const parts = text.split(new RegExp(`\\b(${names.join('|')})\\b`, 'g'));
+  return parts.map(part => (colors.has(part)
+    ? el('b', { textContent: part, style: `color:${colors.get(part)}` })
+    : part));
+}
+
 // Who an agent is shooting at, when Jev picked a target.
 function enemyName(u) {
   const target = u.decision?.target;
@@ -707,7 +719,8 @@ function updateHud() {
     ] : []));
   });
 
-  $('feed').replaceChildren(...view.feed.map(f => el('div', { className: f.team === session.team ? 'own' : 'other', textContent: f.text })));
+  $('feed').replaceChildren(...view.feed.map(f =>
+    el('div', { className: f.team === session.team ? 'own' : 'other' }, colorizeNames(f.text))));
 
   updateScorebar();
   const watching = watched();
