@@ -6,7 +6,7 @@ import { createOpponentCommander } from './opponent.js';
 import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { createRenderer } from './render.js';
-import { ENEMY_COLORS, OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
+import { OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
@@ -516,44 +516,40 @@ function buildScorebar() {
     }, [
       el('span', { className: 'face', textContent: /^E\d/.test(u.name) ? u.name.slice(1) : u.name[0] }),
       el('span', { className: 'bar' }, [el('i')]),
-      ...(onclick ? [el('span', { className: 'who', textContent: u.name })] : []),
+      el('span', { className: 'who', textContent: u.name }),
     ]);
     node.dataset.id = u.id;
     return node;
   };
   const own = ownUnits();
-  // Defender bots are E1–E4; a second commander's agents have the defend squad's names.
-  const enemies = session.kind === 'bots'
-    ? ['E1', 'E2', 'E3', 'E4']
-    : TEAMS[otherTeamOf(session.team)].names;
   scorebarKey = own.map(u => u.id).join(',');
   $('squadBar').replaceChildren(...own.map(u => portrait(u, () => watchAgent(u))));
-  // Their agents aren't in your view until spotted, so the bar keeps fixed slots for them.
-  $('enemyBar').replaceChildren(...enemies.map((name, i) => el('button', {
-    type: 'button', className: 'portrait', title: name, style: `--agent:${ENEMY_COLORS[i]}`,
-  }, [
-    el('span', { className: 'face', textContent: /^E\d/.test(name) ? name.slice(1) : name[0] }),
-    el('span', { className: 'bar' }, [el('i')]),
-  ])));
+  // The whole enemy roster, named and coloured from the start; what changes is how they look.
+  $('enemyBar').replaceChildren(...(view.roster ?? []).map(u => portrait(u)));
 }
 
-const otherTeamOf = team => (team === 'attack' ? 'defend' : 'attack');
 
 function updateScorebar() {
   if (!view || !session) return;
   const own = ownUnits();
   if (own.map(u => u.id).join(',') !== scorebarKey) buildScorebar();
+  if ($('enemyBar').children.length !== (view.roster?.length ?? 0)) buildScorebar();
   watchedId ??= own.find(u => u.alive)?.id ?? null;
   for (const u of own) {
     const chip = $('squadBar').querySelector(`[data-id="${u.id}"]`);
     if (!chip) continue;
-    chip.hidden = !u.alive;
+    chip.classList.toggle('down', !u.alive);
     chip.classList.toggle('active', u.id === watchedId);
     chip.querySelector('.bar i').style.width = `${(u.hp / u.maxHp) * 100}%`;
   }
-  // You only know an enemy is down when your team saw it happen, so grey them out on kills.
-  const downed = new Set(view.feed.filter(f => f.team === session.team).map(f => f.text.split(' eliminated ')[1]));
-  for (const chip of $('enemyBar').children) chip.classList.toggle('down', downed.has(chip.title));
+  for (const u of view.roster ?? []) {
+    const chip = $('enemyBar').querySelector(`[data-id="${u.id}"]`);
+    if (!chip) continue;
+    chip.classList.toggle('down', u.down);
+    // Dimmed while nobody on your team has eyes on them: their health is unknown.
+    chip.classList.toggle('unseen', !u.seen && !u.down);
+    chip.querySelector('.bar i').style.width = `${(u.seen ? u.hp : 1) * 100}%`;
+  }
 }
 
 function buildSquadCards() {

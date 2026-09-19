@@ -57,7 +57,8 @@
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
   .arena { position: relative; min-height: 0; }
   #map { width: 100%; height: 100%; display: block; cursor: crosshair; }
-  .feed { position: absolute; top: 10px; right: 12px; display: grid; gap: 4px; justify-items: end; pointer-events: none; }
+  /* Below the scoreboard, which now spans both rosters. */
+  .feed { position: absolute; top: 72px; right: 12px; display: grid; gap: 4px; justify-items: end; pointer-events: none; }
   .feed div { background: rgba(10, 12, 16, 0.8); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
   .feed .own { border-left: 3px solid var(--squad); }
   .feed .other { border-left: 3px solid var(--enemy); }
@@ -183,10 +184,15 @@
   .enemy .portrait { cursor: default; }
   .portrait .bar { width: 34px; height: 3px; background: rgba(255, 255, 255, 0.15); border-radius: 2px; overflow: hidden; }
   .portrait .bar i { display: block; height: 100%; width: 100%; background: var(--agent); }
-  .portrait .who { font-size: 10px; letter-spacing: 0.03em; color: var(--ink-2); }
+  .portrait .who { font-size: 10px; letter-spacing: 0.03em; color: var(--ink-2); max-width: 46px; overflow: hidden; text-overflow: ellipsis; }
   .portrait.active .face { border-color: var(--gold); box-shadow: 0 0 12px rgba(255, 210, 74, 0.55); }
   .portrait.active .who { color: var(--gold); font-weight: 700; }
-  .portrait.down { opacity: 0.35; }
+  /* Everyone stays on the bar: greyed out once you know they're dead, dimmed while nobody
+     on your team can see them. */
+  .portrait.down { opacity: 0.3; filter: grayscale(0.9); }
+  .portrait.down .face { border-color: transparent; }
+  .portrait.unseen { opacity: 0.55; }
+  .portrait.unseen .bar i { background: rgba(255, 255, 255, 0.25); }
   .portrait[hidden] { display: none; }
   .scorebar .score-clock {
     font: 700 20px system-ui, sans-serif; font-variant-numeric: tabular-nums; padding: 6px 14px; border-radius: 8px;

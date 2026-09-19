@@ -98,7 +98,9 @@ agent's shoulder: their view of the map drawn in 3D, a minimap, and the top bar 
 alive on both sides. It's for monitoring, not aiming, so pointing, ✌️ split and 🤟 special are
 map-view only, and every order you give in first-person goes to the agent you're watching alone.
 You see only what that agent sees, while the map shows everything your team sees. Each agent has
-their own colour (yours blue, theirs red) on the bar, the map, in 3D and on their card. Left alone,
+their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their card. The top bar
+keeps both full squads on screen all match: greyed out once you know they're down, and dimmed
+while nobody on your team can see them. Left alone,
 attackers rush the nearer site and shoot what they meet; defenders hold their posts.
 
 **How Jev is used.** Two layers, both plain typed questions:
