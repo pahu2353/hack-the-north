@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev Visualizer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --field: #ffffff;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #2a78d6;
+    --accent-soft: #86b6ef;
+    --track: #cde2fb;
+    --critical: #d03b3b;
+    --critical-wash: rgba(208, 59, 59, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --field: #121211;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+      --accent-soft: #184f95;
+      --track: #0d366b;
+      --critical-wash: rgba(208, 59, 59, 0.16);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --field: #121211;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --accent-soft: #184f95;
+    --track: #0d366b;
+    --critical-wash: rgba(208, 59, 59, 0.16);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header, main { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding-top: 24px; padding-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  h2 { font-size: 13px; margin: 0; font-weight: 600; color: var(--ink-2); }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); }
+  .badge {
+    font-size: 12px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--ink-2);
+  }
+  .badge.mock { border-color: var(--accent); color: var(--ink); }
+
+  main { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); padding-bottom: 32px; }
+  @media (min-width: 960px) { main { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; } }
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; display: grid; gap: 12px; min-width: 0;
+  }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row.spread { justify-content: space-between; }
+
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input, select, textarea {
+    background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px; min-width: 0;
+  }
+  textarea { width: 100%; resize: vertical; }
+  #state { min-height: 120px; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  button {
+    background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: 0.6; cursor: progress; }
+  kbd { font: 12px ui-monospace, monospace; color: inherit; opacity: 0.8; }
+
+  .q { border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: grid; gap: 8px; }
+  .q .q-id { flex: 1 1 120px; font-family: ui-monospace, monospace; }
+  .q .q-instructions { width: 100%; }
+  .q .q-remove { padding: 4px 10px; color: var(--ink-2); }
+  .q .hint { color: var(--critical); font-size: 12px; }
+  .q.invalid { border-color: var(--critical); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+  .stat { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-size: 18px; font-weight: 600; }
+  .ratelimit { font: 12px ui-monospace, monospace; color: var(--ink-2); white-space: pre-wrap; }
+
+  .error {
+    border: 1px solid var(--critical); background: var(--critical-wash); border-radius: 10px;
+    padding: 10px 12px; overflow-wrap: anywhere;
+  }
+  .error strong { color: var(--critical); }
+
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .answer { border-top: 1px solid var(--grid); padding-top: 12px; display: grid; gap: 10px; }
+  .answer:first-child { border-top: 0; padding-top: 0; }
+  .answer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .answer-id { font-family: ui-monospace, monospace; font-weight: 600; }
+  .chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+  .headline { margin-left: auto; font-size: 18px; font-weight: 600; }
+  .headline .sub { font-size: 13px; font-weight: 400; }
+
+  /* Boolean meter: fill carries the probability, track is a lighter step of the same ramp. */
+  .meter { position: relative; height: 14px; background: var(--track); border-radius: 4px; overflow: hidden; }
+  .meter-fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; transition: width 250ms ease; }
+  .meter-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--surface); }
+  .meter-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+
+  /* Choice + score distributions: thin bars from one baseline, value at the tip. */
+  .bars { display: grid; grid-template-columns: minmax(64px, max-content) minmax(0, 1fr) 44px; gap: 6px 10px; align-items: center; }
+  .bar-label { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+  .bar-label.top { color: var(--ink); font-weight: 600; }
+  .bar-track { height: 14px; border-left: 1px solid var(--axis); }
+  .bar { height: 100%; background: var(--accent-soft); border-radius: 0 4px 4px 0; transition: width 250ms ease; }
+  .bar.top { background: var(--accent); }
+  .bar-value { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+
+  .scale { position: relative; height: 18px; margin: 0 8px; }
+  .scale-line { position: absolute; left: 0; right: 0; top: 8px; height: 1px; background: var(--axis); }
+  .scale-tick { position: absolute; top: 4px; width: 1px; height: 9px; background: var(--axis); }
+  .scale-dot {
+    position: absolute; top: 3px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 2px var(--surface); transition: left 250ms ease;
+  }
+
+  .trend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .trend svg { overflow: visible; }
+
+  details summary { cursor: pointer; color: var(--ink-2); }
+  pre { font: 12px/1.5 ui-monospace, monospace; background: var(--field); border: 1px solid var(--border); border-radius: 8px; padding: 10px; overflow: auto; max-height: 360px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Jev visualizer</h1>
+  <span class="sub">
+    <a href="https://vercel.com/ai-gateway/models/jev" target="_blank" rel="noreferrer">typesafe-ai/jev</a>
+    via Vercel AI Gateway: state + typed questions → probabilities
+  </span>
+  <span id="mode" class="badge" hidden>mock data</span>
+</header>
+
+<main>
+  <section class="panel" aria-label="Inputs">
+    <div class="row spread">
+      <h2><label for="state">State</label></h2>
+      <select id="preset" aria-label="Load a preset"></select>
+    </div>
+    <textarea id="state" spellcheck="false"></textarea>
+
+    <div class="row spread">
+      <h2>Questions</h2>
+      <button id="add" type="button">+ Add question</button>
+    </div>
+    <div id="questions" style="display:grid;gap:8px"></div>
+
+    <div class="row">
+      <button id="run" class="primary" type="button">Evaluate <kbd>⌘↵</kbd></button>
+      <label class="row" style="gap:6px"><input id="live" type="checkbox" checked> Live (re-evaluate as you type)</label>
+    </div>
+  </section>
+
+  <section class="panel" aria-label="Results">
+    <div class="stats">
+      <div class="stat"><div class="label">Latency</div><div class="value" id="s-latency">–</div></div>
+      <div class="stat"><div class="label">Input tokens</div><div class="value" id="s-tokens">–</div></div>
+      <div class="stat"><div class="label">Cost per 1k calls</div><div class="value" id="s-cost">–</div></div>
+      <div class="stat"><div class="label">Session calls</div><div class="value" id="s-calls">0</div></div>
+      <div class="stat"><div class="label">Session cost</div><div class="value" id="s-total">$0</div></div>
+    </div>
+    <div id="ratelimit" class="ratelimit" hidden></div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="answers"><div class="empty">Evaluate to see Jev's answers.</div></div>
+    <details>
+      <summary>Raw request / response</summary>
+      <pre id="raw"></pre>
+    </details>
+  </section>
+</main>
+
+<script type="module">
+const PRICE_PER_INPUT_TOKEN = 0.042 / 1_000_000;
+const HISTORY_LENGTH = 30;
+
+const PRESETS = {
+  'Support triage': {
+    state: 'I was charged twice for my subscription this month, and now the app crashes every time I open it. I need this fixed today.',
+    questions: [
+      { id: 'wantsRefund', type: 'boolean', instructions: 'Is the customer asking for money back?', criteria: '' },
+      { id: 'route', type: 'choice', instructions: 'Route this support ticket.', criteria: 'billing: payment or charge problems\ntechnical: application bugs or crashes\nshipping: delivery problems\naccount: login or profile issues' },
+      { id: 'urgency', type: 'score', instructions: 'How urgent is this ticket?', criteria: 'low\nmedium\nhigh\ncritical' },
+    ],
+  },
+  'Agent tool routing': {
+    state: 'User: can you find me a flight to Toronto for Hack the North and put it on my calendar?',
+    questions: [
+      { id: 'tool', type: 'choice', instructions: 'Which tool should the agent call first?', criteria: 'search_flights: look up flights\ncalendar: create or edit events\nemail: send an email\nnone: answer directly' },
+      { id: 'needsClarification', type: 'boolean', instructions: 'Does the agent need to ask a clarifying question before acting?', criteria: 'true: key details like dates or origin are missing\nfalse: the request can be acted on as-is' },
+    ],
+  },
+  'PR review': {
+    state: 'PR #412: Adds retry logic to the payments webhook handler. Includes unit tests for the backoff schedule and updates the runbook. No description of why the retries were needed.',
+    questions: [
+      { id: 'quality', type: 'score', instructions: 'Rate the quality of this pull request.', criteria: 'poor: no tests or docs\nfair: partial coverage\ngood: tests and docs\nexcellent: tests, docs, and clear rationale' },
+      { id: 'hasTests', type: 'boolean', instructions: 'Does the PR include tests?', criteria: '' },
+      { id: 'risk', type: 'choice', instructions: 'How risky is merging this?', criteria: 'low: cosmetic or isolated\nmedium: touches shared code\nhigh: touches payments, auth, or data' },
+    ],
+  },
+  'Comment moderation': {
+    state: 'honestly this is the worst hackathon project I have ever seen, you should all just quit lol',
+    questions: [
+      { id: 'toxic', type: 'boolean', instructions: 'Is this comment toxic or harassing?', criteria: '' },
+      { id: 'category', type: 'choice', instructions: 'Classify this comment.', criteria: 'safe: fine to show\nharassment: attacks a person or group\nspam: promotional or repetitive\noff_topic: unrelated to the post' },
+      { id: 'sentiment', type: 'score', instructions: 'What is the sentiment?', criteria: 'very negative\nnegative\nneutral\npositive\nvery positive' },
+    ],
+  },
+};
+
+const CRITERIA_PLACEHOLDER = {
+  boolean: 'Optional, one per line:\ntrue: what counts as yes\nfalse: what counts as no',
+  choice: 'One option per line (2+):\nkey: description',
+  score: 'One level per line, lowest to highest (2–10)',
+};
+
+const $ = id => document.getElementById(id);
+const stateEl = $('state'), questionsEl = $('questions'), liveEl = $('live'), runEl = $('run');
+
+let questions = [];
+let history = new Map();
+let session = { calls: 0, cost: 0 };
+let inflight = false, rerun = false, debounce;
+
+// ---------- editor ----------
+
+function el(tag, props = {}, children = []) {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of [].concat(children)) node.append(child);
+  return node;
+}
+
+function renderEditor() {
+  questionsEl.replaceChildren(...questions.map((q, index) => {
+    const idInput = el('input', { className: 'q-id', value: q.id, spellcheck: false, placeholder: 'id' });
+    idInput.setAttribute('aria-label', 'Question id');
+    const typeSelect = el('select', { className: 'q-type' },
+      ['boolean', 'choice', 'score'].map(type => el('option', { value: type, textContent: type, selected: q.type === type })));
+    typeSelect.setAttribute('aria-label', 'Question type');
+    const remove = el('button', { type: 'button', className: 'q-remove', textContent: '×' });
+    remove.setAttribute('aria-label', `Remove ${q.id || 'question'}`);
+    const instructions = el('input', { className: 'q-instructions', value: q.instructions, placeholder: 'Instructions: the question Jev answers' });
+    instructions.setAttribute('aria-label', 'Instructions');
+    const criteria = el('textarea', { className: 'q-criteria', value: q.criteria, rows: criteriaRows(q.criteria), spellcheck: false, placeholder: CRITERIA_PLACEHOLDER[q.type] });
+    criteria.setAttribute('aria-label', 'Criteria');
+    const hint = el('div', { className: 'hint' });
+
+    const card = el('div', { className: 'q' }, [el('div', { className: 'row' }, [idInput, typeSelect, remove]), instructions, criteria, hint]);
+    const update = () => { refreshHints(); schedule(); };
+    idInput.oninput = () => { q.id = idInput.value.trim(); update(); };
+    instructions.oninput = () => { q.instructions = instructions.value; update(); };
+    criteria.oninput = () => { q.criteria = criteria.value; criteria.rows = criteriaRows(q.criteria); update(); };
+    typeSelect.onchange = () => { q.type = typeSelect.value; criteria.placeholder = CRITERIA_PLACEHOLDER[q.type]; update(); };
+    remove.onclick = () => { questions.splice(index, 1); renderEditor(); schedule(); };
+    q.card = card; q.hint = hint;
+    return card;
+  }));
+  refreshHints();
+}
+
+const criteriaRows = text => Math.max(3, text.split('\n').length);
+
+function criteriaLines(q) {
+  return q.criteria.split('\n').map(line => line.trim()).filter(Boolean);
+}
+
+function keyValue(line) {
+  const i = line.indexOf(':');
+  return i === -1 ? [line, line] : [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+}
+
+function problemWith(q, seenIds) {
+  if (!q.id) return 'Needs an id';
+  if (seenIds.has(q.id)) return `Duplicate id "${q.id}"`;
+  if (!q.instructions.trim()) return 'Needs instructions';
+  const n = criteriaLines(q).length;
+  if (q.type === 'choice' && n < 2) return 'Needs at least 2 options';
+  if (q.type === 'score' && (n < 2 || n > 10)) return 'Needs 2–10 levels';
+  return null;
+}
+
+function refreshHints() {
+  const seen = new Set();
+  for (const q of questions) {
+    const problem = problemWith(q, seen);
+    seen.add(q.id);
+    q.hint.textContent = problem ?? '';
+    q.card.classList.toggle('invalid', Boolean(problem));
+  }
+}
+
+function toApiQuestion(q) {
+  const base = { type: q.type, instructions: q.instructions.trim() };
+  const lines = criteriaLines(q);
+  if (q.type === 'score') return { ...base, criteria: lines };
+  if (q.type === 'choice') return { ...base, criteria: Object.fromEntries(lines.map(keyValue)) };
+  const truth = Object.fromEntries(lines.map(keyValue).filter(([key]) => key === 'true' || key === 'false'));
+  return truth.true && truth.false ? { ...base, criteria: truth } : base;
+}
+
+function buildPayload() {
+  const seen = new Set();
+  const valid = questions.filter(q => { const ok = !problemWith(q, seen); seen.add(q.id); return ok; });
+  if (valid.length === 0) return null;
+  return {
+    state: stateEl.value,
+    questions: Object.fromEntries(valid.map(q => [q.id, toApiQuestion(q)])),
+  };
+}
+
+function loadPreset(name) {
+  const preset = PRESETS[name];
+  stateEl.value = preset.state;
+  questions = preset.questions.map(q => ({ ...q }));
+  history = new Map();
+  renderEditor();
+  run();
+}
+
+// ---------- evaluation loop (at most one request in flight) ----------
+
+function schedule() {
+  if (!liveEl.checked) return;
+  clearTimeout(debounce);
+  debounce = setTimeout(run, 450);
+}
+
+async function run() {
+  if (inflight) { rerun = true; return; }
+  const payload = buildPayload();
+  if (!payload) return;
+  inflight = true;
+  runEl.disabled = true;
+  try {
+    const res = await fetch('/api/evaluate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    session.calls++;
+    $('raw').textContent = JSON.stringify({ request: payload, status: res.status, response: data }, null, 2);
+    renderRateLimit(data.rateLimit);
+    if (!res.ok) showError(res.status, data);
+    else renderResult(payload, data);
+  } catch (error) {
+    showError(0, { error: error.message });
+  } finally {
+    inflight = false;
+    runEl.disabled = false;
+    $('s-calls').textContent = session.calls;
+    if (rerun) { rerun = false; run(); }
+  }
+}
+
+// ---------- results ----------
+
+const pct = p => `${(p * 100).toFixed(p > 0.999 || p < 0.001 ? 0 : 1)}%`;
+const usd = (n, digits) => n === 0 ? '$0' : `$${n.toFixed(digits)}`;
+
+function showError(status, data) {
+  const box = $('error');
+  box.hidden = false;
+  box.replaceChildren(
+    el('strong', { textContent: status ? `HTTP ${status}` : 'Network error' }),
+    ` ${data.type ? `(${data.type}) ` : ''}`,
+    data.error ?? 'Unknown error',
+  );
+  $('s-latency').textContent = data.latencyMs != null ? `${data.latencyMs} ms` : '–';
+}
+
+function renderRateLimit(headers) {
+  const box = $('ratelimit');
+  box.hidden = !headers;
+  box.textContent = headers ? Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n') : '';
+}
+
+function renderResult(payload, data) {
+  $('error').hidden = true;
+  $('mode').hidden = !data.mock;
+  $('mode').classList.toggle('mock', data.mock);
+  const inputTokens = data.usage?.inputTokens ?? 0;
+  const cost = inputTokens * PRICE_PER_INPUT_TOKEN;
+  session.cost += cost;
+  $('s-latency').textContent = `${data.latencyMs} ms`;
+  $('s-tokens').textContent = inputTokens.toLocaleString();
+  $('s-cost').textContent = usd(cost * 1000, 4);
+  $('s-total').textContent = usd(session.cost, 6);
+
+  $('answers').replaceChildren(...Object.entries(payload.questions).map(([id, question]) => {
+    const answer = data.answers[id];
+    if (!answer) return el('div', { className: 'answer', textContent: `${id}: no answer returned` });
+    const key = `${id}|${JSON.stringify(question)}`;
+    const series = history.get(key) ?? [];
+    series.push(trendValue(answer, question));
+    history.set(key, series.slice(-HISTORY_LENGTH));
+
+    const view = answer.type === 'boolean' ? booleanView(answer, question)
+      : answer.type === 'choice' ? choiceView(answer, question)
+      : scoreView(answer, question);
+    return el('div', { className: 'answer' }, [
+      el('div', { className: 'answer-head' }, [
+        el('span', { className: 'answer-id', textContent: id }),
+        el('span', { className: 'chip', textContent: answer.type }),
+        view.headline,
+      ]),
+      el('div', { className: 'sub', textContent: question.instructions }),
+      view.body,
+      trendView(history.get(key), answer.type),
+    ]);
+  }));
+}
+
+function booleanView(answer, question) {
+  const p = answer.probability;
+  const meter = el('div', { className: 'meter', title: `P(true) = ${p.toFixed(4)}` }, [
+    el('div', { className: 'meter-fill', style: `width:${p * 100}%` }),
+    el('div', { className: 'meter-mid' }),
+  ]);
+  meter.setAttribute('role', 'meter');
+  meter.setAttribute('aria-valuemin', '0');
+  meter.setAttribute('aria-valuemax', '1');
+  meter.setAttribute('aria-valuenow', String(p));
+  return {
+    headline: el('span', { className: 'headline' }, [pct(p), el('span', { className: 'sub', textContent: ' true' })]),
+    body: el('div', {}, [
+      meter,
+      el('div', { className: 'meter-scale' }, [
+        el('span', { textContent: `false${question.criteria ? `: ${question.criteria.false}` : ''}` }),
+        el('span', { textContent: `true${question.criteria ? `: ${question.criteria.true}` : ''}` }),
+      ]),
+    ]),
+  };
+}
+
+function distributionBars(rows, topKey) {
+  return el('div', { className: 'bars' }, rows.flatMap(({ key, label, description, p }) => [
+    el('span', { className: `bar-label${key === topKey ? ' top' : ''}`, textContent: label, title: description }),
+    el('div', { className: 'bar-track', title: `${label}: ${p.toFixed(4)}` }, [
+      el('div', { className: `bar${key === topKey ? ' top' : ''}`, style: `width:${p * 100}%` }),
+    ]),
+    el('span', { className: 'bar-value', textContent: pct(p) }),
+  ]));
+}
+
+function choiceView(answer, question) {
+  const rows = Object.entries(question.criteria).map(([key, description]) => ({
+    key, label: key, description, p: answer.probabilities?.[key] ?? (key === answer.choice ? 1 : 0),
+  }));
+  const top = rows.find(r => r.key === answer.choice);
+  return {
+    headline: el('span', { className: 'headline' }, [answer.choice, el('span', { className: 'sub', textContent: top ? ` ${pct(top.p)}` : '' })]),
+    body: distributionBars(rows, answer.choice),
+  };
+}
+
+function scoreView(answer, question) {
+  const levels = question.criteria;
+  const max = levels.length - 1;
+  const rows = levels.map((label, i) => ({ key: String(i), label: `${i} · ${label}`, description: label, p: answer.probabilities?.[String(i)] ?? 0 }));
+  const top = rows.reduce((best, row) => (row.p > best.p ? row : best), rows[0]);
+  const scale = el('div', { className: 'scale', title: `score = ${answer.score.toFixed(3)}` }, [
+    el('div', { className: 'scale-line' }),
+    ...levels.map((_, i) => el('div', { className: 'scale-tick', style: `left:${(i / max) * 100}%` })),
+    el('div', { className: 'scale-dot', style: `left:${(answer.score / max) * 100}%` }),
+  ]);
+  return {
+    headline: el('span', { className: 'headline' }, [answer.score.toFixed(2), el('span', { className: 'sub', textContent: ` / ${max}` })]),
+    body: el('div', { style: 'display:grid;gap:8px' }, [distributionBars(rows, top.key), scale]),
+  };
+}
+
+// One 0–1 number per answer so every question type gets a trend line.
+function trendValue(answer, question) {
+  if (answer.type === 'boolean') return answer.probability;
+  if (answer.type === 'score') return answer.score / (question.criteria.length - 1);
+  return Math.max(...Object.values(answer.probabilities ?? { x: 1 }));
+}
+
+function trendView(series, type) {
+  const label = { boolean: 'P(true)', score: 'score', choice: 'top-choice confidence' }[type];
+  if (series.length < 2) return el('div', { className: 'trend', textContent: `Edit the state to see ${label} move over time.` });
+  const w = 160, h = 28;
+  const points = series.map((v, i) => [(i / (HISTORY_LENGTH - 1)) * w, h - v * h]);
+  const [lastX, lastY] = points.at(-1);
+  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <line x1="0" x2="${w}" y1="${h / 2}" y2="${h / 2}" style="stroke:var(--grid)" stroke-width="1"/>
+    <polyline points="${points.map(p => p.join(',')).join(' ')}" fill="none" style="stroke:var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX}" cy="${lastY}" r="4" style="fill:var(--accent);stroke:var(--surface)" stroke-width="2"/>
+  </svg>`;
+  const wrap = el('div', { className: 'trend' });
+  wrap.innerHTML = svg;
+  wrap.append(`${label} over the last ${series.length} calls`);
+  return wrap;
+}
+
+// ---------- wiring ----------
+
+$('preset').replaceChildren(...Object.keys(PRESETS).map(name => el('option', { value: name, textContent: name })));
+$('preset').onchange = e => loadPreset(e.target.value);
+$('add').onclick = () => {
+  questions.push({ id: `q${questions.length + 1}`, type: 'boolean', instructions: '', criteria: '' });
+  renderEditor();
+  questions.at(-1).card.querySelector('.q-instructions').focus();
+};
+stateEl.oninput = schedule;
+runEl.onclick = run;
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); }
+});
+
+loadPreset(Object.keys(PRESETS)[0]);
+</script>
+</body>
+</html>

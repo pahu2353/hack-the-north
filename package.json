@@ -1,0 +1,25 @@
+{
+  "name": "hack-the-north",
+  "version": "1.0.0",
+  "description": "Playground for TypeSafe AI's Jev evaluation model on Vercel AI Gateway",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env.local --watch server.ts",
+    "start": "node --env-file-if-exists=.env.local server.ts",
+    "mock": "JEV_MOCK=1 node server.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pahu2353/hack-the-north.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/pahu2353/hack-the-north/issues"
+  },
+  "homepage": "https://github.com/pahu2353/hack-the-north#readme",
+  "dependencies": {
+    "ai": "^7.0.107"
+  }
+}
