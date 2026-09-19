@@ -107,6 +107,9 @@
   .seat b { font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
   .seat .who { color: var(--muted); }
   .seat.filled .who { color: var(--ok); }
+  .side-choice { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .side-choice select { background: var(--panel-2); color: var(--ink); border: 1px solid var(--border); padding: 8px; font: inherit; }
+  .side-choice button[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
   .note { font-size: 12px; color: var(--muted); }
   .toggles { display: grid; gap: 6px; width: min(360px, 100%); }
   .toggle-row {
@@ -308,18 +311,21 @@
         <h2>Choose game mode</h2>
         <p id="menuNote"></p>
         <div class="choices">
-          <button id="playBots" class="primary big" type="button">Vs bots<small>Four scripted or AI defenders</small></button>
+          <button id="playBots" class="primary big" type="button">Vs bots<small>Attack or defend against an AI squad</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
         </div>
         <button id="menuSettings" class="link" type="button">Settings</button>
       </section>
 
       <section id="screenBots" hidden>
-        <h2>Choose game mode</h2>
-        <p>You attack the spike. Who commands the defenders?</p>
+        <h2>Vs Bots</h2>
+        <p>Choose your side and who commands the opposing squad.</p>
+        <label class="side-choice" for="botSide">Your side
+          <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
+        </label>
         <div class="choices">
-          <button id="botsScripted" class="primary big" type="button">Scripted<small>Hold posts, rotate, retake</small></button>
-          <button id="botsOpenAI" class="big" type="button">OpenAI<small>Plans from what they see</small></button>
+          <button id="botsOpenAI" class="primary big" type="button">OpenAI commander<small>Recommended · Plans from its squad's sightings</small></button>
+          <button id="botsScripted" class="big" type="button">Scripted bots<small>A predictable opponent for practice</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
         <button id="botsBack" class="link" type="button">← Back</button>
@@ -349,6 +355,11 @@
           <div class="seat" id="seatAttack"><b>Attack</b><span class="who"></span></div>
           <div class="seat" id="seatDefend"><b>Defend</b><span class="who"></span></div>
         </div>
+        <div class="side-choice" id="hostSideControls" role="group" aria-label="Host's side">
+          <span>Your side:</span>
+          <button id="hostAttack" type="button" aria-pressed="true">Attack</button>
+          <button id="hostDefend" type="button" aria-pressed="false">Defend</button>
+        </div>
         <button id="startMatch" class="primary big" type="button" disabled>Start match</button>
         <div class="status" id="lobbyStatus"></div>
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
@@ -376,6 +387,7 @@
         <h2 id="resultTitle">Victory</h2>
         <p id="resultText"></p>
         <button id="again" class="primary big" type="button">Play again</button>
+        <button id="swapSides" type="button" hidden>Swap sides for rematch</button>
         <div class="status" id="resultStatus"></div>
         <button id="resultMenu" class="link" type="button">Main menu</button>
       </section>
@@ -415,6 +427,7 @@
     </div>
     <div class="card" id="opponentCard" hidden>
       <div class="card-head">Enemy commander <span class="status" id="opponentStatus"></span></div>
+      <div id="opponentCoordination" role="status"></div>
       <details class="opponent-panel" id="opponentDetails">
         <summary>Current plan</summary>
         <p id="opponentReason"></p>

@@ -6,7 +6,7 @@ import { createOpponentCommander } from './opponent.js';
 import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { createRenderer } from './render.js';
-import { OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
+import { OWN_COLORS, TEAMS, actionLabel, createGame, otherTeam, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
@@ -112,6 +112,7 @@ function showScreen(name) {
 }
 
 function goToMenu() {
+  resetSpeech();
   leaveOnline();
   opponentCommander.reset();
   session = null;
@@ -123,13 +124,14 @@ function goToMenu() {
   showScreen('screenMenu');
 }
 
-let botOpponent = 'scripted'; // who commands the defenders: 'scripted' or 'openai'
+let botOpponent = 'openai';
+let botSide = 'attack';
 $('playBots').onclick = () => {
   setStatus('botsStatus', '');
   showScreen('screenBots');
 };
-$('botsScripted').onclick = () => startBotGame('scripted');
-$('botsOpenAI').onclick = () => startBotGame('openai');
+$('botsScripted').onclick = () => startBotGame('scripted', $('botSide').value);
+$('botsOpenAI').onclick = () => startBotGame('openai', $('botSide').value);
 $('botsBack').onclick = () => showScreen('screenMenu');
 $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
@@ -209,6 +211,9 @@ $('again').onclick = () => {
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
 $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
+for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
+  online?.ws.send(JSON.stringify({ type: 'side', team }));
+$('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
 
 // ---------- microphone and camera ----------
 
@@ -272,14 +277,15 @@ async function restoreDevices() {
 
 // ---------- vs bots ----------
 
-function startBotGame(opponent = botOpponent) {
+function startBotGame(opponent = botOpponent, playerTeam = botSide) {
   leaveOnline();
   botOpponent = opponent;
+  botSide = playerTeam;
   opponentCommander.reset();
-  session = { kind: 'bots', team: 'attack' };
-  game = createGame({ defenders: 'bots', opponent });
+  session = { kind: 'bots', team: playerTeam };
+  game = createGame({ defenders: 'bots', opponent, playerTeam });
   brains = createBrains();
-  view = teamView(game, 'attack');
+  view = teamView(game, playerTeam);
   beginMatch();
 }
 
@@ -323,15 +329,30 @@ function handleServer(connection, message) {
       break;
     case 'lobby':
       connection.players = message.players;
+      connection.running = message.running;
       renderLobby();
       if (resultShown) updateResultActions();
       break;
+    case 'sides':
+      resetSpeech();
+      connection.team = message.team;
+      session = { kind: 'online', team: message.team };
+      view = null;
+      resultShown = false;
+      for (const { reject } of connection.pending.values()) reject(new Error('Sides changed'));
+      connection.pending.clear();
+      updateTeamUi();
+      renderLobby();
+      showScreen('screenLobby');
+      break;
     case 'started':
+      connection.running = true;
       view = null;
       beginMatch();
       break;
     case 'state':
       view = message.view;
+      if (view.result) connection.running = false;
       connection.jev = message.jev;
       break;
     case 'plan': {
@@ -364,6 +385,12 @@ async function renderLobby() {
   const ready = Boolean(players?.attack && players?.defend);
   $('startMatch').hidden = !host;
   $('startMatch').disabled = !ready;
+  $('hostSideControls').hidden = !host;
+  for (const side of ['attack', 'defend']) {
+    const button = $(side === 'attack' ? 'hostAttack' : 'hostDefend');
+    button.setAttribute('aria-pressed', String(team === side));
+    button.disabled = Boolean(online.running);
+  }
   if (!host) setStatus('lobbyStatus', 'Waiting for the host to start the match…');
   else setStatus('lobbyStatus', ready ? 'Both commanders are here.' : 'Waiting for your opponent to join…');
   $('inviteLink').value = await inviteUrl(code);
@@ -404,7 +431,9 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
+  resetSpeech();
   if (readDevices().mic !== false) ensureMic();
+  pov.reset();
   resultShown = false;
   positions.clear();
   $('log').replaceChildren();
@@ -419,6 +448,7 @@ function beginMatch() {
 }
 
 function showResult() {
+  resetSpeech();
   resultShown = true;
   const won = view.result.winner === session.team;
   $('resultTitle').textContent = won ? 'Victory' : 'Defeat';
@@ -429,6 +459,7 @@ function showResult() {
 }
 
 function updateResultActions() {
+  $('swapSides').hidden = session.kind !== 'online' || !online?.host || !opponentPresent();
   if (session.kind === 'bots') {
     $('again').hidden = false;
     $('again').textContent = 'Play again';
@@ -455,10 +486,19 @@ let guess = null; // { text, entry, promise, applied, stale, seq }
 let speculateTimer = null;
 let speculateEnabled = true;
 let commandSeq = 0;
+let speechEpoch = 0;
 // One record per spoken utterance, for measuring how quickly the squad reacts.
 let utterance = null;
 const utterances = [];
 const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() === b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+function resetSpeech() {
+  speechEpoch++;
+  clearTimeout(speculateTimer);
+  if (guess) guess.stale = true;
+  guess = null;
+  utterance = null;
+}
 
 function onInterimTranscript(text) {
   $('caption').textContent = text;
@@ -472,16 +512,19 @@ function onInterimTranscript(text) {
 }
 
 function speculate(text) {
-  if (guess?.promise) return; // one guess in flight at a time
+  if (!canCommand() || guess?.promise) return; // one guess in flight, within the current match
   const entry = guess?.entry ?? addLogEntry('voice', text, null, true);
-  const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq };
+  const p = activePointer();
+  const pointer = p && { x: p.x, y: p.y };
+  const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq,
+    epoch: speechEpoch, only: commandTarget(), pointer };
   guess = g;
   setEntryText(entry, text, '⚡');
-  g.promise = interpret({ text, seq: g.seq, only: commandTarget() })
+  g.promise = interpret({ text, seq: g.seq, only: g.only, pointer })
     .then(result => {
-      if (result.stale) return;
+      if (g.stale || g.epoch !== speechEpoch || result.stale) return;
       renderPlan(entry, result, true);
-      g.applied = !result.ignored;
+      g.applied = result.plan.some(p => p.applied);
       // the first moment the squad moved on this utterance
       if (g.applied && !g.stale && utterance) utterance.actedAt ||= performance.now();
     })
@@ -492,6 +535,8 @@ function speculate(text) {
 // The finished sentence. If we already acted on exactly these words, keep those orders.
 async function onFinalTranscript(text) {
   clearTimeout(speculateTimer);
+  if (!canCommand()) { resetSpeech(); return; }
+  const epoch = speechEpoch;
   $('caption').textContent = text;
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
@@ -499,10 +544,13 @@ async function onFinalTranscript(text) {
   const g = guess;
   guess = null;
   let reused = false;
-  if (g && sameWords(g.text, text)) {
+  const pointer = activePointer();
+  if (g && sameWords(g.text, text) && g.only === commandTarget()
+      && g.pointer?.x === pointer?.x && g.pointer?.y === pointer?.y) {
     await g.promise; // nearly always already resolved
     reused = g.applied;
   }
+  if (epoch !== speechEpoch || !canCommand()) return;
   if (reused) {
     setEntryText(g.entry, text, '');
   } else if (g) {
@@ -543,6 +591,7 @@ async function issueCommand({ source, text, gesture, seq }) {
 }
 
 async function runCommand(entry, { text, gesture, seq = ++commandSeq, only = commandTarget() }) {
+  if (!canCommand()) return;
   const p = activePointer();
   try {
     renderPlan(entry, await interpret({ text, gesture, pointer: p && { x: p.x, y: p.y }, only, seq }));
@@ -606,7 +655,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
     if (!p.applied) {
       return [
         el('span', { className: 'skip', textContent: p.name }),
-        el('span', { className: 'skip', textContent: 'not addressed' }),
+        el('span', { className: 'skip', textContent: p.skipReason ?? 'not addressed' }),
         el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
       ];
     }
@@ -656,10 +705,10 @@ function frame(now) {
         stepGame(game, STEP);
         accumulator -= STEP;
       }
-      brains.update(game, 'attack');
+      brains.update(game, session.team);
       opponentCommander.update(game);
     }
-    view = teamView(game, 'attack');
+    view = teamView(game, session.team);
   }
   if (session?.kind === 'online') smoothPositions(dt);
   const smoothed = session?.kind === 'online' ? positions : null;
@@ -748,7 +797,7 @@ function buildScorebar() {
   scorebarKey = own.map(u => u.id).join(',');
   $('squadBar').replaceChildren(...own.map(u => portrait(u, () => watchAgent(u))));
   // The whole enemy roster, named and coloured from the start; what changes is how they look.
-  $('enemyBar').replaceChildren(...(view.roster ?? []).map(u => portrait(u)));
+  $('enemyBar').replaceChildren(...(view?.roster ?? []).map(u => portrait(u)));
 }
 
 
@@ -803,7 +852,7 @@ function updateOpponentHud() {
     thinking: 'planning…',
     active: `${s?.model} · ${s?.latency} ms · ${s?.plans} plans`,
     mock: `mock · ${s?.plans} plans`,
-    fallback: 'unavailable · scripted defense',
+    fallback: 'unavailable · scripted tactics',
   };
   const text = game.result ? 'round finished' : labels[s?.status] ?? 'starting…';
   setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
@@ -812,7 +861,11 @@ function updateOpponentHud() {
     : s?.status === 'fallback' ? '' : s?.reason ? `Why this plan: ${s.reason}` : '';
   $('opponentSummary').textContent = s?.error || (s?.summary
     ? `${s.status === 'thinking' ? 'Current plan: ' : ''}${s.summary}`
-    : 'Waiting for the first plan. Defenders use their normal tactics in the meantime.');
+    : 'Waiting for the first plan. Bots use their normal tactics in the meantime.');
+  const group = game.botRetake;
+  $('opponentCoordination').textContent = !group ? '' : group.phase === 'gathering'
+    ? `Gathering at ${group.zone}: ${group.ready}/${group.required} ready`
+    : `Retaking ${group.site} · ${group.reason}`;
   if ($('opponentDetails').open) {
     $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
       const unit = game.units.find(u => u.id === order.unitId);
@@ -962,7 +1015,7 @@ canvas.addEventListener('click', e => {
 // No aiming in first-person: it's a view for watching one agent, not for marking spots.
 povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
 
-const typing = () => document.activeElement?.tagName === 'INPUT';
+const typing = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 document.addEventListener('keydown', e => {
   if (typing()) return;
   // Escape is the way back to the menu now that there's no header.

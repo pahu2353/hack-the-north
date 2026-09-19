@@ -39,12 +39,12 @@ test('snapshot includes only defender knowledge and the public planted objective
 test('input validation strips extra information and rejects invalid snapshots', () => {
   const snapshot = opponentSnapshot(makeGame());
   snapshot.playerOrders = 'not allowed';
-  snapshot.defenders[0].secret = 'not allowed';
+  snapshot.squad[0].secret = 'not allowed';
   snapshot.spike.carrierId = 1;
   const parsed = parseOpponentSnapshot(snapshot);
   assert(!JSON.stringify(parsed).includes('not allowed'));
   assert.deepEqual(parsed.spike, { state: 'unplanted' });
-  for (const invalid of [null, {}, { ...snapshot, contacts: [{}] }, { ...snapshot, defenders: [snapshot.defenders[0], snapshot.defenders[0]] }, { ...snapshot, time: NaN }]) {
+  for (const invalid of [null, {}, { ...snapshot, contacts: [{}] }, { ...snapshot, squad: [snapshot.squad[0], snapshot.squad[0]] }, { ...snapshot, time: NaN }]) {
     assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   }
 });
@@ -63,16 +63,16 @@ test('combat facts use visible enemies and nearby allies with sightlines; the se
   assert.equal(defenderCombat(game, anchor).nearbyAllies, 2); // shared crossfire counts despite the wall between allies
   blocked.visible = [];
   const snapshot = opponentSnapshot(game);
-  snapshot.defenders[0].combat.extra = 'strip this';
+  snapshot.squad[0].combat.extra = 'strip this';
   const parsed = parseOpponentSnapshot(snapshot);
-  assert.deepEqual(parsed.defenders[0].combat, { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
+  assert.deepEqual(parsed.squad[0].combat, { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
   for (const combat of [
     { visibleEnemies: -1, nearbyAllies: 0, fallingBack: false },
     { visibleEnemies: 1, nearbyAllies: 99, fallingBack: false },
     { visibleEnemies: 1, nearbyAllies: 0, fallingBack: 'yes' },
   ]) {
     const invalid = structuredClone(snapshot);
-    invalid.defenders[0].combat = combat;
+    invalid.squad[0].combat = combat;
     assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   }
 });
@@ -168,7 +168,7 @@ test('a healthy isolated OpenAI defender immediately escapes a rush and stays in
   assert.equal(anchor.moving, true);
   assert(anchor.botFallback);
   const fallback = anchor.botFallback;
-  assert.deepEqual(opponentSnapshot(game).defenders[0].combat, { visibleEnemies: 4, nearbyAllies: 0, fallingBack: true });
+  assert.deepEqual(opponentSnapshot(game).squad[0].combat, { visibleEnemies: 4, nearbyAllies: 0, fallingBack: true });
   // Break contact while keeping the original hold order. The bot must not immediately re-peek.
   for (const [i, attacker] of game.units.filter(u => u.team === 'attack').entries()) {
     Object.assign(attacker, { x: 66 + i * 2, y: 50 });
@@ -309,7 +309,7 @@ test('new sightings are batched and rate limited; refreshed sightings and visibi
   await commander.update(game);
   assert.equal(sent.length, 2);
   assert.equal(sent[1].contacts.length, 2);
-  assert.equal(game.botCommander.reason, '2 attackers spotted at B Main');
+  assert.equal(game.botCommander.reason, '2 enemies spotted at B Main');
 
   for (now = 2300; now < 6900; now += 100) {
     game.time = now / 1000;
@@ -337,7 +337,7 @@ test('a known attacker seen in a new zone triggers an early plan after the debou
   now = 2850;
   await commander.update(game);
   assert.equal(calls, 2);
-  assert.equal(game.botCommander.reason, '1 attacker spotted at B Main');
+  assert.equal(game.botCommander.reason, '1 enemy spotted at B Main');
 });
 
 test('an emergency fallback triggers a debounced support plan without repeatedly requesting the same event', async () => {
@@ -380,12 +380,12 @@ test('casualties and sightings during an outstanding request trigger a fresh pla
   waiting.resolve(response(oldAnswer));
   await first;
   const followup = commander.update(game);
-  assert.equal(game.botCommander.planningReason, 'E1 eliminated · 1 attacker spotted at B Main');
+  assert.equal(game.botCommander.planningReason, 'E1 eliminated · 1 enemy spotted at B Main');
   assert.equal(game.botCommander.reason, 'Opening defense'); // old plan's reason stays with its summary
   await followup;
   assert.equal(sent.length, 2);
-  assert.equal(sent[1].defenders.length, 3);
-  assert.equal(game.botCommander.reason, 'E1 eliminated · 1 attacker spotted at B Main');
+  assert.equal(sent[1].squad.length, 3);
+  assert.equal(game.botCommander.reason, 'E1 eliminated · 1 enemy spotted at B Main');
   assert.equal(game.botCommander.orders.length, 3);
   assert(!bots(game)[0].botOrder);
   now = 5500;
