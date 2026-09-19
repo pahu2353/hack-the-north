@@ -72,13 +72,15 @@ The start screen has:
 
 The server runs the match, including both teams' Jev brains, and sends each player only what their own agents can see. Enemies show up in red while they're in sight, then fade to a dashed "last seen" marker. Your orders and Jev's decisions are never sent to your opponent. If a player leaves mid-round, the other wins by forfeit; if the host leaves, the room closes.
 
-**Playing from two machines.** By default the server only listens on localhost (it spends your Jev credits). To let someone on the same network join, run:
+**Play online with one command.** To give friends anywhere a link:
 
 ```sh
-npm run dev:lan   # also prints the network URL; invite links use it automatically
+npm run online
 ```
 
-Browsers only allow the mic and camera on HTTPS or localhost, so over a plain network address the guest can give orders by typing and clicking the map but not by voice or hand signals. To give both players voice and camera, put the server behind an HTTPS tunnel (for example `cloudflared tunnel --url http://localhost:3000`) and share the tunnel's `/commander/?join=CODE` link.
+This opens a free Cloudflare tunnel (install it once with `brew install cloudflared`), starts the game server, prints a public `https://….trycloudflare.com` link, and opens the game in your browser. Invite links automatically use the public address, even though you play from `localhost`. Because the link is HTTPS, your friend's mic and camera work too. Ctrl+C stops everything, and the link stops working. The next run gets a new random link, and a brand-new link can take a minute to start working. Anyone with the link can use your Jev and Deepgram credits, so stop it when you're done. Stop `npm run dev` first (or use `PORT=3001 npm run online`), since both use port 3000.
+
+**Same network, no tunnel.** `npm run dev:lan` lets other machines on your network join, and the invite link uses your network address automatically. Browsers only allow the mic and camera on HTTPS or localhost, so over a plain network address the guest can type orders and click the map but can't use voice or hand signals.
 
 **Giving orders**
 
@@ -124,6 +126,7 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 | `public/commander/` | Jev Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js`, `voice.js`, `gestures.js` |
 | `public/legacy/erwin/` | The Titan Siege (Commander Erwin) version, kept as a standalone snapshot |
 | `public/index.html` | The visualizer UI (a single file, no build step) |
+| `scripts/play-online.sh` | `npm run online`: tunnel + server + public link in one go |
 | `scripts/rate-limit-probe.ts` | Measures Jev's rate limit on your tier |
 | `index.ts` | Minimal `generateText` example: `node --env-file=.env.local index.ts` |
 

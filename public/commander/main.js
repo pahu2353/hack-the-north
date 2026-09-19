@@ -191,20 +191,16 @@ async function renderLobby() {
   $('inviteLink').value = await inviteUrl(code);
 }
 
-// The invite has to work from another machine, so prefer the server's LAN address over localhost.
-let lanOrigin;
+// The invite has to work from another machine: prefer the server's public (tunnel) address,
+// then its LAN address, over localhost.
+const isLocalHost = host => ['localhost', '127.0.0.1', '[::1]'].includes(host);
+let serverInfo;
 async function inviteUrl(code) {
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-  if (local && lanOrigin === undefined) {
-    try {
-      lanOrigin = (await (await fetch('/api/info')).json()).lan[0] ?? null;
-    } catch {
-      lanOrigin = null;
-    }
-  }
-  const origin = local && lanOrigin ? lanOrigin : location.origin;
-  $('inviteNote').textContent = local && !lanOrigin
-    ? 'This link only works on this computer. To play from another machine, run the server with npm run dev:lan (same network) or behind an HTTPS tunnel.'
+  serverInfo ??= await fetch('/api/info').then(res => res.json()).catch(() => ({ public: null, lan: [] }));
+  const local = isLocalHost(location.hostname);
+  const origin = serverInfo.public || (local && serverInfo.lan[0]) || location.origin;
+  $('inviteNote').textContent = isLocalHost(new URL(origin).hostname)
+    ? 'This link only works on this computer. Run npm run online for a link anyone can open.'
     : '';
   return `${origin}/commander/?join=${code}`;
 }

@@ -6,7 +6,8 @@
     "dev": "node --env-file-if-exists=.env.local --watch server.ts",
     "start": "node --env-file-if-exists=.env.local server.ts",
     "mock": "JEV_MOCK=1 node server.ts",
-    "dev:lan": "HOST=0.0.0.0 node --env-file-if-exists=.env.local --watch server.ts"
+    "dev:lan": "HOST=0.0.0.0 node --env-file-if-exists=.env.local --watch server.ts",
+    "online": "bash scripts/play-online.sh"
   },
   "repository": {
     "type": "git",

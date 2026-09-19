@@ -15,6 +15,8 @@ const PORT = Number(process.env.PORT ?? 3000);
 // Localhost only by default: this server spends your AI Gateway credits. Set HOST=0.0.0.0 to let
 // other machines on your network join multiplayer games.
 const HOST = process.env.HOST ?? '127.0.0.1';
+// The public address when running behind a tunnel (set by scripts/play-online.sh), so invite links use it.
+const PUBLIC_URL = process.env.PUBLIC_URL?.replace(/\/+$/, '') || null;
 const MOCK = process.env.JEV_MOCK === '1';
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
@@ -40,7 +42,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && pathname === '/api/info') {
-      sendJson(res, 200, { lan: lanUrls() });
+      sendJson(res, 200, { public: PUBLIC_URL, lan: lanUrls() });
       return;
     }
     if (req.method === 'GET' && pathname === '/commander') {
@@ -259,4 +261,5 @@ server.listen(PORT, HOST, () => {
   console.log(`Jev visualizer → http://localhost:${PORT}${MOCK ? '  (mock mode)' : ''}`);
   console.log(`Jev Commander  → http://localhost:${PORT}/commander/`);
   for (const url of lanUrls()) console.log(`On your network → ${url}/commander/  (anyone on this network can use your Jev credits)`);
+  if (PUBLIC_URL) console.log(`Public link    → ${PUBLIC_URL}/commander/`);
 });
