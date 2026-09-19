@@ -3,15 +3,16 @@
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
 import { createOpponentCommander } from './opponent.js';
-import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
+import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
+  createGestures, reliableGestureForSpeech } from './gestures.js';
 import { createRenderer } from './render.js';
 import { OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
 const STEP = 1 / 60;
-const POINTER_MS = 8000;
+const RECENT_GESTURE_MS = 2000;
 const $ = id => document.getElementById(id);
 
 const ZONE_TERMS = ['A Site', 'B Site', 'A Main', 'B Main', 'Mid', 'A Link', 'B Link', 'spike', 'flank', 'regroup', 'rotate'];
@@ -54,6 +55,7 @@ let resultShown = false;
 let is3d = false; // first-person view of one agent, instead of the top-down map
 let watchedId = null; // which agent that is
 const positions = new Map(); // smoothed unit positions for multiplayer
+let recentGesture = null;
 
 // ---------- view: the top-down map (default) or one agent's first-person view ----------
 
@@ -100,7 +102,7 @@ function showToast(text) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 700);
 }
 
-const activePointer = () => (pointer && performance.now() - pointer.at < POINTER_MS ? pointer : null);
+const activePointer = () => (pointer && performance.now() - pointer.at < POINTER_ORDER_TTL_MS ? pointer : null);
 
 // ---------- screens ----------
 
@@ -405,9 +407,14 @@ function leaveOnline() {
 
 function beginMatch() {
   if (readDevices().mic !== false) ensureMic();
+  clearTimeout(speculateTimer);
+  guess = null;
+  utterance = null;
   resultShown = false;
   positions.clear();
+  recentGesture = null;
   $('log').replaceChildren();
+  $('voiceSummary').textContent = 'Volume: — · Emphasis: —';
   $('feed').replaceChildren();
   $('caption').textContent = '';
   updateTeamUi();
@@ -446,19 +453,80 @@ function updateResultActions() {
 
 // ---------- orders ----------
 
-// Speaking takes seconds, so waiting for the finished sentence makes the squad feel slow.
-// Instead we interpret the partial transcript while you're still talking, apply it, and
-// reconcile when the final transcript arrives (identical text costs nothing extra).
-const SPECULATE_AFTER_MS = 120; // the partial must stop changing for this long
+// Partial transcripts let the squad begin moving before the commander finishes speaking.
+// The final transcript is evaluated with completed voice metrics, and a sequence prevents
+// an older guess from overwriting its correction.
+const SPECULATE_AFTER_MS = 120;
 const SPECULATE_MIN_WORDS = 3;
-let guess = null; // { text, entry, promise, applied, stale, seq }
+let guess = null;
 let speculateTimer = null;
 let speculateEnabled = true;
 let commandSeq = 0;
-// One record per spoken utterance, for measuring how quickly the squad reacts.
 let utterance = null;
 const utterances = [];
-const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() === b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() ===
+  b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+function voiceLabels(context) {
+  return [
+    `Volume: ${context.volumeLevel.replaceAll('_', ' ')}`,
+    `Emphasis: ${context.emphasisLevel}`,
+    `Rate: ${context.speechRate}`,
+    ...(context.profanityLevel && context.profanityLevel !== 'none'
+      ? [`Profanity cue: ${context.profanityLevel}`] : []),
+  ];
+}
+
+function gestureLabel(gesture) {
+  return `Gesture: ${gesture.label} · ${gesture.context.confidenceLevel} confidence · ${Math.round(gesture.context.stability * 100)}% stable`;
+}
+
+const canCommand = () => matchActive();
+const commandTarget = () => (is3d ? watched()?.name : undefined);
+const interpret = request => (session.kind === 'bots'
+  ? brains.interpretCommand(game, session.team, request)
+  : sendCommand(request));
+
+function recentReliableGesture() {
+  if (!recentGesture || performance.now() - recentGesture.at >= RECENT_GESTURE_MS) return null;
+  const gesture = { ...recentGesture.gesture, context: {
+    ...recentGesture.gesture.context,
+    ageMs: Math.round(performance.now() - recentGesture.at),
+  } };
+  return reliableGestureForSpeech(gesture) ? gesture : null;
+}
+
+function prepareCommand({ source = 'text', text, gesture, voiceContext, seq = ++commandSeq, only = commandTarget() }) {
+  const commandGesture = gesture ?? (source === 'hand' ? null : recentReliableGesture());
+  const p = activePointer();
+  return {
+    source, text, gesture: commandGesture, voiceContext, seq, only,
+    pointer: p && { x: p.x, y: p.y },
+  };
+}
+
+async function runCommand(entry, request, { early = false, current = () => true } = {}) {
+  try {
+    const result = await interpret(request);
+    if (current()) renderPlan(entry, result, request.voiceContext, request.gesture, early);
+    return result;
+  } catch (error) {
+    if (current()) showEntryError(entry, error);
+    return null;
+  }
+}
+
+async function issueCommand(input) {
+  if (!input.text?.trim()) return;
+  if (!canCommand()) {
+    setStatus('micStatus', 'Start a match first.', 'error');
+    return;
+  }
+  const request = prepareCommand(input);
+  const label = request.only ? `→ ${request.only}: ${request.text}` : request.text;
+  const entry = addLogEntry(request.source, label, request.gesture, request.voiceContext);
+  return runCommand(entry, request);
+}
 
 function onInterimTranscript(text) {
   $('caption').textContent = text;
@@ -472,88 +540,53 @@ function onInterimTranscript(text) {
 }
 
 function speculate(text) {
-  if (guess?.promise) return; // one guess in flight at a time
-  const entry = guess?.entry ?? addLogEntry('voice', text, null, true);
-  const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq };
+  if (!canCommand() || guess?.promise) return;
+  if (guess) guess.stale = true;
+  const request = prepareCommand({ source: 'voice', text });
+  const entry = guess?.entry ?? addLogEntry('voice', text, request.gesture, null, true);
+  setEntryText(entry, text, true);
+  const g = { text, entry, promise: null, applied: false, stale: false };
   guess = g;
-  setEntryText(entry, text, '⚡');
-  g.promise = interpret({ text, seq: g.seq, only: commandTarget() })
+  g.promise = runCommand(entry, request, { early: true, current: () => !g.stale })
     .then(result => {
-      if (result.stale) return;
-      renderPlan(entry, result, true);
-      g.applied = !result.ignored;
-      // the first moment the squad moved on this utterance
-      if (g.applied && !g.stale && utterance) utterance.actedAt ||= performance.now();
+      g.applied = Boolean(result && !result.ignored && !result.stale && result.plan?.some(p => p.applied));
+      if (g.applied && utterance) utterance.actedAt ||= performance.now();
     })
-    .catch(error => showEntryError(entry, error))
     .finally(() => { g.promise = null; });
 }
 
-// The finished sentence. If we already acted on exactly these words, keep those orders.
-async function onFinalTranscript(text) {
+async function onFinalTranscript(text, voiceContext) {
   clearTimeout(speculateTimer);
   $('caption').textContent = text;
+  $('voiceSummary').textContent = voiceContext
+    ? voiceLabels(voiceContext).filter(label => !label.startsWith('Rate:')).join(' · ')
+    : 'Volume: — · Emphasis: —';
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
   u.finalAt = performance.now();
   const g = guess;
   guess = null;
-  let reused = false;
-  if (g && sameWords(g.text, text)) {
-    await g.promise; // nearly always already resolved
-    reused = g.applied;
-  }
-  if (reused) {
-    setEntryText(g.entry, text, '');
-  } else if (g) {
-    g.stale = true; // its orders must not overwrite the finished sentence's
-    setEntryText(g.entry, text, '');
-    await runCommand(g.entry, { text, seq: ++commandSeq });
+  const reusedGuess = Boolean(g && sameWords(g.text, text));
+  if (g) g.stale = true;
+  let result;
+  if (g && canCommand()) {
+    const request = prepareCommand({ source: 'voice', text, voiceContext });
+    setEntryText(g.entry, text, false);
+    result = await runCommand(g.entry, request);
   } else {
-    await issueCommand({ source: 'voice', text, seq: ++commandSeq });
+    result = await issueCommand({ source: 'voice', text, voiceContext });
   }
   u.settledAt = performance.now();
+  if (!u.actedAt && result && !result.ignored && !result.stale && result.plan?.some(p => p.applied)) {
+    u.actedAt = u.settledAt;
+  }
   utterances.push({
-    text,
-    speculated: reused || Boolean(u.actedAt),
-    reusedGuess: reused,
-    // how long after we first heard you the squad moved, and when the final orders landed
+    text, speculated: Boolean(u.actedAt && u.actedAt < u.finalAt), reusedGuess,
     actedAfterMs: Math.round((u.actedAt || u.settledAt) - u.heardAt),
     settledAfterMs: Math.round(u.settledAt - u.heardAt),
     afterYouStopMs: Math.round(u.settledAt - u.finalAt),
   });
   if (utterances.length > 20) utterances.shift();
-}
-
-const canCommand = () => matchActive();
-// First-person is one agent's view, so every order given there is for them alone.
-const commandTarget = () => (is3d ? watched()?.name : undefined);
-const interpret = request => (session.kind === 'bots'
-  ? brains.interpretCommand(game, session.team, request)
-  : sendCommand(request));
-
-async function issueCommand({ source, text, gesture, seq }) {
-  if (!text?.trim()) return;
-  if (!session || !view || view.result) {
-    setStatus('micStatus', 'Start a match first.', 'error');
-    return;
-  }
-  const only = commandTarget();
-  await runCommand(addLogEntry(source, only ? `→ ${only}: ${text}` : text, gesture), { text, gesture, seq, only });
-}
-
-async function runCommand(entry, { text, gesture, seq = ++commandSeq, only = commandTarget() }) {
-  const p = activePointer();
-  try {
-    renderPlan(entry, await interpret({ text, gesture, pointer: p && { x: p.x, y: p.y }, only, seq }));
-  } catch (error) {
-    showEntryError(entry, error);
-  }
-}
-
-function showEntryError(entry, error) {
-  entry.querySelector('.plan').replaceChildren();
-  entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
 }
 
 function sendCommand(request) {
@@ -569,31 +602,52 @@ function sendCommand(request) {
   });
 }
 
-function setEntryText(entry, text, mark) {
-  const said = entry.querySelector('.said');
-  said.replaceChildren(el('span', { className: 'src', textContent: said.querySelector('.src').textContent }), text);
-  entry.classList.toggle('early', Boolean(mark));
+function showEntryError(entry, error) {
+  entry.querySelector('.plan').replaceChildren();
+  entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
 }
 
-function addLogEntry(source, text, gesture, early = false) {
-  const icon = { voice: 'Voice', text: 'Typed', hand: 'Sign' }[source];
+function setEntryText(entry, text, early) {
+  const said = entry.querySelector('.said');
+  said.replaceChildren(el('span', { className: 'src', textContent: said.querySelector('.src').textContent }), text);
+  entry.classList.toggle('early', early);
+}
+
+function addLogEntry(source, text, gesture, voiceContext, early = false) {
+  const icon = { voice: 'Voice', text: 'Typed', hand: gesture?.emoji ?? 'Sign' }[source];
+  const details = [
+    ...(voiceContext ? voiceLabels(voiceContext) : []),
+    ...(gesture?.context ? [gestureLabel(gesture)] : []),
+  ];
   const entry = el('div', { className: `entry${early ? ' early' : ''}` }, [
     el('div', { className: 'said' }, [el('span', { className: 'src', textContent: icon }), text]),
     el('div', { className: 'plan', textContent: 'Jev is reading the order…' }),
     el('div', { className: 'meta' }),
+    el('div', { className: 'ux', hidden: !details.length },
+      details.map(detail => el('span', { textContent: detail }))),
   ]);
-  const log = $('log');
-  log.prepend(entry);
-  while (log.children.length > 30) log.lastChild.remove();
+  $('log').prepend(entry);
   return entry;
 }
 
-function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, early = false) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier }, voiceContext, gesture, early = false) {
   const pct = v => `${Math.round(v * 100)}%`;
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
     entry.classList.add('ignored');
     return;
+  }
+  if (voiceContext && ux) {
+    const details = [
+      `Urgency: ${ux.urgency}`,
+      `Certainty: ${ux.certainty}`,
+      ...voiceLabels(voiceContext),
+      ...(paceMultiplier > 1 && !ignored ? [`Movement pace: ${Math.round(paceMultiplier * 100)}%`] : []),
+      ...(gesture?.context ? [gestureLabel(gesture)] : []),
+    ];
+    if (ux.clarificationRecommended) details.push('Clarification recommended');
+    entry.querySelector('.ux').replaceChildren(...details.map(detail => el('span', { textContent: detail })));
+    entry.querySelector('.ux').hidden = false;
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
@@ -603,13 +657,11 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
     return;
   }
   const rows = plan.flatMap(p => {
-    if (!p.applied) {
-      return [
-        el('span', { className: 'skip', textContent: p.name }),
-        el('span', { className: 'skip', textContent: 'not addressed' }),
-        el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
-      ];
-    }
+    if (!p.applied) return [
+      el('span', { className: 'skip', textContent: p.name }),
+      el('span', { className: 'skip', textContent: 'not addressed' }),
+      el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
+    ];
     return [
       el('span', { textContent: p.name }),
       el('span', { textContent: `${p.order} → ${p.target}`, title: `addressed ${pct(p.addressed)} · order ${pct(p.orderP)} · target ${pct(p.targetP)}` }),
@@ -621,22 +673,36 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
 }
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
-
-// Hand tracking keeps running while a menu is up (so the preview still works), but nothing it
-// sees should reach the match behind the overlay.
 const matchActive = () => Boolean(session && view && !view.result && $('overlay').hidden);
 
-function handleSignal(name) {
+function handleSignal(signal) {
   if (!matchActive()) return;
+  const name = typeof signal === 'string' ? signal : signal.name;
+  if (!Object.hasOwn(SIGNALS, name)) return;
   if (is3d && SQUAD_ONLY_SIGNALS[name]) {
     showSign(`${SQUAD_ONLY_SIGNALS[name]}: map view only`);
     return;
   }
-  const { text: said, gesture } = signalOrder(name, session.team, Boolean(activePointer()));
-  // A signal carries no names, so in first-person it speaks to the agent you're watching.
+  const p = activePointer();
+  const { text: said, gesture } = signalOrder(name, session.team, Boolean(p));
   const u = is3d ? watched() : null;
   const text = u ? said.replace(/^Everyone/, u.name) : said;
-  showSign(`${gesture.emoji} ${gesture.label}`);
+  if (typeof signal !== 'string') {
+    const pointerAgeMs = p ? performance.now() - p.at : Infinity;
+    gesture.context = {
+      name, meaning: gesture.meaning,
+      confidence: signal.confidence, stability: signal.stability, heldMs: signal.heldMs,
+      confidenceLevel: signal.confidenceLevel, stabilityLevel: signal.stabilityLevel,
+      pointer: p ? {
+        active: signal.pointer?.active ?? pointerAgeMs < POINTER_ACTIVE_MS,
+        zone: zoneAt(MAPS.tactical, p).name,
+        ageMs: Math.round(pointerAgeMs),
+      } : null,
+      ageMs: 0,
+    };
+    recentGesture = { gesture, at: performance.now() };
+  }
+  showSign(`✓ ${gesture.emoji} ${gesture.label}`);
   issueCommand({ source: 'hand', text, gesture });
 }
 
@@ -907,28 +973,41 @@ const voice = createVoice({
   onLevel: level => { $('level').style.width = `${level * 100}%`; },
 });
 
-// Voice is hands-free: the mic turns on when a match starts and listens only during matches.
-// Each sentence becomes an order when you pause. Muting keeps it off until you unmute.
+// Hands-free is the multiplayer default; hold-to-talk preserves the previous V-key control.
 let micMuted = false;
+let voiceMode = 'handsfree';
+let pttHeld = false;
+let micEnabling = null;
 async function ensureMic() {
-  if (voice.enabled || !window.isSecureContext) return;
-  try {
-    await voice.enable(keytermsFor(session?.team ?? 'attack'));
-  } catch (error) {
-    setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error');
+  if (!window.isSecureContext) {
+    setStatus('micStatus', 'Voice needs HTTPS or localhost.', 'error');
+    return;
   }
+  if (micEnabling) return micEnabling;
+  if (voice.enabled) return;
+  micEnabling = voice.enable(keytermsFor(session?.team ?? 'attack'))
+    .catch(error => setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error'))
+    .finally(() => { micEnabling = null; });
+  return micEnabling;
 }
 
 function syncListening() {
-  const inMatch = Boolean(session && view && !view.result);
-  voice.setListening(inMatch && !micMuted);
-  const label = !voice.enabled ? 'Mic off'
-    : micMuted ? 'Muted'
-    : inMatch ? 'Listening'
-    : 'Mic on';
+  const inMatch = matchActive();
+  const shouldListen = inMatch && !micMuted && (voiceMode === 'handsfree' || pttHeld);
+  if (voiceMode === 'ptt' && shouldListen && !voice.listening) voice.startTalking();
+  else if (voiceMode === 'ptt' && !shouldListen && voice.listening) voice.stopTalking();
+  else if (voiceMode === 'handsfree') voice.setListening(shouldListen);
+  const label = !voice.enabled ? '🎙 Mic off'
+    : micMuted ? '🔇 Muted: click to unmute'
+    : !inMatch ? '🎙 Mic on: listens during matches'
+      : voiceMode === 'ptt' ? pttHeld ? '🎙 Listening: release to send' : '🎙 Hold V or this button to talk'
+        : '🎙 Listening: just talk';
   if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
   $('listen').classList.toggle('live', voice.listening);
-  $('micBtn').textContent = !voice.enabled ? 'Mic on' : micMuted ? 'Unmute' : 'Mute';
+  $('listen').title = voiceMode === 'ptt' ? 'Hold to talk' : 'Click to mute or unmute';
+  $('voiceMode').textContent = voiceMode === 'ptt' ? 'Hold to talk' : 'Hands-free';
+  $('voiceMode').setAttribute('aria-pressed', String(voiceMode === 'ptt'));
+  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
 }
 
 async function toggleMic() {
@@ -943,7 +1022,33 @@ async function toggleMic() {
   syncListening();
 }
 $('micBtn').onclick = toggleMic;
-$('listen').onclick = toggleMic;
+$('voiceMode').onclick = () => {
+  pttHeld = false;
+  voiceMode = voiceMode === 'handsfree' ? 'ptt' : 'handsfree';
+  syncListening();
+};
+$('listen').onclick = () => { if (voiceMode === 'handsfree') toggleMic(); };
+$('listen').addEventListener('pointerdown', () => {
+  if (voiceMode !== 'ptt') return;
+  pttHeld = true;
+  if (!voice.enabled) ensureMic().then(syncListening);
+  syncListening();
+});
+function releaseToTalk() {
+  if (!pttHeld) return;
+  pttHeld = false;
+  syncListening();
+}
+for (const event of ['pointerup', 'pointercancel', 'pointerleave']) $('listen').addEventListener(event, releaseToTalk);
+document.addEventListener('keydown', e => {
+  if (voiceMode !== 'ptt' || e.code !== 'KeyV' || e.repeat || document.activeElement?.tagName === 'INPUT') return;
+  e.preventDefault();
+  pttHeld = true;
+  if (!voice.enabled) ensureMic().then(syncListening);
+  syncListening();
+});
+document.addEventListener('keyup', e => { if (e.code === 'KeyV') releaseToTalk(); });
+window.addEventListener('blur', releaseToTalk);
 
 $('textForm').onsubmit = e => {
   e.preventDefault();
@@ -986,6 +1091,19 @@ document.addEventListener('keydown', e => {
 });
 
 let gestures = null;
+let gestureFeedback = { stage: 'none', name: null };
+
+function renderGestureFeedback({ stage, name }) {
+  const sign = $('sign');
+  if (stage === 'none') { sign.hidden = true; return; }
+  sign.hidden = false;
+  if (stage === 'pointing') { sign.textContent = '☝️ Aiming'; return; }
+  const signal = SIGNALS[name];
+  sign.textContent = stage === 'confirmed' ? `✓ ${signal.emoji} ${signal.label}`
+    : stage === 'stabilizing' ? `${signal.emoji} ${signal.label}…`
+      : `${signal.emoji} ${signal.label} detected`;
+}
+
 $('previewBtn').onclick = () => {
   const showing = $('cam').hidden;
   $('cam').hidden = !showing;
@@ -1000,38 +1118,38 @@ $('camBtn').onclick = async () => {
 };
 
 function stopCamera() {
-  {
-    gestures.stop();
-    gestures = null;
-    $('camBtn').textContent = 'Camera on';
-    $('camOff').hidden = false;
-    $('cam').hidden = true;
-    $('previewBtn').hidden = true;
-    $('sign').hidden = true;
-    setStatus('camStatus', 'Camera off');
-  }
+  if (!gestures) return;
+  gestures.stop();
+  gestures = null;
+  recentGesture = null;
+  gestureFeedback = { stage: 'none', name: null };
+  clearTimeout(signTimer);
+  signTimer = null;
+  $('camBtn').textContent = 'Camera on';
+  $('camOff').hidden = false;
+  $('cam').hidden = true;
+  $('previewBtn').hidden = true;
+  $('sign').hidden = true;
+  setStatus('camStatus', 'Camera off');
 }
 
 async function startCamera() {
   if (gestures) return true;
+  $('camBtn').disabled = true;
   try {
     $('camOff').hidden = true;
     gestures = await createGestures({
       video: $('video'),
       overlay: $('hand'),
       onStatus: (text, kind) => setStatus('camStatus', text, kind),
-      onPointer: (p, name) => {
-        if (!signTimer) {
-          const labels = { Pointing_Up: '☝️ Aiming', Thumb_Left: '👈 Previous agent', Thumb_Right: '👉 Next agent' };
-          const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
-          $('sign').hidden = name === 'None';
-          $('sign').textContent = label;
-        }
-        if (!p || is3d || !matchActive()) return; // aiming is map-view only
+      onFeedback: feedback => {
+        gestureFeedback = feedback;
+        if (!signTimer) renderGestureFeedback(feedback);
+      },
+      onPointer: p => {
+        if (!p || is3d || !matchActive()) return;
         // Use the middle of the camera frame so you don't have to reach the edges.
-        const nx = Math.min(1, Math.max(0, (p.x - 0.15) / 0.7));
-        const ny = Math.min(1, Math.max(0, (p.y - 0.15) / 0.7));
-        pointer = { x: nx * 80, y: ny * 56, at: performance.now() };
+        pointer = { ...cameraToMapPoint(p, MAPS.tactical), at: performance.now() };
       },
       onSignal: handleSignal,
       onSwipe: dir => {
@@ -1057,8 +1175,12 @@ async function startCamera() {
     return true;
   } catch (error) {
     $('camOff').hidden = false;
+    gestureFeedback = { stage: 'none', name: null };
+    renderGestureFeedback(gestureFeedback);
     setStatus('camStatus', `Camera unavailable: ${error.message}`, 'error');
     return false;
+  } finally {
+    $('camBtn').disabled = false;
   }
 }
 
@@ -1067,7 +1189,7 @@ function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
   clearTimeout(signTimer);
-  signTimer = setTimeout(() => { signTimer = null; }, 1200);
+  signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
 $('signs').replaceChildren(
@@ -1086,6 +1208,7 @@ if (!window.isSecureContext) {
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
   $('listen').disabled = true;
+  $('voiceMode').disabled = true;
   $('camBtn').disabled = true;
 }
 
@@ -1120,6 +1243,7 @@ window.commander = {
   get view() { return view; },
   get online() { return online && { code: online.code, team: online.team, host: online.host, players: online.players }; },
   get game() { return game; },
+  get gestures() { return gestures; },
   issueCommand,
   signal: handleSignal,
   get is3d() { return is3d; },
