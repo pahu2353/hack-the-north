@@ -1,4 +1,5 @@
 // Game simulation: squad agents (steered by Jev), defender bots, titans, and round rules.
+import { opponentDestination } from './opponent.js';
 import {
   MAPS, angleDiff, angleTo, buildGrid, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
@@ -24,10 +25,11 @@ const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 const WAVES = 5;
 const WAVE_INTERVAL = 25;
 
-export function createGame(mode) {
+export function createGame(mode, { opponent = 'scripted' } = {}) {
   const map = MAPS[mode];
   const game = {
     mode,
+    opponent: mode === 'tactical' ? opponent : 'scripted',
     map,
     grids: new Map(),
     time: 0,
@@ -460,9 +462,12 @@ function pushOutOfRect(u, w) {
 
 function controlBot(game, u, dt) {
   const focus = u.visible[0];
+  const planned = opponentDestination(game, u);
   if (focus) {
-    // Outnumbered and hurt: fall back to cover instead of trading badly.
-    if (u.hp < 50 && u.visible.length >= 2) {
+    if (planned && u.botOrder.action === 'retreat') {
+      moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    } else if (u.hp < 50 && u.visible.length >= 2) {
+      // Outnumbered and hurt: fall back to cover instead of trading badly.
       if (!u.coverPoint || hasLineOfSight(game.map, focus, u.coverPoint)) u.coverPoint = findCover(game, u);
       moveToward(game, u, u.coverPoint, dt);
     } else {
@@ -472,11 +477,11 @@ function controlBot(game, u, dt) {
     return;
   }
   u.coverPoint = null;
-  let dest = u.post;
+  let dest = planned ?? u.post;
   const spike = game.spike;
-  if (spike.state === 'planted') {
+  if (!planned && spike.state === 'planted') {
     dest = { x: spike.x, y: spike.y };
-  } else if (u.post.rotate) {
+  } else if (!planned && u.post.rotate) {
     // Rotators fall back onto whichever site the latest callout threatens.
     const callout = [...game.enemyIntel.values()].filter(i => game.time - i.t < 8).sort((a, b) => b.t - a.t)[0];
     if (callout) dest = ROTATE_SPOTS.reduce((a, b) => (dist(b, callout) < dist(a, callout) ? b : a));

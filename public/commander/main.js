@@ -4,6 +4,7 @@ import { SIGNALS, createGestures } from './gestures.js';
 import { createRenderer } from './render.js';
 import { SQUADS, createGame, orderLabel, roundStatus, squad, stepGame } from './sim.js';
 import { createVoice } from './voice.js';
+import { createOpponentCommander } from './opponent.js';
 
 const STEP = 1 / 60;
 const $ = id => document.getElementById(id);
@@ -44,6 +45,7 @@ function signalOrder(name, game) {
 const canvas = $('map');
 const renderer = createRenderer(canvas);
 const brains = createBrains();
+const opponentCommander = createOpponentCommander();
 let mode = 'tactical';
 let game = createGame(mode);
 let running = false;
@@ -105,14 +107,22 @@ function handleSignal(name) {
 // ---------- game lifecycle ----------
 
 function newGame(nextMode, { start = false } = {}) {
+  opponentCommander.reset();
   mode = nextMode;
-  game = createGame(mode);
+  game = createGame(mode, { opponent: $('opponent').value });
+  $('opponent').disabled = mode !== 'tactical';
+  $('opponentDetails').hidden = game.opponent !== 'openai';
+  $('opponentDetails').open = false;
+  $('opponentSummary').textContent = '';
+  $('opponentOrders').replaceChildren();
+  const versusOpenAI = game.opponent === 'openai';
   renderer.resize(game.map);
   $('log').replaceChildren();
   $('feed').replaceChildren();
   buildSquadCards();
   running = start;
-  showOverlay(!start, MODES[mode].title, MODES[mode].intro, 'Start');
+  showOverlay(!start, versusOpenAI ? 'You + Jev vs OpenAI' : MODES[mode].title,
+    MODES[mode].intro + (versusOpenAI ? ' An OpenAI commander coordinates the defenders using only their sightings. Give your squad orders to outplay it.' : ''), 'Start');
   voice.setKeyterms([...MODES[mode].keyterms]);
   $('textInput').placeholder = mode === 'tactical'
     ? 'Or type an order, e.g. “Alpha, Bravo push B. Charlie hold mid”'
@@ -140,8 +150,10 @@ function frame(now) {
       accumulator -= STEP;
     }
     brains.update(game);
+    opponentCommander.update(game);
   }
   if (running && game.result) {
+    opponentCommander.reset();
     running = false;
     const won = game.result.winner === 'squad';
     showOverlay(true, won ? 'Victory' : 'Defeat', game.result.reason, 'Play again', won ? 'win' : 'lose');
@@ -174,6 +186,7 @@ function updateHud() {
   const seconds = Math.max(0, Math.ceil(status.clock));
   $('clock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   $('roundLabel').textContent = status.label;
+  updateOpponentHud();
 
   const s = brains.summary();
   $('jevStats').replaceChildren(
@@ -201,6 +214,32 @@ function updateHud() {
 
   const recent = game.feed.filter(f => game.time - f.t < 8).slice(-5);
   $('feed').replaceChildren(...recent.map(f => el('div', { className: f.team, textContent: f.text })));
+}
+
+function updateOpponentHud() {
+  if (game.opponent !== 'openai') {
+    setStatus('opponentStatus', game.mode === 'tactical' ? 'Scripted defenders' : 'Scripted titans');
+    return;
+  }
+  const s = game.botCommander;
+  const labels = {
+    waiting: 'OpenAI opponent: waiting for a fresh plan',
+    thinking: 'OpenAI opponent: planning…',
+    active: `OpenAI opponent · ${s?.model} · ${s?.latency} ms · ${s?.plans} plans`,
+    mock: `MOCK opponent · ${s?.plans} plans`,
+    fallback: 'OpenAI unavailable · scripted defenders active',
+  };
+  const text = !running && !game.result ? 'OpenAI opponent: ready to start'
+    : game.result ? 'OpenAI opponent: round finished' : labels[s?.status] ?? 'OpenAI opponent: starting…';
+  setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
+  $('opponentStatus').title = s?.error || 'The enemy commander replans between fights. Bots keep acting while it thinks.';
+  $('opponentSummary').textContent = s?.error || s?.summary || 'Waiting for the first plan. Defenders use their normal tactics in the meantime.';
+  if ($('opponentDetails').open) {
+    $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
+      const unit = game.units.find(u => u.id === order.unitId);
+      return el('div', { textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${order.action} → ${order.zone}` : 'eliminated'}` });
+    }));
+  }
 }
 
 // ---------- inputs ----------
@@ -329,6 +368,7 @@ $('start').onclick = () => {
 };
 $('restart').onclick = () => newGame(mode, { start: true });
 $('mode').onchange = e => newGame(e.target.value);
+$('opponent').onchange = () => newGame(mode);
 window.addEventListener('resize', () => renderer.resize(game.map));
 
 function setStatus(id, text, kind = '') {
@@ -351,6 +391,7 @@ window.commander = {
   get game() { return game; },
   get running() { return running; },
   brains,
+  opponentCommander,
   voice,
   issueCommand,
   signal: handleSignal,

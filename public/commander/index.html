@@ -111,6 +111,9 @@
   .agent .bar i { display: block; height: 100%; background: #2b5c8f; border-radius: 0 2px 2px 0; }
   .agent .prob.top .bar i { background: var(--squad); }
   .agent .brain { font-size: 11px; color: var(--muted); }
+  .opponent-panel { color: var(--ink-2); font-size: 12px; max-height: 150px; overflow: auto; }
+  .opponent-panel summary { cursor: pointer; color: var(--gold); }
+  .opponent-panel p { margin: 6px 0; }
 
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
@@ -128,6 +131,12 @@
     <option value="tactical">Tactical: Spike Rush (Valorant-style)</option>
     <option value="titan">Titan Siege: Commander Erwin</option>
   </select>
+  <label>Opponent
+    <select id="opponent">
+      <option value="scripted">Scripted bots</option>
+      <option value="openai">OpenAI commander</option>
+    </select>
+  </label>
   <button id="restart" type="button">Restart</button>
   <div class="clock" id="clock">–</div>
   <div class="round-label" id="roundLabel"></div>
@@ -171,6 +180,12 @@
       <div class="status" id="micStatus"></div>
     </div>
     <div class="card" style="min-height:0">
+      <div class="status" id="opponentStatus" role="status"></div>
+      <details class="opponent-panel" id="opponentDetails" hidden>
+        <summary>Inspect enemy plan (demo)</summary>
+        <p id="opponentSummary"></p>
+        <div id="opponentOrders"></div>
+      </details>
       <div class="card-head">Orders → Jev</div>
       <div class="log" id="log"></div>
     </div>

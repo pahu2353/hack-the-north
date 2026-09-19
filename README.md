@@ -77,7 +77,57 @@ You're the commander. You don't play a unit yourself: you give orders, and Jev r
 1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call, with three questions per agent: does the order apply to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant…), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was.
 2. **Agent brains.** Like Jev playing Doom, each agent sends its own situation to Jev about twice a second: health, order, enemies in sight, teammates in fights, and the spike or titan status. It gets back an action (fight, take cover, advance, support; or strike, flank, evade in Titan Siege) and which target to go for. Each card at the bottom shows an agent's current action probabilities.
 
-The opposing side is scripted: defenders hold posts, rotate to threatened sites, and retake the spike; titans chase the nearest scout or head for the gate. Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice streams through the local server to Deepgram, so the key never reaches the browser.
+By default, the opposing side is scripted: defenders hold posts, rotate to threatened sites, and retake the spike; titans chase the nearest scout or head for the gate. Spike Rush also has an OpenAI opponent option, described below. Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice streams through the local server to Deepgram, so the key never reaches the browser.
+
+### Bot mode: you + Jev vs OpenAI
+
+In **Spike Rush**, choose **Opponent → OpenAI commander**, then Start. You give your squad
+orders as usual; Jev still runs your agents. An OpenAI model now coordinates the four enemy
+defenders. Titan Siege continues to use its scripted enemies. Changing the opponent starts a fresh round.
+
+The enemy commander assigns each defender a zone and one of `hold`, `rotate`, `flank`,
+`retreat`, or `retake`. It replans five seconds after an answer, or sooner when the spike is
+planted. Shooting, movement, pathfinding, cover reflexes, and defusing remain normal game code.
+The model sees the defenders' state, their sightings from the last eight seconds, and the public
+planted-spike state. It does not receive your orders, pointer, or hidden squad positions.
+
+Add either key to `.env.local` (keys stay on the server):
+
+```sh
+# Direct OpenAI API; preferred when both keys are present:
+OPENAI_API_KEY=...
+# Or reuse AI_GATEWAY_API_KEY, which is already required for Jev.
+
+# Optional OpenAI model ID (without the "openai/" prefix):
+OPENAI_BOT_MODEL=gpt-5.6-luna
+```
+
+The default opponent model is `gpt-5.6-luna` with low reasoning to keep decisions quick and
+inexpensive. GPT-5/6 overrides also use low reasoning; non-reasoning models such as
+`gpt-4.1-mini` omit that setting. The direct API uses
+[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+to constrain the plan; both provider paths also validate unit IDs, actions, and destinations
+before applying it. Your squad still requires the existing AI Gateway configuration for live Jev.
+
+The opponent status shows planning, model/latency, or a fallback. **Inspect enemy plan (demo)**
+reveals the latest strategy and per-defender orders; leave it closed for regular play.
+On timeout, invalid output, or missing credentials, scripted defenders take over and the commander
+retries after ten seconds. Plans expire after twelve simulation seconds. Restarting cancels pending
+requests, and responses from an older battlefield state are discarded when the objective changes.
+
+```sh
+npm run mock          # both Jev and the opponent use fake answers; no keys needed
+OPPONENT_MOCK=1 npm run dev  # mock only the enemy commander; keep Jev live
+npm run test:bot-mode
+```
+
+Mock opponent plans are labeled **MOCK**. The existing Jev mock generates seeded probabilities;
+it is a wiring check, not a real natural-language interpreter or measure of AI skill.
+
+For integration: `public/commander/opponent.js` owns snapshots, plan application, and the async
+commander loop; `opponent.ts` owns the server adapter at `POST /api/opponent`. The only simulation
+hooks are `createGame('tactical', { opponent: 'openai' })` and defender order execution. The module
+has no DOM dependency, so the 3D renderer can reuse it. The player's `brain.js` is unchanged.
 
 ## Jev visualizer
 

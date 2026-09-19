@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env.local --watch server.ts",
     "start": "node --env-file-if-exists=.env.local server.ts",
-    "mock": "JEV_MOCK=1 node server.ts"
+    "mock": "JEV_MOCK=1 node server.ts",
+    "test:bot-mode": "node --test tests/opponent.test.js"
   },
   "repository": {
     "type": "git",
