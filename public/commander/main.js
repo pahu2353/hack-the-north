@@ -231,8 +231,9 @@ $('botsOpenAI').onclick = () => startBotGame('openai', botSide, botMap);
 
 // A row of buttons standing in for a dropdown: every option visible, one click to change it.
 // `pick` is called with the chosen value, and re-rendering is just calling this again.
-function segment(id, options, selected, pick) {
-  $(id).replaceChildren(...options.map(o => {
+function segment(target, options, selected, pick) {
+  const host = typeof target === 'string' ? $(target) : target;
+  host.replaceChildren(...options.map(o => {
     const button = el('button', { type: 'button', textContent: o.label, title: o.title ?? '' });
     button.setAttribute('role', 'radio');
     button.setAttribute('aria-checked', String(o.value === selected));
@@ -299,19 +300,21 @@ function applySettings() {
   }
 }
 
+// Off and On, the same control the side and map pickers use: both states visible, the one in
+// force lit, rather than a single button you have to read to find out what it is doing.
+const SWITCH_OPTIONS = [{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }];
+
 function buildSettings() {
   $('toggles').replaceChildren(...SETTINGS.map(([key, label]) => {
-    const button = el('button', {
-      type: 'button', className: 'toggle', textContent: settings[key] ? 'On' : 'Off', title: label,
-      onclick: () => {
-        settings[key] = !settings[key];
-        applySettings();
-        buildSettings();
-      },
+    const control = el('div', { className: 'segment' });
+    control.setAttribute('role', 'radiogroup');
+    control.setAttribute('aria-label', label);
+    segment(control, SWITCH_OPTIONS, settings[key] ? 'on' : 'off', value => {
+      settings[key] = value === 'on';
+      applySettings();
+      buildSettings();
     });
-    button.setAttribute('aria-pressed', String(Boolean(settings[key])));
-    button.setAttribute('aria-label', label);
-    return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), button]);
+    return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), control]);
   }));
 }
 

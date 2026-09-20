@@ -64,7 +64,6 @@
   button.big.primary:hover:not(:disabled) { background: #55e6da; color: var(--accent-ink); }
   button.link { background: none; border: 0; color: var(--muted); padding: 6px 8px; letter-spacing: 0.05em; }
   button.link:hover { color: var(--ink); }
-  button.toggle[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
   button:focus-visible, input:focus-visible { outline: 1px solid var(--squad); outline-offset: 1px; }
   input {
     background: var(--panel-2); border: 1px solid var(--border); padding: 7px 9px; color: var(--ink);
@@ -166,7 +165,8 @@
     border: 1px solid var(--border); padding: 8px 10px; text-align: left;
   }
   .toggle-row > span { color: var(--ink-2); }
-  .toggle-row button { min-width: 54px; }
+  /* Narrower than a side or map picker: two short words, and the rows should not sprawl. */
+  .toggle-row .segment button { min-width: 52px; }
   /* Shared fixed columns keep both squads and totals aligned. */
   #screenResult { width: min(720px, 100%); gap: 18px; min-width: 0; }
   /* One row per choice, label beside it. `display: contents` puts both pickers' labels and
@@ -182,10 +182,20 @@
   .segment { display: flex; border: 1px solid var(--border); background: var(--panel); }
   .segment button {
     border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px; flex: 1;
+    position: relative; transition: background-color 120ms ease, color 120ms ease;
   }
   .segment button:first-child { border-left: 0; }
+  /* The generic button hover only moves the border colour, and these have no border of their
+     own, so on their own they barely responded to the pointer. Lift the ground instead. */
+  .segment button:hover:not(:disabled) { background: var(--panel-2); color: var(--ink); }
   .segment button[aria-checked="true"] { background: var(--raised); color: var(--accent); }
-  .segment button[aria-checked="true"]:hover:not(:disabled) { color: var(--accent); }
+  .segment button[aria-checked="true"]:hover:not(:disabled) { background: #24333d; color: var(--accent); }
+  /* A rule of accent under the option in force: the same mark the screen headings use. */
+  .segment button[aria-checked="true"]::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent);
+  }
+  .segment button:active:not(:disabled) { background: var(--raised); }
+  .segment button:disabled { opacity: 0.45; }
   .result-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
   .match-score { display: grid; grid-template-columns: 1fr 1.2fr 1fr; align-items: center; width: 100%; padding: 18px 12px; border: 1px solid var(--border); background: var(--panel); }
   .match-score > div { display: grid; gap: 8px; }
