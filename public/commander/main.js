@@ -1481,8 +1481,19 @@ function syncListening() {
       : pttHeld ? 'Listening — release to send' : 'Hold V or this button to talk';
   if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
   $('listen').classList.toggle('live', voice.listening);
-  $('voiceMode').textContent = voiceMode === 'ptt' ? 'Hold to talk' : 'Hands-free';
-  $('voiceMode').setAttribute('aria-pressed', String(voiceMode === 'ptt'));
+  // The hand says the mode the way the camera and mic buttons beside it do: lit for on,
+  // struck through for the mode where you have to hold the button down yourself.
+  const handsFree = voiceMode !== 'ptt';
+  const modeLabel = handsFree
+    ? 'Hands-free listening — switch to hold-to-talk'
+    : 'Hold to talk — switch to hands-free';
+  const mode = $('voiceMode');
+  if (mode.dataset.state !== (handsFree ? 'on' : 'off')) {
+    mode.dataset.state = handsFree ? 'on' : 'off';
+    mode.title = modeLabel;
+    mode.setAttribute('aria-label', modeLabel);
+  }
+  mode.setAttribute('aria-pressed', String(!handsFree));
 }
 
 async function toggleMic() {
