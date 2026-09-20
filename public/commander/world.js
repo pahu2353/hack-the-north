@@ -148,12 +148,14 @@ export const MAPS = {
       Mid: { flank: ['Catwalk', 'Top Mid'] },
     },
     spawns: {
-      attack: [{ x: 44, y: 77 }, { x: 48, y: 79 }, { x: 52, y: 77 }, { x: 48, y: 74 }],
-      // One anchor per site, two rotators holding the CT-side connectors.
+      // One post per agent: the squad is as big as the map says, so both maps field five.
+      attack: [{ x: 40, y: 75 }, { x: 44, y: 77 }, { x: 48, y: 79 }, { x: 52, y: 77 }, { x: 48, y: 74 }],
+      // One anchor per site, three rotators on the CT-side connectors between them.
       defend: [
         { x: 70, y: 21, rotate: false },
         { x: 45, y: 11, rotate: true },
         { x: 59, y: 14, rotate: true },
+        { x: 45, y: 22, rotate: true },
         { x: 15, y: 16, rotate: false },
       ],
     },
