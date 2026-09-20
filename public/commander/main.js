@@ -64,17 +64,26 @@ const camera = createCamera();
 // fallback. Built on first use so a machine without WebGL still reaches the menu.
 let pov3d = null;
 let pov3dFailed = false;
+// Leaving the 3D view for the raycaster, whether it never started or the GPU took its context
+// away mid-round. Announced either way: the arena hides whichever canvas the engine isn't
+// using, so a silent switch would leave the raycaster drawing into a hidden element.
+function dropTo2d(reason) {
+  if (pov3dFailed) return;
+  pov3dFailed = true;
+  if (reason) console.warn(`3D view unavailable, falling back to the raycaster: ${reason}`);
+  if (session) {
+    setView(is3d);
+    if (is3d) showToast('3D view stopped — switched to 2D');
+  }
+}
+
 function engine() {
   if (!use3d || pov3dFailed) return pov;
   if (!pov3d) {
     try {
-      pov3d = createPov3dRenderer($('pov3d'), $('pov3dHud'));
+      pov3d = createPov3dRenderer($('pov3d'), $('pov3dHud'), { onLost: dropTo2d });
     } catch (err) {
-      console.warn('3D view unavailable, falling back to the raycaster', err);
-      pov3dFailed = true;
-      // The arena hides whichever canvas the engine isn't using, so the fallback has to be
-      // announced or the raycaster would draw into a hidden element and the view go black.
-      if (session) setView(is3d);
+      dropTo2d(err.message);
       return pov;
     }
   }
@@ -897,7 +906,24 @@ const paused = () => !$('screenPause').hidden || !$('screenSettings').hidden;
 let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
+let frameFailures = 0;
+// requestAnimationFrame stops rescheduling the moment a frame throws, and this loop is the only
+// thing driving the simulation, the view and the HUD — so an escaping exception doesn't lose one
+// frame, it ends the match until the page is reloaded. Keep the loop alive and say what broke.
 function frame(now) {
+  try {
+    drawFrame(now);
+    frameFailures = 0;
+  } catch (err) {
+    if (frameFailures === 0) console.error('Frame failed; the loop is still running.', err);
+    // A renderer that fails every frame is not going to recover on its own, and the raycaster
+    // draws the same match from the same snapshot.
+    if (++frameFailures > 30 && use3d && !pov3dFailed) dropTo2d('it failed 30 frames in a row');
+  }
+  requestAnimationFrame(frame);
+}
+
+function drawFrame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (aim) {
@@ -942,7 +968,6 @@ function frame(now) {
     updateHud();
     syncListening();
   }
-  requestAnimationFrame(frame);
 }
 
 // Snapshots arrive 20 times a second; ease units toward them so movement stays smooth.

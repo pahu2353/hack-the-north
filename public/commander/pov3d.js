@@ -68,8 +68,18 @@ const POINTER = 0xffd24a;
 const yawOf = facing => -facing - Math.PI / 2;
 const hex = c => (typeof c === 'string' ? new THREE.Color(c) : new THREE.Color(c));
 
-export function createPov3dRenderer(canvas, hudCanvas) {
+// onLost is called if the GPU takes the WebGL context away, which browsers do on their own
+// account: a driver reset, a long spell in a background tab, or too much pressure from other
+// pages. Nothing throws when it happens — the canvas simply keeps showing its last frame — so
+// without this the view looks frozen while the clock, the HUD and the squad carry on.
+export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  let contextLost = false;
+  canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault(); // without this the context can never come back at all
+    contextLost = true;
+    onLost?.();
+  });
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.autoClear = false;
@@ -233,7 +243,7 @@ export function createPov3dRenderer(canvas, hudCanvas) {
     }
     watchedId = unit.id;
     lastViewTime = view.time;
-    if (!fit()) return;
+    if (contextLost || !fit()) return;
 
     const wanted = MAPS[view.mapId] ?? map;
     if (wanted !== map) useMap(wanted);
