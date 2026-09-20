@@ -241,8 +241,10 @@
     border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: auto;
     overscroll-behavior: contain;
   }
+  /* No rules between the sections. Each one already opens with its own heading, and with only
+     two of them on screen the lines were dividing a list of two. */
   .card {
-    padding: 11px 13px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; min-height: 0;
+    padding: 11px 13px; display: grid; gap: 8px; min-height: 0;
     justify-items: stretch; align-content: start;
   }
   .card.grow { flex: 1; min-height: 120px; }
@@ -327,27 +329,27 @@
     padding: 4px 8px; min-height: 0; color: var(--muted);
   }
   .tab[aria-selected="true"] { color: var(--ink); border-color: var(--border-strong); background: var(--raised); }
-  .decisions { overflow: auto; overscroll-behavior: contain; display: grid; gap: 8px; align-content: start; padding-right: 4px; }
-  .decision { background: var(--panel); border: 1px solid var(--border); padding: 7px 9px; display: grid; gap: 4px; }
+  .decisions { overflow: auto; overscroll-behavior: contain; display: grid; gap: 5px; align-content: start; }
+  .decision { background: var(--panel); border: 1px solid var(--border); padding: 5px 8px; display: grid; gap: 2px; }
   .decision.dead { opacity: 0.45; }
   .decision .top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
-  .decision .name { font: 800 12px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
+  .decision .name { font: 800 11px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
   .decision .src { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
   .decision { cursor: pointer; }
   /* The one you are watching, marked the way the footer cards used to mark it. */
   .decision.watched { border-color: var(--gold); }
-  .decision .hp { height: 3px; background: var(--panel-2); overflow: hidden; }
+  .decision .hp { height: 2px; background: var(--panel-2); overflow: hidden; }
   .decision .hp i { display: block; height: 100%; background: var(--agent); }
-  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
-  .decision .order { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; line-height: 1.25; color: var(--ink-2); font-weight: 600; }
+  .decision .order { display: flex; justify-content: space-between; gap: 6px; font-size: 10.5px; line-height: 1.25; color: var(--muted); }
   .decision .order:empty { display: none; }
   .decision .nade { flex: none; }
   .decision .doing .src { flex: none; }
-  .decision .p { font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .decision .p { font: 700 11px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
   /* The whole distribution in one bar: the chosen option lit, the rest of the field behind it.
      Segments are flex-weighted so they always sum to the width, and a floor keeps a 0.4%
      option from collapsing into nothing. */
-  .spread { display: flex; gap: 1px; height: 6px; margin-top: 2px; }
+  .spread { display: flex; gap: 1px; height: 5px; margin-top: 1px; }
   .spread i { background: #24313d; min-width: 1px; }
   .spread i.pick { background: var(--agent); }
   /* One row per option Jev weighed, longest bar first: the gap between the top two is the
