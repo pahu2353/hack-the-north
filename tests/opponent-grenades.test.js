@@ -103,7 +103,7 @@ for (const team of ['attack', 'defend']) {
     step(game, 0.15);
     assert(bot.x > before, 'late hold order cannot reverse a dodge');
     step(game, GRENADE.fuse - 0.85); // let it actually go off, whatever the fuse is tuned to
-    assert.equal(bot.hp, 100);
+    assert.equal(bot.hp, bot.maxHp);
     assert.equal(bot.botDodge, null);
     const away = dist(bot, hold);
     step(game, 0.4);
@@ -221,7 +221,7 @@ for (const team of ['attack', 'defend']) test(team + ': dodge interrupts the spi
   assert.equal(bot.botOrder.action, action, 'survival does not discard the objective');
   step(game, GRENADE.fuse - 0.1);
   assert.equal(bot.botDodge, null);
-  assert.equal(bot.hp, 100);
+  assert.equal(bot.hp, bot.maxHp);
   const goal = team === 'attack' ? 'planted' : 'defused';
   for (let i = 0; i < 1000 && game.spike.state !== goal; i++) stepGame(game, 1 / 60);
   assert.equal(game.spike.state, goal, 'squad completes the objective after dodging');

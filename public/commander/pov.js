@@ -2,11 +2,12 @@
 // 3D world and the minimap always match. Plain 2D canvas: one ray per column for the walls,
 // then billboard sprites (units, spike, pings) clipped against the wall depth buffer.
 // Draws one team's view (see teamView in sim.js), narrowed to what a single agent can see.
-import { MAPS, hasLineOfSight } from './world.js';
+import { MAPS, castRay, hasLineOfSight } from './world.js';
+import { MANUAL_AIM } from './sim.js';
 
 const FOV = (90 * Math.PI) / 180;
 const WALL_H = 3;
-const EYE = 1.6;
+const EYE = MANUAL_AIM.eye;
 const COLUMN = 2; // CSS px per ray
 const FAR = 70;
 const LINGER = 0.4; // seconds an enemy stays drawn after slipping out of sight
@@ -59,7 +60,7 @@ export function createPovRenderer(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const theme = THEME;
     const focal = W / 2 / Math.tan(FOV / 2);
-    const horizon = H / 2;
+    const horizon = H / 2 + Math.tan(camera.pitch ?? 0) * focal;
     cam = { x: camera.x, y: camera.y, angle: camera.angle, focal, horizon };
     const walls = MAPS.tactical.walls;
 
@@ -128,7 +129,7 @@ export function createPovRenderer(canvas) {
 
     for (const e of view.effects) if (e.kind === 'tracer') tracer(e, walls, view);
     viewmodel(view, unit);
-    crosshair();
+    crosshair(unit);
   }
 
   // The marker the commander placed on the map, drawn as a beacon in the world.
@@ -148,29 +149,6 @@ export function createPovRenderer(canvas) {
     }
     const age = view.time - (lastSeen.get(u.id) ?? -Infinity);
     return age >= 0 && age < LINGER;
-  }
-
-  // Nearest wall hit along a ray (slab test against each rectangle).
-  function castRay(walls, ox, oy, dx, dy) {
-    let best = null;
-    const ix = dx === 0 ? 1e9 : 1 / dx;
-    const iy = dy === 0 ? 1e9 : 1 / dy;
-    for (const r of walls) {
-      const tx1 = (r.x - ox) * ix;
-      const tx2 = (r.x + r.w - ox) * ix;
-      const ty1 = (r.y - oy) * iy;
-      const ty2 = (r.y + r.h - oy) * iy;
-      const txn = Math.min(tx1, tx2);
-      const tyn = Math.min(ty1, ty2);
-      const near = Math.max(txn, tyn);
-      const far = Math.min(Math.max(tx1, tx2), Math.max(ty1, ty2));
-      if (far < near || near <= 0.01 || (best && near >= best.t)) continue;
-      const side = tyn > txn; // hit a horizontal (y) face
-      const along = side ? ox + dx * near - r.x : oy + dy * near - r.y;
-      const length = side ? r.w : r.h;
-      best = { t: near, side, edge: along < 0.12 || along > length - 0.12 };
-    }
-    return best;
   }
 
   // Project a world point at a height to the screen; null if behind the camera.
@@ -227,8 +205,8 @@ export function createPovRenderer(canvas) {
 
   function figure(s, u, view) {
     const own = u.team === view.team;
-    const height = 1.8;
-    const width = 0.75;
+    const height = MANUAL_AIM.height;
+    const width = MANUAL_AIM.halfWidth * 2;
     const scale = cam.focal / s.z;
     const foot = cam.horizon + EYE * scale;
     const h = height * scale;
@@ -393,10 +371,10 @@ export function createPovRenderer(canvas) {
     ctx.restore();
   }
 
-  function crosshair() {
+  function crosshair(unit) {
     const cx = W / 2;
     const cy = H / 2;
-    ctx.strokeStyle = 'rgba(120, 255, 190, 0.95)';
+    ctx.strokeStyle = unit.aimTargetId != null ? 'rgba(120, 255, 190, 0.95)' : 'rgba(255, 255, 255, 0.5)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -404,6 +382,15 @@ export function createPovRenderer(canvas) {
       ctx.lineTo(cx + dx * 10, cy + dy * 10);
     }
     ctx.stroke();
+    if (unit.aimHit) {
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath();
+      for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+        ctx.moveTo(cx + dx * 12, cy + dy * 12);
+        ctx.lineTo(cx + dx * 18, cy + dy * 18);
+      }
+      ctx.stroke();
+    }
   }
 
   return { draw, toWorld, setPointer, reset };
@@ -413,7 +400,12 @@ export function createPovRenderer(canvas) {
 export function createCamera() {
   const cam = { x: 0, y: 0, angle: 0, unitId: null };
   return {
-    update(u, dt) {
+    update(u, dt, aim = null) {
+      cam.pitch = aim?.pitch ?? 0;
+      if (aim) {
+        Object.assign(cam, { x: u.x, y: u.y, angle: aim.yaw, unitId: u.id });
+        return cam;
+      }
       if (cam.unitId !== u.id) {
         Object.assign(cam, { x: u.x, y: u.y, angle: u.facing, unitId: u.id });
         return cam;

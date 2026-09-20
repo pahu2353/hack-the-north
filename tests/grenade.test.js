@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  aliveTeam, createGame, grenadeSpot, incomingGrenade, setOrder, stepGame, teamUnits, teamView, throwGrenade,
+  GRENADE, MAX_HP, aliveTeam, createGame, grenadeSpot, incomingGrenade, setOrder, stepGame, teamUnits, teamView, throwGrenade,
 } from '../public/commander/sim.js';
 
 const RADIUS = 6;
@@ -39,10 +39,10 @@ test('a grenade hurts everyone standing together, hardest at the centre', () => 
   step(game, 2.5);
 
   const [centre, near, edge, away] = teamUnits(game, 'defend');
-  assert.ok(centre.hp < 25, `centre took the worst of it (hp ${centre.hp})`);
-  assert.ok(near.hp > centre.hp && near.hp < 100, `1.5m away took less (hp ${near.hp})`);
-  assert.ok(edge.hp > near.hp && edge.hp < 100, `4m away took least (hp ${edge.hp})`);
-  assert.equal(away.hp, 100, 'someone 22m away is untouched');
+  assert.ok(centre.hp === MAX_HP - GRENADE.centreDamage, `centre took the worst of it (hp ${centre.hp})`);
+  assert.ok(near.hp > centre.hp && near.hp < MAX_HP, `1.5m away took less (hp ${near.hp})`);
+  assert.ok(edge.hp > near.hp && edge.hp < MAX_HP, `4m away took least (hp ${edge.hp})`);
+  assert.equal(away.hp, MAX_HP, 'someone 22m away is untouched');
 });
 
 test('the blast does not reach through walls, or hit your own squad', () => {
@@ -56,8 +56,8 @@ test('the blast does not reach through walls, or hit your own squad', () => {
   Object.assign(thrower, { x: 36, y: 30 });
   throwGrenade(game, thrower, { x: 33, y: 30 });
   step(game, 2.5);
-  assert.equal(behindWall.hp, 100, 'a wall between you and the blast stops it');
-  assert.equal(mate.hp, 100, 'your own squad is not hurt by your grenade');
+  assert.equal(behindWall.hp, MAX_HP, 'a wall between you and the blast stops it');
+  assert.equal(mate.hp, MAX_HP, 'your own squad is not hurt by your grenade');
 });
 
 test('a grenade cannot be thrown further than its range, through a wall, or twice', () => {
@@ -82,7 +82,7 @@ test('scattering gets an agent clear before the fuse runs out', () => {
   assert.ok(incomingGrenade(game, runner), 'the agent can tell one is about to go off');
   runner.action = 'scatter';
   step(game, FUSE + 0.4);
-  assert.equal(runner.hp, 100, 'running the moment it lands escapes the blast');
+  assert.equal(runner.hp, MAX_HP, 'running the moment it lands escapes the blast');
 
   const game2 = bench();
   const [stayer] = teamUnits(game2, 'defend');
@@ -91,7 +91,7 @@ test('scattering gets an agent clear before the fuse runs out', () => {
   Object.assign(thrower2, { x: 40, y: 52 });
   throwGrenade(game2, thrower2, { x: 40, y: 46 });
   step(game2, FUSE + 0.8);
-  assert.ok(stayer.hp < 50, `standing in it costs most of your health (hp ${stayer.hp})`);
+  assert.ok(stayer.hp < MAX_HP / 2, `standing in it costs most of your health (hp ${stayer.hp})`);
 });
 
 test('the best spot is the one catching the most of a group, within range and sight', () => {
@@ -145,6 +145,6 @@ test('defender bots throw at a group of attackers', () => {
   step(game, 1.5);
   assert.equal(bots[0].grenades, 0, 'the bot used its grenade on the clump');
   step(game, 2);
-  const hurt = teamUnits(game, 'attack').filter(u => u.hp < 100).length; // dead ones count too
+  const hurt = teamUnits(game, 'attack').filter(u => u.hp < MAX_HP).length; // dead ones count too
   assert.ok(hurt >= 3, `a stacked squad all take damage (${hurt} hurt)`);
 });

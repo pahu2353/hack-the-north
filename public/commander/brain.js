@@ -150,7 +150,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       ...(source && { command_source: source }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
-      squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
+      squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)}/${u.maxHp} HP`])),
       ...(voiceContext && {
         voice_context: {
           volume_level: voiceContext.volumeLevel,
@@ -292,6 +292,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       id: e.name,
       distance_m: Math.round(dist(u, e)),
       hp: Math.round(e.hp),
+      max_hp: e.maxHp,
       shooting_at_you: e.targetId === u.id && game.time - e.lastShotAt < 1,
     }));
     const mates = aliveTeam(game, u.team).filter(m => m !== u);
@@ -308,6 +309,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         side: u.team === 'attack' ? 'attacker' : 'defender',
         grenades_left: u.grenades,
         hp: Math.round(u.hp),
+        max_hp: u.maxHp,
         location: zoneAt(game.map, u).name,
         moving: u.moving,
         ...(u.team === 'attack' && { carrying_spike: game.spike.state === 'carried' && game.spike.carrierId === u.id }),
@@ -315,7 +317,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       commander_order: orderLabel(u),
       meters_to_ordered_position: toObjective,
       enemies_in_sight: enemies,
-      teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
+      teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), max_hp: m.maxHp, distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
       spike: spikeBriefing(game, u.team),
       ...(clump && { enemies_bunched_together: `${clump.caught} of them are standing within 5m of each other, in grenade range` }),
       ...(bomb && { grenade_about_to_go_off: `${Math.max(0, bomb.explodeAt - game.time).toFixed(1)}s, ${Math.round(Math.hypot(bomb.x - u.x, bomb.y - u.y))}m away` }),

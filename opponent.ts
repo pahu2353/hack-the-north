@@ -2,7 +2,7 @@
 import { generateText, jsonSchema, Output } from 'ai';
 import { MAPS } from './public/commander/world.js';
 import { opponentActions, validateOpponentPlan } from './public/commander/opponent.js';
-import { GRENADE } from './public/commander/sim.js';
+import { GRENADE, MAX_HP, RIFLE } from './public/commander/sim.js';
 
 const map = MAPS.tactical;
 const zones = map.zones.map(z => z.name);
@@ -30,7 +30,7 @@ export function parseOpponentSnapshot(value: any) {
   const actions = opponentActions(value.team);
   const ids = new Set();
   const squad = value.squad.map((u: any) => {
-    if (!u || !unitId(u.id) || ids.has(u.id) || !finite(u.hp, 1, 100) || !point(u.position)
+    if (!u || !unitId(u.id) || ids.has(u.id) || !finite(u.hp, 1, MAX_HP) || !point(u.position)
         || !zones.includes(u.zone) || typeof u.name !== 'string' || !/^E\d{1,2}$/.test(u.name)) bad();
     ids.add(u.id);
     const combat = u.combat;
@@ -45,7 +45,7 @@ export function parseOpponentSnapshot(value: any) {
         || (u.dodgingGrenadeId !== null && !grenades.some((g: any) =>
           g.id === u.dodgingGrenadeId && g.landed && g.team !== value.team))) bad();
     return {
-      id: u.id, name: u.name, hp: u.hp, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
+      id: u.id, name: u.name, hp: u.hp, maxHp: MAX_HP, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
       ...(combat && { combat: { visibleEnemies: combat.visibleEnemies, nearbyAllies: combat.nearbyAllies, fallingBack: combat.fallingBack } }),
       grenadesLeft: u.grenadesLeft, alliesWithinBlastRadius: u.alliesWithinBlastRadius,
       grenadeOpportunity: opportunity ? { position: { x: opportunity.position.x, y: opportunity.position.y }, enemiesCaught: opportunity.enemiesCaught } : null,
@@ -194,8 +194,8 @@ export function mockOpponentPlan(snapshot: ReturnType<typeof parseOpponentSnapsh
       : threatened ? `Reinforce ${threatened}; keep the opposite site covered.` : 'Cover both sites and keep a rotator in Mid.',
     orders: snapshot.squad.map((u: any, i: number) => ({
       unitId: u.id,
-      action: planted ? 'retake' : u.hp < 35 ? 'retreat' : threatened && i > 0 ? 'rotate' : 'hold',
-      zone: planted ? snapshot.spike.site : u.hp < 35 ? 'Defender Spawn'
+      action: planted ? 'retake' : u.hp < MAX_HP * 0.35 ? 'retreat' : threatened && i > 0 ? 'rotate' : 'hold',
+      zone: planted ? snapshot.spike.site : u.hp < MAX_HP * 0.35 ? 'Defender Spawn'
         : threatened && i > 0 ? threatened : ['A Site', 'A Link', 'Mid', 'B Site'][i % 4],
     })),
   };
@@ -214,7 +214,11 @@ export async function createOpponentPlan(input: unknown, {
   // Older non-reasoning models (e.g. a GPT-4.1 override) must not receive this option.
   const reasoningEffort = /^gpt-[56](?:[.-]|$)/.test(model) ? 'low' as const : undefined;
   const schema = planSchema(snapshot);
-  const instructions = `${snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS}\n\n${GRENADE_INSTRUCTIONS}`;
+  const instructions = `${snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS}\n\n${GRENADE_INSTRUCTIONS}
+All units start with ${MAX_HP} HP. Rifles deal ${RIFLE.damage} damage, need ${Math.ceil(MAX_HP / RIFLE.damage)} hits to kill,
+and automatic fire is inaccurate, especially while moving. The human can manually aim one agent's
+crosshair at an enemy to improve automatic shooting accuracy; its damage and fire rate are unchanged.
+The agent keeps shooting normally when the crosshair is off target. Do not assume an exposed duel is safe.`;
   const inputState = JSON.stringify({ ...snapshot, zones: map.zones.map(z => ({ name: z.name, center: z.center })) });
   const signal = AbortSignal.any([AbortSignal.timeout(8000), ...(callerSignal ? [callerSignal] : [])]);
   let plan: unknown;

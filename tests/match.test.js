@@ -25,7 +25,7 @@ test('the setup phase keeps both squads on their own side of the map', () => {
   step(game, PREP_SECONDS - 1);
   for (const u of teamUnits(game, 'attack')) assert.ok(u.y >= prepLine(map, 'attack') - 0.01, `${u.name} stayed back (y ${u.y.toFixed(1)})`);
   for (const u of teamUnits(game, 'defend')) assert.ok(u.y <= prepLine(map, 'defend') + 0.01, `${u.name} stayed back (y ${u.y.toFixed(1)})`);
-  assert.ok(game.units.every(u => u.hp === 100), 'and nobody can shoot across it');
+  assert.ok(game.units.every(u => u.hp === u.maxHp), 'and nobody can shoot across it');
 
   step(game, 2);
   assert.equal(preparing(game), false);
