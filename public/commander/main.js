@@ -275,11 +275,9 @@ $('resume').onclick = () => showScreen(null);
 
 // What each toggle shows, and what it defaults to. Stored per machine.
 const SETTINGS = [
-  ['cards', 'Agent cards', false],
   ['feed', 'Kill feed', true],
   ['minimap', 'Minimap and zone name', true],
   ['stats', 'Jev numbers', true],
-  ['hints', 'Control hints', true],
 ];
 const SETTINGS_KEY = 'commander:settings';
 let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
@@ -602,7 +600,6 @@ function beginMatch() {
   $('log').replaceChildren();
   $('feed').replaceChildren();
   updateTeamUi();
-  buildSquadCards();
   watchedId = null; // picked from the first view that has your squad in it
   buildScorebar();
   setView(is3d);
@@ -1166,7 +1163,7 @@ function updateTeamUi() {
   $('scorebar').hidden = !team;
   if (!team) {
     $('opponentCard').hidden = true;
-    $('squad').replaceChildren();
+    $('decisions').replaceChildren();
     $('scoreClock').textContent = '–';
     $('ownScore').textContent = '0';
     $('enemyScore').textContent = '0';
@@ -1270,14 +1267,27 @@ function renderDecisions() {
       : `Jev ${Math.round(d.latency)} ms`;
     const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]);
     const [, best] = spread[0] ?? [];
-    return el('div', { className: `decision${u.alive ? '' : ' dead'}`, style: `--agent:${colour}` }, [
+    const card = el('div', {
+      className: `decision${u.alive ? '' : ' dead'}${u.id === watchedId ? ' watched' : ''}`,
+      style: `--agent:${colour}`,
+      onclick: () => { if (u.alive) watchAgent(u); },
+    }, [
       el('div', { className: 'top' }, [
         el('span', { className: 'name', textContent: u.name }),
         el('span', { className: 'p', textContent: u.alive && best != null ? `${Math.round(best * 100)}%` : '' }),
       ]),
+      el('div', { className: 'hp' }, [el('i', { style: `width:${(u.hp / u.maxHp) * 100}%` })]),
+      // What they are doing right now, and where the decision behind it came from.
       el('div', { className: 'doing' }, [
-        u.orderLabel ?? actionLabel(u, enemyName(u)),
+        actionLabel(u, enemyName(u)),
         el('span', { className: 'src', textContent: source }),
+      ]),
+      // The standing order is a separate thing from the action: an agent can be taking cover
+      // while still under orders to push, and the card that hid one behind the other made that
+      // look like the order had been dropped.
+      el('div', { className: 'order' }, [
+        u.alive ? `order: ${u.orderLabel ?? '–'}` : '',
+        ...(u.alive && u.grenades ? [el('span', { className: 'nade', title: `${u.grenades} grenade`, textContent: '💣' })] : []),
       ]),
       // One bar, one segment per option Jev weighed. The width of the second segment is the
       // whole point: it says how nearly this was a different order, which the winning
@@ -1289,24 +1299,11 @@ function renderDecisions() {
           title: `${option} ${Math.round(p * 100)}%`,
         })))] : []),
     ]);
+    return card;
   });
   $('decisions').replaceChildren(...cards);
 }
 
-function buildSquadCards() {
-  $('squad').replaceChildren(...TEAMS[session.team].names.map((name, i) => el('div', {
-    className: 'agent', style: `--agent:${OWN_COLORS[i]}`, onclick: () => {
-      const u = ownUnits()[i];
-      if (u?.alive) watchAgent(u);
-    },
-  }, [
-    el('div', { className: 'top' }, [el('span', { className: 'name' }), el('span', { className: 'brain' })]),
-    el('div', { className: 'hp' }, [el('i')]),
-    el('div', { className: 'doing' }),
-    el('div', { className: 'order' }),
-    el('div', { className: 'probs' }),
-  ])));
-}
 
 // The enemy commander's status and current plan. Only in bot games against OpenAI: with
 // scripted bots or another player there is nothing to show.
@@ -1407,36 +1404,6 @@ function updateHud() {
 
 
 
-  const own = view.units.filter(u => u.team === session.team);
-  own.forEach((u, i) => {
-    const card = $('squad').children[i];
-    if (!card) return;
-    card.classList.toggle('dead', !u.alive);
-    card.classList.toggle('watched', u.id === watchedId);
-    // The snapshot carries each agent's colour, and the map, the 3D view and the top bar all
-    // read it from there. The card took its colour from its position in the footer instead,
-    // which only matched while the squad arrived in slot order.
-    card.style.setProperty('--agent', u.color);
-    card.querySelector('.name').textContent = u.name;
-    card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
-    card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
-    card.querySelector('.order').textContent = u.alive
-      ? `Order: ${u.orderLabel ?? '–'}${u.grenades ? ' · 💣' : ''}`
-      : '';
-    card.querySelector('.brain').textContent = !u.alive ? ''
-      : u.decision?.obeying ? 'following your order'
-      : !u.decision ? 'thinking…'
-      : u.decision.local ? 'no contact: following order' : `Jev ${Math.round(u.decision.latency)} ms`;
-    // Just the chosen action's confidence: the full spread was more noise than signal.
-    const [action, p] = (u.alive ? Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] : null) ?? [];
-    card.querySelector('.probs').replaceChildren(...(action ? [
-      el('div', { className: 'prob top' }, [
-        el('span', { textContent: action }),
-        el('span', { className: 'bar' }, [el('i', { style: `width:${p * 100}%` })]),
-        el('span', { textContent: `${Math.round(p * 100)}%` }),
-      ]),
-    ] : []));
-  });
 
   $('feed').replaceChildren(...view.feed.map(f =>
     el('div', { className: f.team === session.team ? 'own' : 'other' }, colorizeNames(f.text))));

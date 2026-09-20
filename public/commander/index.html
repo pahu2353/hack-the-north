@@ -333,7 +333,15 @@
   .decision .top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
   .decision .name { font: 800 12px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
   .decision .src { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
-  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+  .decision { cursor: pointer; }
+  /* The one you are watching, marked the way the footer cards used to mark it. */
+  .decision.watched { border-color: var(--gold); }
+  .decision .hp { height: 3px; background: var(--panel-2); overflow: hidden; }
+  .decision .hp i { display: block; height: 100%; background: var(--agent); }
+  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+  .decision .order { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+  .decision .order:empty { display: none; }
+  .decision .nade { flex: none; }
   .decision .doing .src { flex: none; }
   .decision .p { font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
   /* The whole distribution in one bar: the chosen option lit, the rest of the field behind it.
@@ -366,35 +374,10 @@
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  footer.squad {
-    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; padding: 6px 12px;
-    border-top: 1px solid var(--border);
-  }
   /* Optional HUD pieces, switched in Settings. */
-  body:not([data-cards="on"]) footer.squad { display: none; }
   body:not([data-feed="on"]) .feed { display: none; }
-  body:not([data-stats="on"]) .agent .probs { display: none; }
+  body:not([data-stats="on"]) .decision .p, body:not([data-stats="on"]) .spread { display: none; }
   body:not([data-minimap="on"]) #minimap, body:not([data-minimap="on"]) .pov-zone { display: none; }
-  .agent {
-    background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--agent);
-    padding: 8px 10px; display: grid; gap: 4px; min-width: 0; cursor: pointer;
-  }
-  .agent.watched { border-color: var(--gold); border-left-color: var(--agent); }
-  .agent .doing { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Only the agent you're watching shows the order and Jev's confidence; the rest stay small. */
-  .agent:not(.watched) .order, .agent:not(.watched) .probs, .agent:not(.watched) .brain { display: none; }
-  .agent.dead { opacity: 0.4; }
-  .agent .top { display: flex; justify-content: space-between; gap: 6px; }
-  .agent .name { font-weight: 800; color: var(--agent); }
-  .agent .hp { height: 4px; background: var(--panel-2); overflow: hidden; }
-  .agent .hp i { display: block; height: 100%; background: var(--agent); }
-  .agent .order { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .agent .probs { display: grid; gap: 2px; }
-  .agent .prob { display: grid; grid-template-columns: 52px 1fr 30px; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
-  .agent .prob.top { color: var(--ink); font-weight: 600; }
-  .agent .bar { height: 6px; background: var(--panel-2); overflow: hidden; }
-  .agent .bar i { display: block; height: 100%; background: var(--agent); }
-  .agent .brain { font-size: 11px; color: var(--muted); }
   .opponent-panel { color: var(--ink-2); font-size: 12px; max-height: 150px; overflow: auto; }
   .opponent-panel summary { cursor: pointer; color: var(--gold); }
   .opponent-panel p { margin: 6px 0; }
@@ -521,7 +504,6 @@
     .layout { grid-template-columns: 1fr; }
     .arena { height: 60vh; }
     .side { border-left: 0; }
-    footer.squad { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -719,7 +701,6 @@
   </aside>
 </main>
 
-<footer class="squad" id="squad"></footer>
 
 <!-- three.js and its post-processing addons are served from the installed npm package at
      /vendor (see serveStatic in server.ts), so the game still runs with no network and there
