@@ -38,9 +38,9 @@ site for 3s — and keep it alive for 35s, or wipe the defenders. **Defenders** 
 stall the plant for 100s, defuse (6s on the spike with no attacker in sight), or wipe the
 attackers before the plant.
 
-- **Health and damage.** Human squads and Easy bots have 150 HP; Hard bots have 175 HP. Rifles do
-  28 damage every 0.22s — six hits to kill a human/Easy unit, seven for a Hard bot. No headshots,
-  no friendly fire.
+- **Health and damage.** Your squad has 150 HP; Easy bots have 140 and Hard bots 175. Rifles do
+  28 damage every 0.22s — six hits to kill one of yours, five for an Easy bot, seven for a Hard
+  bot. No headshots, no friendly fire.
 - **Accuracy.** Shooting is always automatic; there is no fire button. Standing still helps a lot.
   Base accuracy is 0.38 for humans/Easy bots and 0.50 for Hard bots, before range/movement modifiers.
   In first person, holding your crosshair on a visible enemy gives that agent 70% standing / 50%

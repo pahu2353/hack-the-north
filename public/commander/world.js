@@ -292,6 +292,24 @@ export function segmentHitsCircle(ax, ay, bx, by, cx, cy, r) {
   return Math.hypot(ax + dx * t - cx, ay + dy * t - cy) < r;
 }
 
+// How much of a segment lies inside a circle, in metres. The boolean above only says whether
+// a circle is grazed at all; a cloud that is thick through the middle and barely there at the
+// rim needs to know how much of it a sightline actually crosses.
+export function segmentCircleChord(ax, ay, bx, by, cx, cy, r) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return 0;
+  const fx = ax - cx, fy = ay - cy;
+  const b = 2 * (fx * dx + fy * dy);
+  const c = fx * fx + fy * fy - r * r;
+  const disc = b * b - 4 * len2 * c;
+  if (disc <= 0) return 0;
+  const root = Math.sqrt(disc);
+  const t0 = Math.max(0, (-b - root) / (2 * len2));
+  const t1 = Math.min(1, (-b + root) / (2 * len2));
+  return t1 > t0 ? (t1 - t0) * Math.sqrt(len2) : 0;
+}
+
 // Nearest wall on a ray. Shared by first-person drawing and crosshair targeting.
 // Direction can be unnormalised (the renderer needs perpendicular depth).
 export function castRay(walls, ox, oy, dx, dy) {

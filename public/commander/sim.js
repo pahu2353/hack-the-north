@@ -4,7 +4,7 @@
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
   MAPS, angleDiff, angleTo, blockedAt, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
-  nearestOpenPoint, segmentHitsCircle, tallestBetween, walkableLine, wallHeight, zoneAt, zoneByName,
+  nearestOpenPoint, segmentCircleChord, segmentHitsCircle, tallestBetween, walkableLine, wallHeight, zoneAt, zoneByName,
 } from './world.js';
 
 export const TEAMS = {
@@ -20,6 +20,9 @@ export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd', '#2b62b4'];
 export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37', '#b23524'];
 
+// Easy bots are the side you learn on, so they go down one rifle burst sooner than a player
+// does: five hits rather than six, with everything else about them unchanged.
+export const EASY_BOT = { hp: 140 };
 // Rifles take six hits to kill, and automatic fire misses often. Fights last long
 // enough that positioning and grenades decide them rather than whoever fires first.
 export const MAX_HP = 150;
@@ -94,6 +97,12 @@ export const FLASH = {
 export const SMOKE = {
   carried: 1, range: 26, radius: 5, speed: 15, fuse: 0.6, cooldown: 1.5,
   bloom: 0.9, lifetime: 15, fade: 1.2,
+  // You can see a little way into fog, not through it. Someone standing just inside the near
+  // edge is visible; someone on the far side is not, however close the cloud is to you. At
+  // knife range a shape shows through regardless, and a shot that crosses any cloud at all
+  // falls off toward this floor. Without these three a smoke deleted the fight instead of
+  // shaping it — no target meant no shooting, which was never the intent.
+  seeInto: 1.5, peek: 3, minAccuracy: 0.35,
 };
 export const UTILITY = { frag: GRENADE, flash: FLASH, smoke: SMOKE };
 // What each kind is called where it has to be read by a person.
@@ -241,7 +250,7 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
   for (const team of ['attack', 'defend']) map.spawns[team].forEach((post, i) => {
     if (team === game.botTeam) {
       const hard = game.opponent === 'openai';
-      const hp = hard ? HARD_BOT.hp : MAX_HP;
+      const hp = hard ? HARD_BOT.hp : EASY_BOT.hp;
       game.units.push(makeUnit(game, {
         team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp, maxHp: hp,
         speed: hard ? HARD_BOT.speed : 4.5, reaction: hard ? HARD_BOT.reaction : 0.28 + Math.random() * 0.12,
@@ -706,7 +715,7 @@ function controlAgent(game, u, dt) {
         dest = null;
         // The order was "throw that at there", and it is done: hold here instead of re-throwing.
         if (orderUtility(u.order.type)) setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
-      } else dest = spot; // out of range or no line: walk it in
+      } else dest = spot; // refused (reloading, or it would land underfoot): close and retry
       break;
     }
     case 'scatter': {
@@ -952,6 +961,10 @@ export function rifleAccuracy(game, u, target) {
   }
   p *= clamp(1 - dist(u, target) / 55, 0.15, 1);
   if (target.moving) p *= 0.8;
+  // Firing into or through a cloud is firing at a shape: allowed, and bad in proportion to
+  // how much of it the shot has to cross.
+  const cloud = smokeDepth(game, u, target);
+  if (cloud > 0) p *= clamp(1 - cloud / (SMOKE.radius * 2), SMOKE.minAccuracy, 1);
   return p;
 }
 
@@ -1587,15 +1600,22 @@ export function throwLanding(map, from, to) {
 export function throwGrenade(game, u, point, kind = 'frag') {
   const spec = UTILITY[kind];
   if (!spec || heldCount(u, kind) < 1 || game.time < u.throwReadyAt || preparing(game)) return false;
-  if (dist(u, point) > spec.range) return false;
+  // An arm has a limit, not a veto. Asked for a spot beyond it, throw as far as it goes on the
+  // same bearing — "put one over there" still means that direction when "there" is 40 m off.
+  // Refusing instead made the agent walk the throw in, which is a long trip across the map to
+  // deliver something they were told to throw from here.
+  const reach = dist(u, point);
+  const aim = reach > spec.range
+    ? { x: u.x + ((point.x - u.x) * spec.range) / reach, y: u.y + ((point.y - u.y) * spec.range) / reach }
+    : point;
   // No line of sight needed any more: you can lob one over a low wall, and if the wall is
   // too tall the throw comes up short against it instead of being refused. A throw that
   // would land at your own feet is a fumble nobody would make, so it is not allowed.
-  const landing = throwLanding(game.map, u, point);
+  const landing = throwLanding(game.map, u, aim);
   if (landing.blocked && dist(u, landing) < 2) return false;
   u[HELD[kind]]--;
   u.throwReadyAt = game.time + spec.cooldown;
-  u.facing = angleTo(u, point);
+  u.facing = angleTo(u, aim);
   const travel = Math.max(0.35, dist(u, landing) / spec.speed);
   game.grenades.push({
     id: game.nextId++, kind, team: u.team, throwerId: u.id,
@@ -1615,14 +1635,25 @@ export function throwGrenade(game, u, point, kind = 'frag') {
 
 export const blinded = (game, u) => game.time < (u.blindUntil ?? 0);
 
-// A smoke blocks a view and nothing else: bullets, grenades and the decision to take cover
-// all still go straight through, so turning smokes on cannot quietly change how a fight is
-// scored. Standing inside one blinds you as thoroughly as standing behind it.
-export function smokeBlocks(game, a, b) {
+// How many metres of cloud a sightline crosses, across every smoke on the map. Grazing the
+// rim of one is not the same as going through the middle, and the difference is the whole
+// reason a smoke is cover rather than a wall.
+export function smokeDepth(game, a, b) {
+  let depth = 0;
   for (const s of game.smokes) {
-    if (s.radius > 0.2 && segmentHitsCircle(a.x, a.y, b.x, b.y, s.x, s.y, s.radius)) return true;
+    if (s.radius > 0.2) depth += segmentCircleChord(a.x, a.y, b.x, b.y, s.x, s.y, s.radius);
   }
-  return false;
+  return depth;
+}
+
+// A smoke takes an angle away; it does not end the fight down it. Bullets and grenades were
+// always meant to pass straight through, but sight is what finds a target, so blocking sight
+// outright meant nobody could shoot either — one cloud deleted the engagement. It shortens
+// how far you can see instead: a rim clipped in passing costs a few metres, the middle costs
+// more than the map is wide, and either way a shape at knife range still shows.
+export function smokeBlocks(game, a, b) {
+  const depth = smokeDepth(game, a, b);
+  return depth > SMOKE.seeInto && dist(a, b) > SMOKE.peek;
 }
 
 export const canSee = (game, a, b) => hasLineOfSight(game.map, a, b) && !smokeBlocks(game, a, b);

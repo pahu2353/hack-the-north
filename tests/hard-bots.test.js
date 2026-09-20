@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE, createGame, grenadeSpot, rifleAccuracy,
+  EASY_BOT, HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE, createGame, grenadeSpot, rifleAccuracy,
   setOrder, stepGame, teamUnits, throwGrenade,
 } from '../public/commander/sim.js';
 import { applyOpponentPlan, opponentSnapshot } from '../public/commander/opponent.js';
@@ -18,7 +18,7 @@ test('only Hard bot opponents get extra health, accuracy and mobility, on both s
       const game = createGame({ map, playerTeam, opponent });
       for (const u of game.units) {
         const hard = u.kind === 'bot' && opponent === 'openai';
-        assert.equal(u.hp, hard ? HARD_BOT.hp : MAX_HP);
+        assert.equal(u.hp, hard ? HARD_BOT.hp : u.kind === 'bot' ? EASY_BOT.hp : MAX_HP);
         assert.equal(u.maxHp, u.hp);
         if (hard) { assert.equal(u.speed, 5); assert.equal(u.reaction, 0.25); }
         Object.assign(u, { x: 10, y: 3, moving: false, stillSince: 0 });

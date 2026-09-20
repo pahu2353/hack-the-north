@@ -5,7 +5,7 @@ import { opponentSnapshot } from '../public/commander/opponent.js';
 import { createCamera } from '../public/commander/pov.js';
 import { castRay } from '../public/commander/world.js';
 import {
-  HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE, createGame, crosshairTarget, manualAimFor, rifleAccuracy,
+  EASY_BOT, HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE, createGame, crosshairTarget, manualAimFor, rifleAccuracy,
   setManualAim, setOrder, stepGame, teamView, throwGrenade,
 } from '../public/commander/sim.js';
 
@@ -35,10 +35,15 @@ function bench(t) {
   return { game, shooter, target, enemies, place, aim, advance };
 }
 
-test('human squads and Easy bots keep 150 HP and less accurate automatic rifles', () => {
+test('your squad keeps 150 HP, Easy bots go down a burst sooner, and rifles stay inaccurate', () => {
   for (const opponent of ['scripted', 'openai']) for (const playerTeam of ['attack', 'defend']) {
     const game = createGame({ opponent, playerTeam });
-    assert(game.units.filter(u => u.kind === 'agent' || opponent === 'scripted').every(u => u.hp === 150 && u.maxHp === 150));
+    assert(game.units.filter(u => u.kind === 'agent').every(u => u.hp === 150 && u.maxHp === 150));
+    // Easy is the side you learn on, so it is the one that dies sooner. Nothing else about it
+    // changes: same rifle, same aim, same speed as your own squad.
+    if (opponent === 'scripted') {
+      assert(game.units.filter(u => u.kind === 'bot').every(u => u.hp === EASY_BOT.hp && u.maxHp === EASY_BOT.hp));
+    }
     const u = { x: 0, y: 0, moving: false, stillSince: 0 };
     const target = { x: 20, y: 0, moving: false };
     game.time = 2;
@@ -47,6 +52,8 @@ test('human squads and Easy bots keep 150 HP and less accurate automatic rifles'
     assert(stationary > rifleAccuracy(game, { ...u, moving: true }, target));
     assert(stationary > rifleAccuracy(game, u, { ...target, moving: true }));
     assert.equal(Math.ceil(MAX_HP / RIFLE.damage), 6);
+    assert.equal(Math.ceil(EASY_BOT.hp / RIFLE.damage), 5, 'one hit fewer than a player');
+    assert(EASY_BOT.hp < MAX_HP && EASY_BOT.hp < HARD_BOT.hp);
   }
 });
 

@@ -60,15 +60,29 @@ test('the blast does not reach through walls, or hit your own squad', () => {
   assert.equal(mate.hp, MAX_HP, 'your own squad is not hurt by your grenade');
 });
 
-test('a grenade cannot be thrown further than its range, through a wall, or twice', () => {
+test('a grenade goes as far as the arm reaches, on the bearing it was given', () => {
   const game = bench();
   const thrower = teamUnits(game, 'attack')[0];
   Object.assign(thrower, { x: 40, y: 52 });
-  assert.equal(throwGrenade(game, thrower, { x: 40, y: 5 }), false, 'out of range');
-  assert.equal(throwGrenade(game, thrower, { x: 10, y: 30 }), false, 'no line to the spot');
-  assert.equal(thrower.grenades, 1, 'a refused throw costs nothing');
-  assert.equal(throwGrenade(game, thrower, { x: 40, y: 46 }), true);
+  // Most of the map away. An arm has a limit, not a veto: it goes the full range that way
+  // rather than being refused, which used to send the agent walking the throw in instead.
+  assert.equal(throwGrenade(game, thrower, { x: 40, y: 5 }), true, 'a far spot is thrown at, not refused');
+  const [nade] = game.grenades;
+  assert.ok(nade.reach <= GRENADE.range + 0.01, `${nade.reach}m is past the arm`);
+  assert.ok(Math.abs(nade.tx - thrower.x) < 0.01 && nade.ty < thrower.y, 'straight up the map, as pointed');
+  assert.equal(thrower.grenades, 0, 'and it cost the grenade');
   assert.equal(throwGrenade(game, thrower, { x: 41, y: 46 }), false, 'only one carried');
+});
+
+test('a throw that would land underfoot is refused and costs nothing', () => {
+  const game = bench();
+  const thrower = teamUnits(game, 'attack')[0];
+  // Pressed against the tall block between A Main and Mid, throwing into it: the lob has no
+  // room to clear it, so the grenade would drop on the thrower. Better kept in hand.
+  Object.assign(thrower, { x: 33, y: 30 });
+  assert.equal(throwGrenade(game, thrower, { x: 10, y: 30 }), false);
+  assert.equal(thrower.grenades, 1, 'a refused throw costs nothing');
+  assert.equal(game.grenades.length, 0);
 });
 
 test('scattering gets an agent clear before the fuse runs out', () => {
