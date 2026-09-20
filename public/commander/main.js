@@ -4,6 +4,7 @@
 import { createBrains } from './brain.js';
 import { createOpponentCommander } from './opponent.js';
 import { createCamera, createPovRenderer } from './pov.js';
+import { createPov3dRenderer } from './pov3d.js';
 import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
   createGestures, reliableGestureForSpeech } from './gestures.js';
 import { createRenderer, flipPoint, flippedFor } from './render.js';
@@ -16,8 +17,16 @@ const STEP = 1 / 60;
 const RECENT_GESTURE_MS = 2000;
 const $ = id => document.getElementById(id);
 
-const ZONE_TERMS = ['A Site', 'B Site', 'A Main', 'B Main', 'Mid', 'A Link', 'B Link', 'spike', 'flank', 'regroup', 'rotate'];
-const keytermsFor = team => [...TEAMS[team].names, ...ZONE_TERMS, team === 'attack' ? 'plant' : 'defuse'];
+const ORDER_TERMS = ['spike', 'flank', 'regroup', 'rotate'];
+// Whichever map is being played. The view carries its id, so zone lookups, callouts and the
+// hand-to-map mapping all follow the match instead of assuming the default layout.
+const currentMap = () => MAPS[view?.mapId] ?? MAPS.tactical;
+// Callouts differ per map, so the speech hints come from whichever one is being played.
+const keytermsFor = team => [
+  ...TEAMS[team].names,
+  ...currentMap().zones.map(z => z.name),
+  ...ORDER_TERMS, team === 'attack' ? 'plant' : 'defuse',
+];
 
 // What each hand signal says. The words go to Jev like any other order.
 function signalOrder(name, team, pointed) {
@@ -43,9 +52,43 @@ function signalOrder(name, team, pointed) {
 const canvas = $('map');
 const renderer = createRenderer(canvas);
 const povCanvas = $('pov');
+const pov3dCanvas = $('pov3d');
+// Only one first-person canvas is visible at a time, so mouse look has to follow the active
+// engine: clicks land on whichever is on screen, and pointer lock may be held by either.
+const aimSurfaces = [povCanvas, pov3dCanvas];
+const lockedForAim = () => aimSurfaces.includes(document.pointerLockElement);
 const pov = createPovRenderer(povCanvas);
 const minimap = createRenderer($('minimap'));
 const camera = createCamera();
+// Two first-person engines behind one interface: the WebGL one by default, the raycaster as a
+// fallback. Built on first use so a machine without WebGL still reaches the menu.
+let pov3d = null;
+let pov3dFailed = false;
+// Leaving the 3D view for the raycaster, whether it never started or the GPU took its context
+// away mid-round. Announced either way: the arena hides whichever canvas the engine isn't
+// using, so a silent switch would leave the raycaster drawing into a hidden element.
+function dropTo2d(reason) {
+  if (pov3dFailed) return;
+  pov3dFailed = true;
+  if (reason) console.warn(`3D view unavailable, falling back to the raycaster: ${reason}`);
+  if (session) {
+    setView(is3d);
+    if (is3d) showToast('3D view stopped — switched to 2D');
+  }
+}
+
+function engine() {
+  if (!use3d || pov3dFailed) return pov;
+  if (!pov3d) {
+    try {
+      pov3d = createPov3dRenderer($('pov3d'), $('pov3dHud'), { onLost: dropTo2d });
+    } catch (err) {
+      dropTo2d(err.message);
+      return pov;
+    }
+  }
+  return pov3d;
+}
 const opponentCommander = createOpponentCommander();
 
 let session = null; // { kind: 'bots' | 'online', team }
@@ -56,6 +99,7 @@ let view = null; // what's on screen: a teamView, local or streamed from the ser
 let pointer = null; // { x, y, at } marked by clicking the map or pointing at the camera
 let resultShown = false;
 let is3d = false; // first-person view of one agent, instead of the top-down map
+let use3d = true; // which first-person engine: WebGL (default) or the flat raycaster
 let watchedId = null; // which agent that is
 const positions = new Map(); // smoothed unit positions for multiplayer
 let recentGesture = null;
@@ -73,8 +117,9 @@ function setView(next) {
   if (!next) stopAiming();
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
+  $('arena').dataset.engine = use3d && !pov3dFailed ? '3d' : 'classic';
   $('hint').textContent = is3d
-    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–5: switch. Tab: map.'
+    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–5: switch. G: 2D/3D. Tab: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -149,12 +194,13 @@ function goToMenu() {
 
 let botOpponent = 'openai';
 let botSide = 'attack';
+let botMap = 'tactical';
 $('playBots').onclick = () => {
   setStatus('botsStatus', '');
   showScreen('screenBots');
 };
-$('botsScripted').onclick = () => startBotGame('scripted', $('botSide').value);
-$('botsOpenAI').onclick = () => startBotGame('openai', $('botSide').value);
+$('botsScripted').onclick = () => startBotGame('scripted', $('botSide').value, $('botMap').value);
+$('botsOpenAI').onclick = () => startBotGame('openai', $('botSide').value, $('botMap').value);
 $('botsBack').onclick = () => showScreen('screenMenu');
 $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
@@ -241,6 +287,10 @@ $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }
 for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
   online?.ws.send(JSON.stringify({ type: 'side', team }));
 $('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
+// One list of maps, shown in two places: the lobby picker is built from the Vs Bots one so a
+// map added to the menu can never be missing online.
+$('lobbyMap').replaceChildren(...[...$('botMap').options].map(option => option.cloneNode(true)));
+$('lobbyMap').onchange = () => online?.ws.send(JSON.stringify({ type: 'map', map: $('lobbyMap').value }));
 
 // ---------- microphone and camera ----------
 
@@ -304,10 +354,11 @@ async function restoreDevices() {
 
 // ---------- vs bots ----------
 
-function startBotGame(opponent = botOpponent, playerTeam = botSide) {
+function startBotGame(opponent = botOpponent, playerTeam = botSide, map = botMap) {
   leaveOnline();
   botOpponent = opponent;
   botSide = playerTeam;
+  botMap = map;
   session = { kind: 'bots', team: playerTeam };
   brains = createBrains();
   startBotRound(createMatch({ playerTeam }));
@@ -317,7 +368,7 @@ function startBotGame(opponent = botOpponent, playerTeam = botSide) {
 // brains carry over: their Jev counters are for the whole match.
 function startBotRound(match) {
   opponentCommander.reset();
-  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true });
+  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true, map: botMap });
   view = teamView(game, session.team);
   beginMatch();
 }
@@ -363,6 +414,7 @@ function handleServer(connection, message) {
     case 'lobby':
       connection.players = message.players;
       connection.running = message.running;
+      connection.map = message.map;
       renderLobby();
       if (resultShown) updateResultActions();
       break;
@@ -422,6 +474,10 @@ async function renderLobby() {
   $('startMatch').hidden = !host;
   $('startMatch').disabled = !ready;
   $('hostSideControls').hidden = !host;
+  // The guest sees which map they're about to play, but it isn't theirs to change, and nobody
+  // changes it once the match is under way.
+  if (online.map) $('lobbyMap').value = online.map;
+  $('lobbyMap').disabled = !host || Boolean(online.running);
   for (const side of ['attack', 'defend']) {
     const button = $(side === 'attack' ? 'hostAttack' : 'hostDefend');
     button.setAttribute('aria-pressed', String(team === side));
@@ -473,6 +529,7 @@ function beginMatch() {
   resetSpeech();
   if (readDevices().mic !== false) ensureMic();
   pov.reset();
+  pov3d?.reset();
   clearTimeout(speculateTimer);
   guess = null;
   utterance = null;
@@ -841,7 +898,7 @@ function handleSignal(signal) {
       confidenceLevel: signal.confidenceLevel, stabilityLevel: signal.stabilityLevel,
       pointer: p ? {
         active: signal.pointer?.active ?? pointerAgeMs < POINTER_ACTIVE_MS,
-        zone: zoneAt(MAPS.tactical, p).name,
+        zone: zoneAt(currentMap(), p).name,
         ageMs: Math.round(pointerAgeMs),
       } : null,
       ageMs: 0,
@@ -858,13 +915,72 @@ const paused = () => !$('screenPause').hidden || !$('screenSettings').hidden;
 let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
+let frameFailures = 0;
+
+// ---------- stall diagnostics ----------
+// A freeze has been reported that no one has yet caught in the act. This watches the loop from
+// a timer rather than from inside it, so it still reports when the loop itself has stopped, and
+// records enough state to tell the three causes apart: an exception, a lost GPU context, and a
+// frame that is merely slow. __diag() in the console prints the same picture on demand.
+const diag = { lastFrameAt: 0, longestMs: 0, simMs: 0, drawMs: 0, lastError: null, stalls: 0, reported: false };
+function diagSnapshot(gapMs) {
+  return {
+    gapMs: Math.round(gapMs),
+    engine: use3d && !pov3dFailed ? '3d' : '2d',
+    pov3dFailed,
+    renderer: pov3d?.diagnostics?.() ?? null,
+    lastFrameMs: { sim: Math.round(diag.simMs), draw: Math.round(diag.drawMs), longest: Math.round(diag.longestMs) },
+    lastError: diag.lastError,
+    frameFailures,
+    aiming: Boolean(aim),
+    pointerLock: document.pointerLockElement?.id ?? null,
+    paused: paused(),
+    hidden: document.hidden,
+    view: view ? { time: +view.time?.toFixed?.(2), result: Boolean(view.result), units: view.units?.length } : null,
+    session: session?.kind ?? null,
+    is3d,
+  };
+}
+window.__diag = () => diagSnapshot(performance.now() - diag.lastFrameAt);
+setInterval(() => {
+  if (!diag.lastFrameAt || document.hidden || !session) return;
+  const gap = performance.now() - diag.lastFrameAt;
+  // rAF runs at least 30/s on any live tab, so a second without one is a stall, not slowness.
+  if (gap < 1000) { diag.reported = false; return; }
+  if (diag.reported) return;
+  diag.reported = true;
+  diag.stalls++;
+  console.error('[stall] the frame loop has not run for %dms. Copy this:', Math.round(gap), diagSnapshot(gap));
+}, 500);
+// requestAnimationFrame stops rescheduling the moment a frame throws, and this loop is the only
+// thing driving the simulation, the view and the HUD — so an escaping exception doesn't lose one
+// frame, it ends the match until the page is reloaded. Keep the loop alive and say what broke.
 function frame(now) {
+  const began = performance.now();
+  try {
+    drawFrame(now);
+    frameFailures = 0;
+  } catch (err) {
+    diag.lastError = { message: err?.message ?? String(err), stack: err?.stack?.split('\n').slice(0, 4).join(' | ') };
+    if (frameFailures === 0) console.error('Frame failed; the loop is still running.', err);
+    // A renderer that fails every frame is not going to recover on its own, and the raycaster
+    // draws the same match from the same snapshot.
+    if (++frameFailures > 30 && use3d && !pov3dFailed) dropTo2d('it failed 30 frames in a row');
+  }
+  const took = performance.now() - began;
+  diag.lastFrameAt = performance.now();
+  if (took > diag.longestMs) diag.longestMs = took;
+  requestAnimationFrame(frame);
+}
+
+function drawFrame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   if (aim) {
     if (!matchActive() || !is3d) stopAiming();
     else if (session.kind === 'bots' || now - lastAimSent >= 50) sendAim();
   }
+  const simBegan = performance.now();
   if (session?.kind === 'bots' && game) {
     if (!game.result && !paused()) {
       accumulator += dt;
@@ -877,22 +993,26 @@ function frame(now) {
     }
     view = teamView(game, session.team);
   }
+  diag.simMs = performance.now() - simBegan;
   if (session?.kind === 'online') smoothPositions(dt);
   const smoothed = session?.kind === 'online' ? positions : null;
   if (is3d && view && !watched()) {
     if (ownUnits().some(u => u.alive)) cycleAgent(1);
     else setView(false); // the planted round can continue after your entire squad dies
   }
+  const drawBegan = performance.now();
   const u = is3d ? watched() : null;
   if (u) {
     const at = unit => smoothed?.get(unit.id) ?? unit;
-    pov.setPointer(activePointer());
+    const fp = engine();
+    fp.setPointer(activePointer());
     lastCamera = camera.update({ ...u, ...at(u) }, dt, aim);
-    pov.draw(view, u, lastCamera, at);
+    fp.draw(view, u, lastCamera, at, dt);
     minimap.draw(view, { pointer: activePointer(), positions: smoothed, focusId: u.id, mini: true });
   } else {
     renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
   }
+  diag.drawMs = performance.now() - drawBegan;
   if (view?.result && !resultShown && session) {
     opponentCommander.reset();
     showResult();
@@ -902,7 +1022,6 @@ function frame(now) {
     updateHud();
     syncListening();
   }
-  requestAnimationFrame(frame);
 }
 
 // Snapshots arrive 20 times a second; ease units toward them so movement stays smooth.
@@ -1184,7 +1303,7 @@ function updateHud() {
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
     $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
-    $('povZone').textContent = zoneAt(MAPS.tactical, watching).name.toUpperCase();
+    $('povZone').textContent = zoneAt(currentMap(), watching).name.toUpperCase();
   }
 }
 
@@ -1311,21 +1430,23 @@ function stopAiming() {
     lastAimEnded = performance.now();
     sendAim();
   }
-  if (document.pointerLockElement === povCanvas) document.exitPointerLock();
+  if (lockedForAim()) document.exitPointerLock();
 }
 
-povCanvas.addEventListener('mousedown', async e => {
-  if (e.button !== 0 || !matchActive() || !is3d || !watched()) return;
-  e.preventDefault();
-  if (aim) return;
-  try {
-    await povCanvas.requestPointerLock();
-  } catch {
-    showToast('Click again to aim; your agent is still firing automatically.');
-  }
-});
+for (const surface of aimSurfaces) {
+  surface.addEventListener('mousedown', async e => {
+    if (e.button !== 0 || !matchActive() || !is3d || !watched()) return;
+    e.preventDefault();
+    if (aim) return;
+    try {
+      await surface.requestPointerLock();
+    } catch {
+      showToast('Click again to aim; your agent is still firing automatically.');
+    }
+  });
+}
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement !== povCanvas) { stopAiming(); return; }
+  if (!lockedForAim()) { stopAiming(); return; }
   const u = watched();
   if (!matchActive() || !is3d || !u) { stopAiming(); return; }
   document.activeElement?.blur();
@@ -1333,7 +1454,7 @@ document.addEventListener('pointerlockchange', () => {
   sendAim();
 });
 document.addEventListener('mousemove', e => {
-  if (!aim || document.pointerLockElement !== povCanvas) return;
+  if (!aim || !lockedForAim()) return;
   aim.yaw = Math.atan2(Math.sin(aim.yaw + e.movementX * 0.002), Math.cos(aim.yaw + e.movementX * 0.002));
   aim.pitch = Math.max(-MANUAL_AIM.maxPitch, Math.min(MANUAL_AIM.maxPitch, aim.pitch - e.movementY * 0.002));
 });
@@ -1358,6 +1479,14 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Tab') {
     e.preventDefault();
     setView(!is3d);
+  } else if (e.code === 'KeyG') {
+    // Same view, same agent, different renderer — handy for comparing, and a way out if the
+    // WebGL one is slow on a given machine. Aiming is dropped first: pointer lock belongs to
+    // the canvas being replaced, and V is already push-to-talk.
+    stopAiming();
+    use3d = !use3d;
+    if (is3d) showToast(use3d && !pov3dFailed ? '3D' : '2D');
+    setView(is3d);
   } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
     e.preventDefault();
     cycleAgent(e.code === 'ArrowRight' ? 1 : -1);
@@ -1430,12 +1559,16 @@ async function startCamera() {
         gestureFeedback = feedback;
         if (!signTimer) renderGestureFeedback(feedback);
       },
+      // Pointing works in first person too: the minimap shows the mark, and the 3D view
+      // plants a beacon on it. The hand maps to the whole map either way, so the gesture
+      // means the same thing in both views.
       onPointer: p => {
-        if (!p || is3d || !matchActive()) return;
+        if (!p || !matchActive()) return;
         // Use the middle of the camera frame so you don't have to reach the edges.
-        const spot = cameraToMapPoint(p, MAPS.tactical);
+        const map = currentMap();
+        const spot = cameraToMapPoint(p, map);
         // The defending map is turned around, so pointing “up there” means up the screen.
-        pointer = { ...(flippedFor(session?.team) ? flipPoint(MAPS.tactical, spot) : spot), at: performance.now() };
+        pointer = { ...(flippedFor(session?.team) ? flipPoint(map, spot) : spot), at: performance.now() };
       },
       onSignal: handleSignal,
       onSwipe: dir => {

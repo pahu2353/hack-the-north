@@ -62,7 +62,7 @@ export function createPovRenderer(canvas) {
     const focal = W / 2 / Math.tan(FOV / 2);
     const horizon = H / 2 + Math.tan(camera.pitch ?? 0) * focal;
     cam = { x: camera.x, y: camera.y, angle: camera.angle, focal, horizon };
-    const walls = MAPS.tactical.walls;
+    const walls = (MAPS[view.mapId] ?? MAPS.tactical).walls;
 
     // Sky and floor.
     let g = ctx.createLinearGradient(0, 0, 0, horizon);

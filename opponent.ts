@@ -4,10 +4,15 @@ import { MAPS } from './public/commander/world.js';
 import { opponentActions, validateOpponentPlan } from './public/commander/opponent.js';
 import { GRENADE, MAX_HP, RIFLE } from './public/commander/sim.js';
 
-const map = MAPS.tactical;
-const zones = map.zones.map(z => z.name);
+// Which map a snapshot belongs to is part of the snapshot, so one server serves any of them.
+// Validation still has to be strict: the zone list is the map's own, not a union across maps,
+// so a plan can never name a callout that doesn't exist on the map being played.
+const hypot = (a: any, b: any) => Math.hypot(a.x - b.x, a.y - b.y);
+const mapOf = (value: any) => MAPS[value?.mapId as keyof typeof MAPS] ?? MAPS.tactical;
 
 export function parseOpponentSnapshot(value: any) {
+  const map = mapOf(value);
+  const zones = map.zones.map((z: any) => z.name);
   const finite = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
   const point = (p: any) => p && finite(p.x, 0, map.width) && finite(p.y, 0, map.height);
   const unitId = (id: unknown) => Number.isInteger(id) && Number(id) > 0 && Number(id) < 100;
@@ -69,6 +74,7 @@ export function parseOpponentSnapshot(value: any) {
       || !zones.includes(c.zone) || !Number.isInteger(c.ready) || !finite(c.ready, 0, squad.length)
       || !Number.isInteger(c.required) || !finite(c.required, 1, squad.length))) bad();
   return {
+    mapId: map.id,
     team: value.team, time: value.time, secondsLeft: value.secondsLeft, squad, contacts, grenades,
     ...(c && { coordination: { phase: c.phase, site: c.site, zone: c.zone, ready: c.ready, required: c.required } }),
     spike: s.state === 'planted'
@@ -80,6 +86,7 @@ export function parseOpponentSnapshot(value: any) {
 }
 
 function planSchema(snapshot: ReturnType<typeof parseOpponentSnapshot>) {
+  const zones = mapOf(snapshot).zones.map((z: any) => z.name);
   return {
     type: 'object' as const, additionalProperties: false, required: ['summary', 'orders'],
     properties: {
@@ -146,9 +153,7 @@ Before a plant, use regroup to stage the team, then assign hold/rotate/flank whe
 After a plant, prefer assigning retake to a supporting group; its staging is handled automatically.
 On a planted spike, allow travel time plus the 6-second defuse; do not waste the deadline regrouping far away.
 React to sightings and plants. Last-known contacts are uncertain, not live wall vision.
-The map is 80m wide and 56m tall. Attackers approach from the south (high y).
-A is west, B is east. A Main and B Main are long south-to-site lanes.
-Mid connects to A Link and B Link, which connect to their sites. Top Hall links the sites behind them.
+React to the geography supplied below rather than assuming a layout.
 Movement to a new zone ends at its supplied center, not at the next zone beyond it. Top Hall's center
 is on the west/A side; use the coordinates when choosing a nearby retreat or rally point for B.
 Do not invent unseen positions, read the player's orders, or give physics/shooting instructions.
@@ -171,18 +176,45 @@ send everyone back across the map. Prefer useful existing orders instead of osci
 Bots shoot automatically and usually stop on contact. They seek cover at a 2:1 local disadvantage
 or when hurt and outnumbered. Combat fields show local enemy counts, nearby support, and fallback.
 Actions target the supplied zone centers, with small formation offsets. You cannot choose exact
-aim, physics, or cover positions. The map is 80m wide and 56m tall; attackers start in the south.
-A is west, B east. Each Main lane reaches its site; Mid reaches both Links. Top Hall connects
-the rear of the sites, with its center on the west side. Use coordinates to judge travel time.
+aim, physics, or cover positions. React to the geography supplied below rather than assuming
+a layout, and use the supplied zone coordinates to judge travel time.
 Last-known contacts are uncertain. Do not invent unseen enemies or read the player's orders.
 Return a concise strategy summary (maximum 240 characters) and structured orders.`;
 
+// The prompt has to describe whichever map is being played, so the geography is generated from
+// the map data instead of written into the instructions.
+function geography(map: any) {
+  const where = (c: any) => [
+    c.y < map.height / 3 ? 'north' : c.y > (map.height * 2) / 3 ? 'south' : 'mid',
+    c.x < map.width / 3 ? 'west' : c.x > (map.width * 2) / 3 ? 'east' : 'centre',
+  ].join(' ');
+  const sites = map.sites.map((name: string) => {
+    const z = map.zones.find((q: any) => q.name === name);
+    const route = map.routes[name] ?? {};
+    const flanks = (route.flank ?? []).join(' or ');
+    return `${name} sits ${where(z.center)}. Main approach: ${route.push ?? 'direct'}.`
+      + (flanks ? ` Flank routes: ${flanks}.` : '');
+  });
+  return [
+    `MAP: ${map.id}, ${map.width}m wide and ${map.height}m tall.`,
+    `Attackers start in ${map.home.attack} (${where(map.zones.find((z: any) => z.name === map.home.attack).center)});`
+      + ` defenders start in ${map.home.defend}.`,
+    ...sites,
+  ].join('\n');
+}
+
 export function mockOpponentPlan(snapshot: ReturnType<typeof parseOpponentSnapshot>) {
+  const map = mapOf(snapshot);
+  const sites = map.sites.map((name: string) => map.zones.find((z: any) => z.name === name));
   const recent = [...snapshot.contacts].sort((a, b) => a.age - b.age)[0];
-  const threatened = recent ? (recent.position.x < 40 ? 'A Site' : 'B Site') : null;
+  // Whichever site the latest sighting is closest to, rather than a hardcoded half of the map.
+  const threatened = recent
+    ? sites.reduce((a: any, b: any) => (hypot(b.center, recent.position) < hypot(a.center, recent.position) ? b : a)).name
+    : null;
   const planted = snapshot.spike.state === 'planted';
   if (snapshot.team === 'attack') {
-    const site = planted ? snapshot.spike.site : snapshot.squad.find((u: any) => map.sites.includes(u.order?.zone))?.order.zone ?? 'B Site';
+    const site = planted ? snapshot.spike.site
+      : snapshot.squad.find((u: any) => map.sites.includes(u.order?.zone))?.order.zone ?? map.sites[map.sites.length - 1];
     return {
       summary: planted ? `Protect the spike on ${site}.` : `Push ${site} together and plant the spike.`,
       orders: snapshot.squad.map((u: any) => ({ unitId: u.id,
@@ -195,8 +227,8 @@ export function mockOpponentPlan(snapshot: ReturnType<typeof parseOpponentSnapsh
     orders: snapshot.squad.map((u: any, i: number) => ({
       unitId: u.id,
       action: planted ? 'retake' : u.hp < MAX_HP * 0.35 ? 'retreat' : threatened && i > 0 ? 'rotate' : 'hold',
-      zone: planted ? snapshot.spike.site : u.hp < MAX_HP * 0.35 ? 'Defender Spawn'
-        : threatened && i > 0 ? threatened : ['A Site', 'A Link', 'Mid', 'B Site'][i % 4],
+      zone: planted ? snapshot.spike.site : u.hp < MAX_HP * 0.35 ? map.home.defend
+        : threatened && i > 0 ? threatened : map.patrol[i % map.patrol.length],
     })),
   };
 }
@@ -218,8 +250,10 @@ export async function createOpponentPlan(input: unknown, {
 All units start with ${MAX_HP} HP. Rifles deal ${RIFLE.damage} damage, need ${Math.ceil(MAX_HP / RIFLE.damage)} hits to kill,
 and automatic fire is inaccurate, especially while moving. The human can manually aim one agent's
 crosshair at an enemy to improve automatic shooting accuracy; its damage and fire rate are unchanged.
-The agent keeps shooting normally when the crosshair is off target. Do not assume an exposed duel is safe.`;
-  const inputState = JSON.stringify({ ...snapshot, zones: map.zones.map(z => ({ name: z.name, center: z.center })) });
+The agent keeps shooting normally when the crosshair is off target. Do not assume an exposed duel is safe.
+
+${geography(mapOf(snapshot))}`;
+  const inputState = JSON.stringify({ ...snapshot, zones: mapOf(snapshot).zones.map((z: any) => ({ name: z.name, center: z.center })) });
   const signal = AbortSignal.any([AbortSignal.timeout(8000), ...(callerSignal ? [callerSignal] : [])]);
   let plan: unknown;
   if (env.OPENAI_API_KEY) {
@@ -249,5 +283,5 @@ The agent keeps shooting normally when the crosshair is off target. Do not assum
     });
     plan = result.output;
   }
-  return { plan: validateOpponentPlan(plan, snapshot, map), model, mock: false };
+  return { plan: validateOpponentPlan(plan, snapshot, mapOf(snapshot)), model, mock: false };
 }

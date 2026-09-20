@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { TEAMS, createGame, createMatch, forfeitMatch, otherTeam, setManualAim, stepGame, teamView } from './public/commander/sim.js';
 import { createBrains } from './public/commander/brain.js';
+import { MAPS } from './public/commander/world.js';
 
 type Team = 'attack' | 'defend';
 type Brains = ReturnType<typeof createBrains>;
@@ -17,6 +18,7 @@ type Room = {
   players: Partial<Record<Team, WebSocket>>;
   game: any;
   match: any;
+  map: string; // which layout the host picked; fixed for the whole match
   brains: Record<Team, Brains>;
   loop: ReturnType<typeof setInterval> | null;
   next: ReturnType<typeof setTimeout> | null; // the break before the next round of the match
@@ -49,7 +51,7 @@ export function createRooms(evaluate: Evaluate) {
     do code = randomCode();
     while (rooms.has(code));
     const room: Room = {
-      code, host: ws, players: {}, game: null, match: null, loop: null, next: null,
+      code, host: ws, players: {}, game: null, match: null, loop: null, next: null, map: 'tactical',
       brains: { attack: newBrains(), defend: newBrains() },
     };
     rooms.set(code, room);
@@ -81,6 +83,7 @@ export function createRooms(evaluate: Evaluate) {
       if (message.type === 'start' && ws === room.host && room.players.attack && room.players.defend
           && (!room.game || (room.game.result && (!room.match || room.match.over)))) startMatch(room);
       else if (message.type === 'side' && ws === room.host) chooseSide(room, message.team);
+      else if (message.type === 'map' && ws === room.host) chooseMap(room, message.map);
       else if (message.type === 'command') command(room, currentTeam, message);
       else if (message.type === 'aim' && room.game) setManualAim(room.game, currentTeam, message.aim);
     });
@@ -101,6 +104,15 @@ export function createRooms(evaluate: Evaluate) {
     broadcastLobby(room);
   }
 
+  // The map is the host's to choose, and only between matches: every round of a match is
+  // played on the same layout, so the scorecard means one thing.
+  function chooseMap(room: Room, mapId: unknown) {
+    if (typeof mapId !== 'string' || !Object.hasOwn(MAPS, mapId)) return;
+    if (room.match && !room.match.over) return;
+    room.map = mapId;
+    broadcastLobby(room);
+  }
+
   function startMatch(room: Room) {
     stopLoop(room);
     room.match = createMatch({});
@@ -112,7 +124,7 @@ export function createRooms(evaluate: Evaluate) {
   // round starts with fresh bodies and the same scorecard.
   function startRound(room: Room) {
     stopLoop(room);
-    const game = createGame({ defenders: 'players', match: room.match, prep: true });
+    const game = createGame({ defenders: 'players', match: room.match, prep: true, map: room.map });
     room.game = game;
     broadcast(room, { type: 'started' });
     let last = performance.now();
@@ -227,7 +239,7 @@ export function createRooms(evaluate: Evaluate) {
 
   function broadcastLobby(room: Room) {
     const players = { attack: Boolean(room.players.attack), defend: Boolean(room.players.defend) };
-    broadcast(room, { type: 'lobby', players, running: Boolean(room.game && !room.game.result) });
+    broadcast(room, { type: 'lobby', players, map: room.map, running: Boolean(room.game && !room.game.result) });
   }
 
   function broadcast(room: Room, message: unknown) {

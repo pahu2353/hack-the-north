@@ -13,6 +13,8 @@ const RADAR = {
   site: 'rgba(242, 193, 78, 0.10)', siteLetter: 'rgba(242, 193, 78, 0.85)',
 };
 const RADAR_SPAN = 44; // metres across the radar, so it reads like a scope rather than a map
+const RADAR_EDGE = 0.82; // a mark sits this far out at most, inside the rim rather than under it
+const RADAR_EASE = 7; // how fast, per second, the radar slides toward what you point at
 const OWN = '#3d8bfd';
 const ENEMY = '#ff4655';
 const POINTER = '#f2c14e';
@@ -30,9 +32,12 @@ export const flipPoint = (map, p) => ({ x: map.width - p.x, y: map.height - p.y 
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
-  const map = MAPS.tactical;
+  // The snapshot says which map it belongs to, so one renderer serves any of them and the
+  // minimap can never be drawing a different layout from the one being played.
+  let map = MAPS.tactical;
   let view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
   let flip = false; // whose way up the last frame was drawn, so clicks land on the right spot
+  let radar = null; // { id, x, y, span, at }: where the round minimap is looking, eased
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
@@ -62,18 +67,50 @@ export function createRenderer(canvas) {
   // positions: optional Map of unit id → smoothed {x, y} (multiplayer interpolation).
   // focusId: the agent being watched, highlighted with a wide view cone. mini: minimap mode.
   function draw(teamView, { pointer, positions, focusId, mini } = {}) {
+    const next = MAPS[teamView?.mapId] ?? map;
+    if (next !== map) {
+      map = next;
+      resize();
+    }
     const { dpr } = view;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // The radar is centred on the agent you're watching and zoomed in, like the scope it copies;
-    // the full map view stays fitted to its canvas.
-    const centre = mini && teamView?.units.find(u => u.id === focusId && u.alive);
-    const { width, height } = canvas.getBoundingClientRect();
-    const s = centre ? Math.min(width, height) / RADAR_SPAN : view.scale;
-    const ox = centre ? width / 2 - (positions?.get(centre.id) ?? centre).x * s : view.ox;
-    const oy = centre ? height / 2 - (positions?.get(centre.id) ?? centre).y * s : view.oy;
-    ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
     flip = flippedFor(teamView?.team);
+    // The radar is a scope: centred on the agent you're watching and zoomed in, while the full
+    // map view stays fitted to its canvas. But pointing maps your hand across the whole map,
+    // and a mark you can't see is a mark you can't correct, so the scope leads your hand — it
+    // slides toward the mark, and only widens once sliding alone can no longer hold both.
+    const scoped = mini && teamView?.units.find(u => u.id === focusId && u.alive);
+    const { width, height } = canvas.getBoundingClientRect();
+    let { scale: s, ox, oy } = view;
+    if (scoped) {
+      const me = positions?.get(scoped.id) ?? scoped;
+      const mark = pointer ?? me;
+      const away = Math.hypot(mark.x - me.x, mark.y - me.y);
+      const span = Math.max(RADAR_SPAN, away / RADAR_EDGE);
+      // How far the centre has to leave your agent to bring the mark inside the rim, capped at
+      // the midpoint: past that the agent would be the one falling off, so the span grows instead.
+      const reach = (span * RADAR_EDGE) / 2;
+      const slide = Math.min(Math.max(0, away - reach), away / 2) / (away || 1);
+      const want = { x: me.x + (mark.x - me.x) * slide, y: me.y + (mark.y - me.y) * slide, span };
+      const now = performance.now();
+      // Switching agent is a cut, not a pan: easing across the map would read as the radar
+      // drifting rather than as a different point of view.
+      const ease = radar?.id === scoped.id ? 1 - Math.exp(-RADAR_EASE * Math.min(0.25, (now - radar.at) / 1000)) : 1;
+      radar = {
+        id: scoped.id, at: now,
+        x: radar ? radar.x + (want.x - radar.x) * ease : want.x,
+        y: radar ? radar.y + (want.y - radar.y) * ease : want.y,
+        span: radar ? radar.span + (want.span - radar.span) * ease : want.span,
+      };
+      s = Math.min(width, height) / radar.span;
+      // The defending map is drawn upside down, so the centre has to be flipped with it.
+      ox = width / 2 - (flip ? map.width - radar.x : radar.x) * s;
+      oy = height / 2 - (flip ? map.height - radar.y : radar.y) * s;
+    } else if (mini) {
+      radar = null;
+    }
+    ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
     if (flip) {
       ctx.translate(map.width / 2, map.height / 2);
       ctx.rotate(Math.PI);
@@ -104,7 +141,7 @@ export function createRenderer(canvas) {
     ctx.fillStyle = theme.zone;
     ctx.font = `600 ${12 * px}px system-ui, sans-serif`;
     for (const z of mini ? [] : map.zones) {
-      label(z.name.toUpperCase(), z.center.x, z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2);
+      label(z.name.toUpperCase(), z.center.x, z.rect.h <= 6 ? z.center.y : z.rect.y + 2.2);
     }
     if (!teamView) return;
 

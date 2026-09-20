@@ -34,6 +34,7 @@ export function opponentSnapshot(game) {
   const team = game.botTeam ?? 'defend';
   const visibleIds = new Set(bots.flatMap(u => u.visible.map(v => v.id)));
   return {
+    mapId: game.map.id,
     time: Math.round(game.time * 10) / 10,
     team,
     secondsLeft: Math.max(0, Math.round(ROUND_SECONDS - roundClock(game))),
@@ -151,9 +152,9 @@ function createRetake(game, members) {
   const grid = tacticsGrid(game);
   const site = zoneByName(game.map, game.spike.site);
   const link = zoneByName(game.map, game.map.routes[site.name].flank[0]);
-  const hall = zoneByName(game.map, 'Top Hall');
+  const hall = zoneByName(game.map, game.map.fallback);
   const threats = [...game.intel.defend.values()].filter(i => game.time - i.t < 3);
-  // Use the rear hallway on the threatened side, not Top Hall's west-side zone center.
+  // Use the rear area on the threatened side, not the fallback zone's own centre.
   const candidates = [
     { zone: link.name, point: link.center },
     { zone: hall.name, point: { x: site.center.x, y: hall.center.y } },

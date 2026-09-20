@@ -204,3 +204,26 @@ for (const side of ['attack', 'defend']) test(`${side}: multiplayer aim assistan
   const released = (await host.take(m => m.type === 'state' && m.view.time > switched.time)).view;
   assert(released.units.filter(u => u.team === side).every(u => !u.manualAim));
 });
+
+test('the host chooses the map, both commanders are told, and the match is played on it', async t => {
+  const { connect } = await multiplayer(t);
+  const host = await connect();
+  const guest = await connect(host.joined.code);
+  host.send({ type: 'map', map: 'dust2' });
+  assert.equal((await host.take(m => m.type === 'lobby' && m.map === 'dust2')).map, 'dust2');
+  assert.equal((await guest.take(m => m.type === 'lobby' && m.map === 'dust2')).map, 'dust2');
+  // The map is the host's to pick: a guest asking for another one is ignored, and so is a
+  // layout that doesn't exist. Either being honoured would put the round back on tactical.
+  guest.send({ type: 'map', map: 'tactical' });
+  host.send({ type: 'map', map: 'no-such-map' });
+  host.send({ type: 'start' });
+  await host.take(m => m.type === 'started');
+  const state = await host.take(m => m.type === 'state');
+  assert.equal(state.view.mapId, 'dust2');
+  // A full squad, standing on the layout they were promised rather than the default one.
+  const squad = state.view.units.filter(u => u.team === state.view.team);
+  assert.equal(squad.length, 5);
+  for (const u of squad) {
+    assert.ok(u.x >= 0 && u.x <= MAPS.dust2.width && u.y >= 0 && u.y <= MAPS.dust2.height, `${u.name} is off the map`);
+  }
+});

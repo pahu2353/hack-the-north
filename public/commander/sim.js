@@ -43,6 +43,7 @@ export const roundClock = game => Math.max(0, game.time - (game.liveAt ?? 0));
 // The line a team may not cross during prep (attackers hold the high-y end of the map).
 export const prepLine = (map, team) => (team === 'attack' ? map.height * (1 - PREP_SHARE) : map.height * PREP_SHARE);
 const SPIKE_SECONDS = 35;
+// Fallback for a map that doesn't name its own rotation posts.
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 // A fresh order is carried out first and argued with later: for this long the agent does what
 // it was told, and Jev isn't asked. The one exception is diving away from a live grenade.
@@ -136,8 +137,8 @@ export function forfeitMatch(game, winner, reason) {
 
 // prep: start with the ten-second setup phase. Real rounds ask for it; tests that set up a
 // situation and step a second or two start live.
-export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false } = {}) {
-  const map = MAPS.tactical;
+export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false, map: mapId = 'tactical' } = {}) {
+  const map = MAPS[mapId] ?? MAPS.tactical;
   const game = {
     map,
     defenders,
@@ -727,7 +728,8 @@ function controlBot(game, u, dt) {
   } else if (!planned && u.post.rotate) {
     // Rotators fall back onto whichever site the latest callout threatens.
     const callout = [...game.intel.defend.values()].filter(i => game.time - i.t < 8).sort((a, b) => b.t - a.t)[0];
-    if (callout) dest = ROTATE_SPOTS.reduce((a, b) => (dist(b, callout) < dist(a, callout) ? b : a));
+    const spots = game.map.rotateSpots ?? ROTATE_SPOTS;
+    if (callout) dest = spots.reduce((a, b) => (dist(b, callout) < dist(a, callout) ? b : a));
   }
   if (dist(u, dest) < 1.2) dest = null;
   moveToward(game, u, dest, dt);
@@ -938,6 +940,7 @@ export function teamView(game, team) {
   return {
     team,
     roster,
+    mapId: game.map.id,
     time: game.time,
     result: game.result,
     status: roundStatus(game, team),

@@ -99,7 +99,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const previousCommands = commandHistory.get(game)?.[team] ?? [];
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
-    const ownSpawn = team === 'attack' ? 'Attacker Spawn' : 'Defender Spawn';
+    const ownSpawn = game.map.home[team];
     const locations = Object.fromEntries(game.map.zones.map(z => [
       z.name,
       z.name.endsWith('Spawn')

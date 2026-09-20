@@ -9,6 +9,48 @@ const zone = (name, x, y, w, h, description, center) => ({
 });
 const BORDER = [rect(0, 0, 80, 1), rect(0, 55, 80, 1), rect(0, 0, 1, 56), rect(79, 0, 1, 56)];
 
+// A layout this size is unreadable written as a wall list, and the walls are not the
+// interesting part anyway — the callouts are. So a generated map is authored as the open
+// space: every area a player can stand in, named the way players name it, and everything
+// else is solid. Walls fall out as the complement, merged into as few rectangles as the
+// shape allows so line-of-sight stays cheap.
+function rectsFromMask(mask, w, h) {
+  const used = new Uint8Array(w * h);
+  const out = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x] || used[y * w + x]) continue;
+      let rw = 0;
+      while (x + rw < w && mask[y * w + x + rw] && !used[y * w + x + rw]) rw++;
+      let rh = 1;
+      grow: while (y + rh < h) {
+        for (let k = 0; k < rw; k++) {
+          if (!mask[(y + rh) * w + x + k] || used[(y + rh) * w + x + k]) break grow;
+        }
+        rh++;
+      }
+      for (let yy = y; yy < y + rh; yy++) for (let xx = x; xx < x + rw; xx++) used[yy * w + xx] = 1;
+      out.push(rect(x, y, rw, rh));
+    }
+  }
+  return out;
+}
+
+function carved({ areas, ...rest }) {
+  const { width, height } = rest;
+  const mask = new Uint8Array(width * height).fill(1);
+  for (const [, x, y, w, h] of areas) {
+    for (let yy = Math.max(0, y); yy < Math.min(height, y + h); yy++) {
+      for (let xx = Math.max(0, x); xx < Math.min(width, x + w); xx++) mask[yy * width + xx] = 0;
+    }
+  }
+  return {
+    ...rest,
+    walls: rectsFromMask(mask, width, height),
+    zones: areas.map(([name, x, y, w, h, description, center]) => zone(name, x, y, w, h, description, center)),
+  };
+}
+
 export const MAPS = {
   // Valorant-style: attackers start at the bottom, two bomb sites at the top.
   tactical: {
@@ -48,6 +90,12 @@ export const MAPS = {
       'B Site': { push: 'B Main', flank: ['B Link'] },
       Mid: { flank: ['A Link', 'B Link'] },
     },
+    rotateSpots: [{ x: 16, y: 10 }, { x: 64, y: 10 }],
+    // Named posts the rest of the game refers to by role rather than by literal name, so a
+    // second map doesn't need every caller to know its callouts.
+    home: { attack: 'Attacker Spawn', defend: 'Defender Spawn' },
+    fallback: 'Top Hall',
+    patrol: ['A Site', 'A Link', 'Mid', 'B Site'],
     spawns: {
       attack: [{ x: 34, y: 51 }, { x: 38, y: 52 }, { x: 42, y: 52 }, { x: 46, y: 51 }, { x: 40, y: 48 }],
       // Defenders start on their posts. Bot rotators move to whichever site a callout threatens.
@@ -60,6 +108,62 @@ export const MAPS = {
       ],
     },
   },
+
+  // Dust II, rebuilt as layout rather than art: the callouts, their adjacency and roughly
+  // their proportions. The real map is about 4500 Hammer units across, which at Source's
+  // 1 unit ≈ 1.9 cm is ~86 m, so it fits this engine's metre grid at close to true scale and
+  // the existing movement speeds and round timer carry over unchanged.
+  //
+  // Sightlines are what make it play like Dust II: Long A is a 34 m corridor, Mid runs the
+  // height of the map, and both sites are reachable two ways so a commander has a real
+  // rotation problem. Areas are listed specific-first, because zoneAt takes the first match.
+  dust2: carved({
+    id: 'dust2',
+    width: 88,
+    height: 88,
+    areas: [
+      ['Pit', 74, 22, 10, 10, 'the sunken corner of A site at the end of Long'],
+      ['Mid Doors', 40, 38, 10, 6, 'the double doors partway down Mid'],
+      ['Window', 24, 18, 10, 10, 'the window room overlooking B from the CT side'],
+      ['B Doors', 24, 12, 12, 8, 'the doors from CT spawn into B'],
+      ['Long Doors', 66, 56, 8, 8, 'the double doors from T side into Long A'],
+      ['Catwalk', 48, 30, 14, 10, 'the raised walkway from Mid up to A short'],
+      ['A Short', 58, 26, 10, 8, 'the short route into A site from Catwalk'],
+      ['Top Mid', 40, 14, 10, 14, 'the CT end of Mid'],
+      ['CT Mid', 54, 8, 12, 12, 'the connector from CT spawn across to A'],
+      ['A Site', 60, 12, 22, 18, 'the A bomb site', { x: 70, y: 21 }],
+      ['B Site', 6, 8, 20, 16, 'the B bomb site', { x: 15, y: 16 }],
+      ['CT Spawn', 34, 4, 22, 12, 'where the defenders start'],
+      ['Long A', 70, 28, 14, 34, 'the long corridor up the east side into A site', { x: 77, y: 46 }],
+      ['Mid', 40, 26, 10, 46, 'the middle of the map, top to bottom', { x: 45, y: 52 }],
+      ['B Tunnels', 12, 22, 14, 36, 'the tunnels running up the west side into B', { x: 19, y: 42 }],
+      ['Lower Tunnels', 20, 56, 18, 18, 'the tunnel mouth out of T spawn toward B'],
+      ['Outside Long', 58, 62, 18, 10, 'the open ground between T spawn and Long doors'],
+      ['T Spawn', 34, 70, 28, 14, 'where the attackers start', { x: 48, y: 77 }],
+    ],
+    sites: ['A Site', 'B Site'],
+    routes: {
+      'A Site': { push: 'Long A', flank: ['A Short', 'CT Mid'] },
+      'B Site': { push: 'B Tunnels', flank: ['B Doors'] },
+      Mid: { flank: ['Catwalk', 'Top Mid'] },
+    },
+    spawns: {
+      // One post per agent: the squad is as big as the map says, so both maps field five.
+      attack: [{ x: 40, y: 75 }, { x: 44, y: 77 }, { x: 48, y: 79 }, { x: 52, y: 77 }, { x: 48, y: 74 }],
+      // One anchor per site, three rotators on the CT-side connectors between them.
+      defend: [
+        { x: 70, y: 21, rotate: false },
+        { x: 45, y: 11, rotate: true },
+        { x: 59, y: 14, rotate: true },
+        { x: 45, y: 22, rotate: true },
+        { x: 15, y: 16, rotate: false },
+      ],
+    },
+    rotateSpots: [{ x: 15, y: 16 }, { x: 70, y: 21 }],
+    home: { attack: 'T Spawn', defend: 'CT Spawn' },
+    fallback: 'CT Spawn',
+    patrol: ['A Site', 'A Short', 'Mid', 'B Site'],
+  }),
 };
 
 export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
