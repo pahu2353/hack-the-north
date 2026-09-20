@@ -82,6 +82,10 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   });
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // The shadow pass is a second render of every caster. Nothing in this game casts a shadow
+  // that changes meaningfully within a sixtieth of a second — the map is static and the agents
+  // walk — so it is refreshed on alternate frames and costs half as much.
+  renderer.shadowMap.autoUpdate = false;
   renderer.autoClear = false;
   // Filmic tone mapping is the single cheapest thing that stops untextured geometry reading as
   // programmer art: it rolls off highlights instead of clipping flat colours to white.
@@ -121,8 +125,47 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   let composer = null;
   let ao = null;
   let bloom = null;
-  let post = true;
+  // What this view costs is almost entirely pixels: the post chain, and AO above all, is paid
+  // per pixel per frame. So quality is a ladder rather than a switch, and the frame time walks
+  // up and down it. Dropping AO first keeps most of the look for most of the saving; resolution
+  // is the last thing to go because it is the most visible. It climbs back when the frames
+  // allow, so a single explosion no longer costs the rest of the match its lighting.
+  const LEVELS = [
+    { ao: false, bloom: false, scale: 0.7 },
+    { ao: false, bloom: false, scale: 1 },
+    { ao: false, bloom: true, scale: 1 },
+    { ao: true, bloom: true, scale: 1 },
+  ];
+  // A Retina display reports 2, which is four times the pixels for very little gain at this
+  // art style, and it is where a laptop GPU runs out of room first.
+  const MAX_PIXEL_RATIO = 1.5;
+  const SLOW_FRAME = 1 / 45; // below this the view is visibly not keeping up
+  // Headroom has to be judged against what the display will actually allow: a screen locked to
+  // 60Hz never delivers a frame faster than ~16.7ms, so asking for 70fps would mean the view
+  // could never climb back on the most ordinary hardware there is. The gap between the two
+  // thresholds is the hysteresis that stops a level flipping back and forth.
+  const FAST_FRAME = 1 / 55;
+  const RECOVERY_FRAMES = 300; // sustained headroom before trying a level up
+  const MAX_RECOVERY_FRAMES = 3600;
+  let qualityLevel = LEVELS.length - 1;
+  let appliedRatio = null;
+  let fastFrames = 0;
+  // Backing off is for a climb that proved wrong, not for every drop. If the view has been
+  // holding a level for a while and then falls behind, something changed — a fight, another
+  // tab taking the GPU — and it should recover as soon as that passes. If instead it drops
+  // shortly after climbing, that level is one this machine cannot hold, and the next attempt
+  // waits twice as long. Without the distinction, one bad stretch costs the rest of the match.
+  let recoveryFrames = RECOVERY_FRAMES;
+  let framesSinceClimb = Infinity;
+  const renderRatio = () => Math.min(MAX_PIXEL_RATIO, window.devicePixelRatio || 1) * LEVELS[qualityLevel].scale;
+  const usingPost = () => LEVELS[qualityLevel].ao || LEVELS[qualityLevel].bloom;
+  function applyLevel() {
+    if (ao) ao.enabled = LEVELS[qualityLevel].ao;
+    if (bloom) bloom.enabled = LEVELS[qualityLevel].bloom;
+    appliedRatio = null; // makes fit() resize the buffers to the new scale
+  }
   let slowFrames = 0;
+  let shadowTick = false;
 
   function buildComposer() {
     composer = new EffectComposer(renderer);
@@ -148,6 +191,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.28, 0.7, 0.9);
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
+    applyLevel(); // the chain may be built after the view has already stepped down
   }
 
   const sun = buildLights(scene, vmScene);
@@ -176,6 +220,19 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   const tracers = [];
   const nades = new Map();
   const blasts = [];
+  // three.js compiles a shader variant per light count, so adding a light to the scene and
+  // taking it away again makes it recompile every material that light could touch. A grenade
+  // round does that around ninety times, which is felt as a stutter on every explosion. The
+  // lights are therefore made once and never added or removed: a blast borrows one, drives its
+  // intensity, and hands it back dark. Three is enough for overlapping blasts; past that the
+  // oldest is reused, which nobody can see under two simultaneous explosions.
+  const blastLights = Array.from({ length: 3 }, () => {
+    const light = new THREE.PointLight(0xffb066, 0, 30);
+    light.layers.enableAll(); // a light only reaches objects sharing one of its layers
+    scene.add(light);
+    return light;
+  });
+  let nextBlastLight = 0;
   const spike = buildSpike(scene);
   const beacon = buildBeacon(scene);
   const weapon = buildWeapon(vmScene);
@@ -212,16 +269,20 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   }
 
   function fit() {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // The overlay is 2D text and lines, which cost almost nothing and look wrong when soft, so
+    // it stays at display resolution whatever the 3D view is rendering at.
+    const hudDpr = Math.min(2, window.devicePixelRatio || 1);
+    const ratio = renderRatio();
     const { width, height } = canvas.getBoundingClientRect();
     if (!width || !height) return false;
-    if (width !== W || height !== H) {
+    if (width !== W || height !== H || ratio !== appliedRatio) {
       W = width;
       H = height;
-      renderer.setPixelRatio(dpr);
+      appliedRatio = ratio;
+      renderer.setPixelRatio(ratio);
       renderer.setSize(W, H, false);
-      hudCanvas.width = Math.round(W * dpr);
-      hudCanvas.height = Math.round(H * dpr);
+      hudCanvas.width = Math.round(W * hudDpr);
+      hudCanvas.height = Math.round(H * hudDpr);
       // Hold the horizontal FOV fixed so a wider window shows more to the sides, not less height.
       const vfov = 2 * Math.atan(Math.tan(FOV_H / 2) / (W / H));
       camera.fov = (vfov * 180) / Math.PI;
@@ -229,9 +290,13 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       camera.updateProjectionMatrix();
       vmCamera.aspect = W / H;
       vmCamera.updateProjectionMatrix();
+      // The composer caches the pixel ratio it was built with, so changing the renderer's
+      // alone would resize nothing: the post chain would keep its original buffers and the
+      // resolution step would do no work at all.
+      composer?.setPixelRatio(ratio);
       composer?.setSize(W, H);
     }
-    hud.setTransform(dpr, 0, 0, dpr, 0, 0);
+    hud.setTransform(hudDpr, 0, 0, hudDpr, 0, 0);
     hud.clearRect(0, 0, W, H);
     return true;
   }
@@ -267,16 +332,30 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     syncBeacon();
     aimWeapon(view, unit, cam, dt);
 
-    // AO and bloom are worth a lot visually but they are the first thing to cost frames on a
-    // laptop GPU. If the frame budget is missed for a sustained stretch, drop to the plain
-    // forward render rather than let the game stutter.
-    if (post && dt > 0.045) slowFrames++;
+    // Walk the quality ladder from the frame time. Dropping is quick, because a player feels a
+    // slow frame immediately; climbing back is slow and needs sustained headroom, so the view
+    // cannot oscillate between two levels every second.
+    if (dt > SLOW_FRAME) slowFrames++;
     else slowFrames = Math.max(0, slowFrames - 1);
-    if (slowFrames > 90) {
-      post = false;
-      console.warn('3D view: disabling AO and bloom to hold frame rate');
+    fastFrames = dt < FAST_FRAME ? fastFrames + 1 : 0;
+    framesSinceClimb++;
+    if (slowFrames > 20 && qualityLevel > 0) {
+      qualityLevel--;
+      slowFrames = 0;
+      fastFrames = 0;
+      recoveryFrames = framesSinceClimb < RECOVERY_FRAMES * 2
+        ? Math.min(MAX_RECOVERY_FRAMES, recoveryFrames * 2) // that climb was a mistake
+        : RECOVERY_FRAMES; // it held for a while, so this is new, not flapping
+      applyLevel();
+      console.warn(`3D view: stepping down to quality level ${qualityLevel} to hold frame rate`);
+    } else if (fastFrames > recoveryFrames && qualityLevel < LEVELS.length - 1) {
+      qualityLevel++;
+      fastFrames = 0;
+      framesSinceClimb = 0;
+      applyLevel();
     }
-    if (post) {
+    renderer.shadowMap.needsUpdate = (shadowTick = !shadowTick);
+    if (usingPost()) {
       if (!composer) buildComposer();
       composer.render(); // includes the weapon pass
     } else {
@@ -476,9 +555,10 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     );
     ring.rotation.x = -Math.PI / 2; // rings are built in the XY plane; lay it on the floor
     ring.position.y = 0.06;
-    const light = new THREE.PointLight(0xffb066, 0, r * 5);
-    light.position.y = 1.1;
-    group.add(core, ring, light);
+    const light = blastLights[nextBlastLight++ % blastLights.length];
+    light.position.set(x, 1.1, y);
+    light.distance = r * 5;
+    group.add(core, ring);
 
     const puffs = [];
     for (let i = 0; i < 9; i++) {
@@ -501,14 +581,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       sparks.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 3 + Math.random() * 4 });
     }
     scene.add(markFx(group));
-    // markFx put everything on the effects layer, which a light must not be confined to: a light
-    // only reaches objects sharing one of its layers, and the map is on the default one.
-    light.layers.enableAll();
     blasts.push({ group, core, ring, light, puffs, sparks, t: 0, r, slow });
   }
 
   // A blast builds its own geometry and materials, so they go back when it ends.
   function disposeBlast(b) {
+    b.light.intensity = 0; // handed back dark, never removed from the scene
     scene.remove(b.group);
     b.group.traverse(o => {
       o.geometry?.dispose?.();
@@ -733,9 +811,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     crosshair();
   }
 
-  // Project a world point to overlay pixels; null when it is behind the camera.
+  // Project a world point to overlay pixels; null when it is behind the camera. Called for
+  // every name tag every frame, so it reuses one vector rather than leaving a trail of them
+  // for the collector to find mid-round.
+  const projected = new THREE.Vector3();
   function project(x, h, z) {
-    const v = new THREE.Vector3(x, h, z).project(camera);
+    const v = projected.set(x, h, z).project(camera);
     if (v.z > 1) return null;
     return { x: ((v.x + 1) / 2) * W, y: ((1 - v.y) / 2) * H };
   }
@@ -804,7 +885,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   // What this renderer thinks its own state is, for the stall report in main.js.
   const diagnostics = () => ({
-    contextLost, post, slowFrames, figures: figures.size, size: [Math.round(W), Math.round(H)],
+    contextLost, qualityLevel, post: usingPost(), renderRatio: appliedRatio, slowFrames, fastFrames, recoveryFrames,
+    figures: figures.size, size: [Math.round(W), Math.round(H)],
     glLost: renderer.getContext()?.isContextLost?.() ?? null,
   });
 
@@ -905,7 +987,9 @@ function buildLights(scene, vmScene) {
   scene.add(new THREE.HemisphereLight(0xbcd6f0, 0x54452f, 1.25));
   const sun = new THREE.DirectionalLight(0xfff0d8, 2.1);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  // 2048 costs four times 1024 for a difference nobody sees on untextured geometry at this
+  // scale, and the shadow pass re-renders every caster in the map.
+  sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.bias = -0.0009;
   scene.add(sun, sun.target);
   // The weapon is lit on its own so it reads clearly in shadowed corridors.
