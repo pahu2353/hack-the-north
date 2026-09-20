@@ -242,6 +242,10 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     if (unit.id !== watchedId || view.time < lastViewTime) {
       lastSeen.clear();
       for (const f of figures.values()) f.group.visible = false;
+      // Health belongs to the agent, not to the screen: stepping across to a more wounded
+      // squadmate is not you being shot, and neither is the start of a new round.
+      ownHp = undefined;
+      ownHurt = 0;
     }
     watchedId = unit.id;
     lastViewTime = view.time;
@@ -366,6 +370,10 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
         }
       }
       const f = taken ?? buildFigure(e.color ?? (e.team === view.team ? OWN : ENEMY), false);
+      // The figure was almost certainly flashing red the instant it died, since that is what
+      // killed it. A body on the floor is not still being hit, so clear the tint with it.
+      f.hurt = 0;
+      setFigureHurt(f, 0);
       if (!taken) {
         f.group.position.set(e.x, 0, e.y);
         scene.add(f.group);
