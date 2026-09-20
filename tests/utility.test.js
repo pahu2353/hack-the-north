@@ -182,12 +182,20 @@ test('a throw has a reach, and it is nowhere near the size of the map', () => {
   const { game, a } = duel();
   for (const kind of ['frag', 'flash', 'smoke']) {
     a.throwReadyAt = 0;
+    game.grenades.length = 0;
     const far = { x: a.x, y: a.y - (UTILITY[kind].range + 6) };
-    assert.equal(throwGrenade(game, a, far, kind), false, `${kind} cannot cross the map`);
+    // Past the arm it is still thrown, just no further than the arm goes, and that way.
+    assert.ok(throwGrenade(game, a, far, kind), `${kind} is thrown, not refused`);
+    const [thrown] = game.grenades;
+    assert.ok(thrown.reach <= UTILITY[kind].range + 0.01, `${kind} cannot cross the map`);
+    assert.ok(thrown.ty < a.y, `${kind} went the way it was pointed`);
   }
-  // Well inside reach, it goes.
-  a.throwReadyAt = 0;
+  // Well inside reach, it goes — and lands exactly where it was asked to, not at the cap.
+  // The loop above spends the kit now that a far throw is thrown rather than refused.
+  Object.assign(a, { throwReadyAt: 0, smokes: 1 });
+  game.grenades.length = 0;
   assert.ok(throwGrenade(game, a, { x: a.x, y: a.y - 8 }, 'smoke'));
+  assert.ok(Math.abs(game.grenades[0].reach - 8) < 0.01, 'an in-reach throw is untouched');
 });
 
 test('a lob clears low cover and comes up short against a building', () => {
