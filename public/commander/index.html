@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0d11">
 <title>Commander</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎖️</text></svg>">
 <style>
@@ -21,6 +22,11 @@
     --ok: #5bd17a;
   }
   * { box-sizing: border-box; }
+  /* Available to screen readers, out of the way of the game. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
   /* Elements with their own display rule (e.g. the camera's "off" message) must still hide. */
   [hidden] { display: none !important; }
   html, body { height: 100%; }
@@ -34,18 +40,24 @@
   button {
     background: var(--panel-2); border: 1px solid var(--border); padding: 6px 12px; cursor: pointer;
     font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-2);
+    min-height: 26px; touch-action: manipulation; -webkit-tap-highlight-color: rgba(74, 163, 255, 0.2);
   }
   button:hover:not(:disabled) { border-color: var(--ink-2); color: var(--ink); }
   button:disabled { opacity: 0.4; cursor: default; }
   button.primary { background: var(--squad); border-color: var(--squad); color: #051222; }
   button.primary:hover:not(:disabled) { background: #6fb6ff; border-color: #6fb6ff; color: #051222; }
   button.big { padding: 14px 18px; font-size: 13px; }
-  button.link { background: none; border: 0; color: var(--muted); padding: 4px; letter-spacing: 0.05em; }
+  button.link { background: none; border: 0; color: var(--muted); padding: 6px 8px; letter-spacing: 0.05em; }
   button.link:hover { color: var(--ink); }
   button.toggle[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
   button:focus-visible, input:focus-visible { outline: 1px solid var(--squad); outline-offset: 1px; }
   input {
     background: var(--panel-2); border: 1px solid var(--border); padding: 7px 9px; color: var(--ink);
+    min-height: 30px; touch-action: manipulation;
+  }
+  /* 16px keeps iOS Safari from zooming in when a field takes focus. */
+  @media (max-width: 900px) {
+    input { font-size: 16px; }
   }
   kbd {
     font: 10px/1 ui-monospace, monospace; padding: 2px 4px; border: 1px solid var(--border); color: var(--muted);
@@ -69,12 +81,16 @@
   #map { width: 100%; height: 100%; display: block; cursor: crosshair; }
   /* Below the scoreboard, which now spans both rosters. */
   /* Bottom left, oldest on top, so the newest line sits closest to the eye. */
-  .feed { position: absolute; left: 12px; bottom: 34px; display: grid; gap: 3px; justify-items: start; pointer-events: none; }
+  /* Clear of notches and rounded corners on phones. */
+  .feed { position: absolute; left: max(12px, env(safe-area-inset-left)); bottom: max(34px, env(safe-area-inset-bottom)); display: grid; gap: 3px; justify-items: start; pointer-events: none; }
   .feed div { background: rgba(10, 12, 16, 0.85); border: 1px solid var(--border); padding: 3px 8px; font-size: 12px; }
   .feed .own { border-left: 3px solid var(--squad); }
   .feed .other { border-left: 3px solid var(--enemy); }
   .feed b { font-weight: 700; }
-  .hint { position: absolute; right: 12px; bottom: 10px; color: var(--muted); font-size: 12px; pointer-events: none; }
+  .hint {
+    position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom));
+    color: var(--muted); font-size: 12px; pointer-events: none;
+  }
 
   .overlay { z-index: 2; }
   .overlay {
@@ -118,7 +134,10 @@
   .overlay .status { min-height: 18px; }
   .overlay .status.error { color: var(--enemy); }
 
-  .side { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .side {
+    border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: auto;
+    overscroll-behavior: contain;
+  }
   .card {
     padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; min-height: 0;
     justify-items: stretch; align-content: start;
@@ -149,11 +168,14 @@
   }
   .ptt.live { border-color: var(--enemy); color: #fff; }
   .ptt .level { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--enemy); width: 0; transition: width 80ms; }
+  @media (prefers-reduced-motion: reduce) {
+    .ptt .level { transition: none; }
+  }
   .caption { min-height: 20px; color: var(--gold); font-style: italic; }
   form.order { display: flex; gap: 6px; }
   form.order input { flex: 1; min-width: 0; }
 
-  .log { overflow: auto; padding-right: 4px; display: grid; gap: 8px; align-content: start; }
+  .log { overflow: auto; overscroll-behavior: contain; padding-right: 4px; display: grid; gap: 8px; align-content: start; }
   .entry { background: var(--panel); border: 1px solid var(--border); padding: 8px; display: grid; gap: 4px; }
   .entry .said { font-weight: 600; }
   .entry.ignored { opacity: 0.55; }
@@ -254,7 +276,7 @@
   .portrait.unseen .bar i { background: rgba(255, 255, 255, 0.25); }
   /* Under the scoreboard, not beside it. */
   #minimap {
-    position: absolute; top: 62px; left: 12px; width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56;
+    position: absolute; top: 62px; left: max(12px, env(safe-area-inset-left)); width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56;
     background: rgba(10, 12, 16, 0.6); border: 1px solid var(--border);
   }
   .pov-zone {
@@ -284,6 +306,7 @@
 </style>
 </head>
 <body>
+<h1 class="sr-only">Commander</h1>
 <main class="layout">
   <section class="arena" id="arena" data-view="map">
     <canvas id="map" aria-label="Battle map"></canvas>
@@ -300,7 +323,7 @@
       <div class="team enemy" id="enemyBar"></div>
     </div>
     <div class="toast" id="toast" hidden></div>
-    <div class="feed" id="feed"></div>
+    <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Match events"></div>
     <div class="hint" id="hint"></div>
 
     <div class="overlay" id="overlay">
@@ -339,9 +362,9 @@
 
       <section id="screenLobby" hidden>
         <p id="lobbyIntro">Share this code with your opponent.</p>
-        <div class="code" id="lobbyCode">·····</div>
+        <div class="code" id="lobbyCode" translate="no">·····</div>
         <div class="invite">
-          <input id="inviteLink" readonly aria-label="Invite link">
+          <input id="inviteLink" readonly translate="no" spellcheck="false" aria-label="Invite link">
           <button id="copyInvite" type="button">Copy link</button>
         </div>
         <div class="note" id="inviteNote"></div>
@@ -401,17 +424,17 @@
         <div class="sign" id="sign" hidden></div>
       </div>
       <div class="signs" id="signs"></div>
-      <div class="status" id="camStatus"></div>
+      <div class="status" id="camStatus" role="status"></div>
     </div>
     <div class="card">
       <div class="card-head">Voice <button id="micBtn" type="button">Mic on</button></div>
       <button id="listen" class="ptt" type="button" title="Click to mute or unmute"><span id="listenLabel">Mic off</span><span class="level" id="level"></span></button>
       <div class="caption" id="caption"></div>
       <form class="order" id="textForm">
-        <input id="textInput" autocomplete="off" placeholder="Type an order">
+        <input id="textInput" autocomplete="off" aria-label="Order" placeholder="Type an order…">
         <button type="submit">Send</button>
       </form>
-      <div class="status" id="micStatus"></div>
+      <div class="status" id="micStatus" role="status"></div>
     </div>
     <div class="card" id="opponentCard" hidden>
       <div class="card-head">Enemy commander <span class="status" id="opponentStatus"></span></div>
@@ -425,7 +448,7 @@
     <div class="card" id="permsCard" hidden>
       <div class="card-head">Permissions</div>
       <button id="permsBtn" class="primary" type="button">Allow mic and camera</button>
-      <div class="status" id="permsStatus">Voice orders and hand signals need access.</div>
+      <div class="status" id="permsStatus" role="status">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
       <div class="card-head">Orders</div>
