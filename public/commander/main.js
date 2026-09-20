@@ -1268,56 +1268,101 @@ for (const [id, tab] of [['tabLog', 'log'], ['tabAgents', 'agents']]) {
 
 // What Jev weighed, not just what it picked. A 62/24/14 spread and a 96/2/2 spread both read as
 // the same order in words; side by side the bars say which one was nearly something else.
+// Beyond a handful of segments the bar stops saying anything: twenty options means twenty
+// hairlines and a gap between each, and the gap between first and second place — the only thing
+// the bar is for — disappears into the noise. The rest fold into one trailing segment.
+const SPREAD_SEGMENTS = 5;
+
+// Built once and then updated in place. Rebuilding them every frame meant a mousedown and its
+// mouseup landed on different elements, so clicking an agent to watch them often did nothing,
+// and any tooltip you were reading vanished from under the cursor.
+let decisionRoster = '';
+function buildDecisionCards(names) {
+  $('decisions').replaceChildren(...names.map((name, i) => {
+    const card = el('div', { className: 'decision', style: `--agent:${OWN_COLORS[i % OWN_COLORS.length]}` }, [
+      el('div', { className: 'top' }, [
+        el('span', { className: 'name', textContent: name }),
+        el('span', { className: 'hp' }),
+        el('span', { className: 'p' }),
+      ]),
+      el('div', { className: 'doing' }, [el('span', { className: 'act' }), el('span', { className: 'src' })]),
+      el('div', { className: 'order' }, [el('span', { className: 'ord' })]),
+      el('div', { className: 'spread' }),
+    ]);
+    card.onclick = () => {
+      const u = ownUnits().find(unit => unit.name === name);
+      if (u?.alive) watchAgent(u);
+    };
+    return card;
+  }));
+}
+
 function renderDecisions() {
   if (jevTab !== 'agents') return;
+  const names = TEAMS[session?.team ?? 'attack'].names;
+  const roster = names.join(',');
+  if (decisionRoster !== roster) {
+    buildDecisionCards(names);
+    decisionRoster = roster;
+  }
   const units = ownUnits();
-  const cards = TEAMS[session?.team ?? 'attack'].names.map((name, i) => {
+  names.forEach((name, i) => {
+    const card = $('decisions').children[i];
+    if (!card) return;
     const u = units.find(unit => unit.name === name);
-    const colour = OWN_COLORS[i % OWN_COLORS.length];
-    if (!u) return el('div', { className: 'decision dead', style: `--agent:${colour}` }, [el('span', { className: 'name', textContent: name })]);
-    const d = u.decision;
-    const source = !u.alive ? 'down'
+    card.classList.toggle('dead', !u?.alive);
+    card.classList.toggle('watched', Boolean(u) && u.id === watchedId);
+    if (u?.color) card.style.setProperty('--agent', u.color);
+    const set = (selector, text) => {
+      const node = card.querySelector(selector);
+      if (node.textContent !== text) node.textContent = text;
+    };
+    const d = u?.decision;
+    const source = !u ? '' : !u.alive ? 'down'
       : d?.obeying ? 'your order'
-      : !d ? 'thinking…'
+      : !d ? 'thinking\u2026'
       : d.local ? 'no contact'
       : `Jev ${Math.round(d.latency)} ms`;
-    const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]);
+    const spread = Object.entries(u?.alive ? d?.probabilities ?? {} : {}).sort((a, b) => b[1] - a[1]);
     const [, best] = spread[0] ?? [];
-    const card = el('div', {
-      className: `decision${u.alive ? '' : ' dead'}${u.id === watchedId ? ' watched' : ''}`,
-      style: `--agent:${colour}`,
-      onclick: () => { if (u.alive) watchAgent(u); },
-    }, [
-      el('div', { className: 'top' }, [
-        el('span', { className: 'name', textContent: u.name }),
-        el('span', { className: 'p', textContent: u.alive && best != null ? `${Math.round(best * 100)}%` : '' }),
-      ]),
-      el('div', { className: 'hp' }, [el('i', { style: `width:${(u.hp / u.maxHp) * 100}%` })]),
-      // What they are doing right now, and where the decision behind it came from.
-      el('div', { className: 'doing' }, [
-        actionLabel(u, enemyName(u)),
-        el('span', { className: 'src', textContent: source }),
-      ]),
-      // The standing order is a separate thing from the action: an agent can be taking cover
-      // while still under orders to push, and the card that hid one behind the other made that
-      // look like the order had been dropped.
-      el('div', { className: 'order' }, [
-        u.alive ? `order: ${u.orderLabel ?? '–'}` : '',
-        ...(u.alive && u.grenades ? [el('span', { className: 'nade', title: `${u.grenades} grenade`, textContent: '💣' })] : []),
-      ]),
-      // One bar, one segment per option Jev weighed. The width of the second segment is the
-      // whole point: it says how nearly this was a different order, which the winning
-      // percentage on its own can never show.
-      ...(u.alive && spread.length ? [el('div', { className: 'spread' },
-        spread.map(([option, p], rank) => el('i', {
+    set('.p', best == null ? '' : `${Math.round(best * 100)}%`);
+    // Health as a figure rather than a second bar. Full health and full confidence drew two
+    // identical full-width rules, one under the other, which read as the same thing twice.
+    // It takes the colour bands the first-person HUD uses, so a hurt agent still shows up
+    // without anything having to be read.
+    set('.hp', u?.alive ? String(Math.round(u.hp)) : '');
+    const left = u?.alive ? u.hp / u.maxHp : 1;
+    card.dataset.hp = left > 0.6 ? 'ok' : left > 0.3 ? 'low' : 'critical';
+    // What they are doing now, and where the decision behind it came from.
+    set('.act', u ? actionLabel(u, enemyName(u)) : '');
+    set('.src', source);
+    // The standing order is a separate thing from the action: an agent can be taking cover
+    // while still under orders to push, and showing only one made that look like the order had
+    // been dropped.
+    set('.ord', u?.alive ? `order: ${u.orderLabel ?? '\u2013'}` : '');
+    // One bar holding the whole distribution. Redrawn only when it actually changes, so a
+    // segment's tooltip survives being hovered.
+    const shown = spread.slice(0, SPREAD_SEGMENTS);
+    const rest = spread.slice(SPREAD_SEGMENTS).reduce((sum, [, p]) => sum + p, 0);
+    const bar = card.querySelector('.spread');
+    const signature = shown.map(([option, p]) => `${option}:${Math.round(p * 100)}`).join('|')
+      + (rest > 0.005 ? `|+${spread.length - SPREAD_SEGMENTS}` : '');
+    if (bar.dataset.sig !== signature) {
+      bar.dataset.sig = signature;
+      bar.replaceChildren(
+        ...shown.map(([option, p], rank) => el('i', {
           className: rank ? '' : 'pick',
           style: `flex:${Math.max(p, 0.004)}`,
           title: `${option} ${Math.round(p * 100)}%`,
-        })))] : []),
-    ]);
-    return card;
+        })),
+        ...(rest > 0.005 ? [el('i', {
+          className: 'rest',
+          style: `flex:${rest}`,
+          title: `${spread.length - SPREAD_SEGMENTS} more \u00b7 ${Math.round(rest * 100)}%`,
+        })] : []),
+      );
+    }
   });
-  $('decisions').replaceChildren(...cards);
 }
 
 
