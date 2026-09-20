@@ -287,6 +287,10 @@ $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }
 for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
   online?.ws.send(JSON.stringify({ type: 'side', team }));
 $('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
+// One list of maps, shown in two places: the lobby picker is built from the Vs Bots one so a
+// map added to the menu can never be missing online.
+$('lobbyMap').replaceChildren(...[...$('botMap').options].map(option => option.cloneNode(true)));
+$('lobbyMap').onchange = () => online?.ws.send(JSON.stringify({ type: 'map', map: $('lobbyMap').value }));
 
 // ---------- microphone and camera ----------
 
@@ -410,6 +414,7 @@ function handleServer(connection, message) {
     case 'lobby':
       connection.players = message.players;
       connection.running = message.running;
+      connection.map = message.map;
       renderLobby();
       if (resultShown) updateResultActions();
       break;
@@ -469,6 +474,10 @@ async function renderLobby() {
   $('startMatch').hidden = !host;
   $('startMatch').disabled = !ready;
   $('hostSideControls').hidden = !host;
+  // The guest sees which map they're about to play, but it isn't theirs to change, and nobody
+  // changes it once the match is under way.
+  if (online.map) $('lobbyMap').value = online.map;
+  $('lobbyMap').disabled = !host || Boolean(online.running);
   for (const side of ['attack', 'defend']) {
     const button = $(side === 'attack' ? 'hostAttack' : 'hostDefend');
     button.setAttribute('aria-pressed', String(team === side));

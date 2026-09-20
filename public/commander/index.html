@@ -526,6 +526,11 @@
           <button id="hostAttack" type="button" aria-pressed="true">Attack</button>
           <button id="hostDefend" type="button" aria-pressed="false">Defend</button>
         </div>
+        <!-- Both players see the map; only the host can change it. Its options are copied from
+             the Vs Bots picker at startup so the two lists cannot drift apart. -->
+        <label class="side-choice" for="lobbyMap">Map
+          <select id="lobbyMap"></select>
+        </label>
         <button id="startMatch" class="primary big" type="button" disabled>Start match</button>
         <div class="status" id="lobbyStatus"></div>
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
