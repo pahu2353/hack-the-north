@@ -182,7 +182,11 @@
   .segment { display: flex; border: 1px solid var(--border); background: var(--panel); }
   .segment button {
     border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px; flex: 1;
-    position: relative; transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+    position: relative;
+    /* The ring is always here, just invisible. A shadow fading up from `none` does not
+       interpolate, so it would snap in; a colour fading up from transparent does. */
+    box-shadow: inset 0 0 0 2px transparent;
+    transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
   }
   .segment button:first-child { border-left: 0; }
   /* The generic button hover brightens border-color, and the only border these have is the
@@ -199,9 +203,10 @@
     background: #24333d; color: var(--accent);
     box-shadow: inset 0 0 0 2px var(--accent);
   }
-  /* A rule of accent under the option in force: the same mark the screen headings use. It is
-     the ring's bottom edge while hovered, so the two never fight over the same pixels. */
-  .segment button[aria-checked="true"]:not(:hover)::after {
+  /* A rule of accent under the option in force: the same mark the screen headings use. It
+     stays put while hovered — the ring's bottom edge lands on the same pixels in the same
+     colour, so the underline reads as growing into the ring instead of blinking out. */
+  .segment button[aria-checked="true"]::after {
     content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent);
   }
   .segment button:active:not(:disabled) { background: var(--raised); }

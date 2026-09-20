@@ -233,13 +233,25 @@ $('botsOpenAI').onclick = () => startBotGame('openai', botSide, botMap);
 // `pick` is called with the chosen value, and re-rendering is just calling this again.
 function segment(target, options, selected, pick) {
   const host = typeof target === 'string' ? $(target) : target;
-  host.replaceChildren(...options.map(o => {
-    const button = el('button', { type: 'button', textContent: o.label, title: o.title ?? '' });
-    button.setAttribute('role', 'radio');
+  // Redrawing by replacing the buttons destroyed the one under the pointer, so its hover
+  // restarted from nothing on a brand new element and the ring snapped in. Same buttons, new
+  // state: the transition runs, and a held focus or hover survives the change.
+  const sameOptions = host.children.length === options.length
+    && [...host.children].every((button, i) => button.dataset.value === options[i].value);
+  if (!sameOptions) {
+    host.replaceChildren(...options.map(o => {
+      const button = el('button', { type: 'button', textContent: o.label });
+      button.dataset.value = o.value;
+      button.setAttribute('role', 'radio');
+      return button;
+    }));
+  }
+  [...host.children].forEach((button, i) => {
+    const o = options[i];
+    button.title = o.title ?? '';
     button.setAttribute('aria-checked', String(o.value === selected));
     button.onclick = () => pick(o.value);
-    return button;
-  }));
+  });
 }
 
 const MAP_OPTIONS = Object.values(MAPS).map(m => ({ value: m.id, label: m.label, title: m.blurb }));
@@ -309,11 +321,14 @@ function buildSettings() {
     const control = el('div', { className: 'segment' });
     control.setAttribute('role', 'radiogroup');
     control.setAttribute('aria-label', label);
-    segment(control, SWITCH_OPTIONS, settings[key] ? 'on' : 'off', value => {
+    // Flipping one setting redraws that switch, not the whole list, so nothing under the
+    // pointer is torn out from under it.
+    const draw = () => segment(control, SWITCH_OPTIONS, settings[key] ? 'on' : 'off', value => {
       settings[key] = value === 'on';
       applySettings();
-      buildSettings();
+      draw();
     });
+    draw();
     return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), control]);
   }));
 }
