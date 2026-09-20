@@ -143,7 +143,7 @@ calling OpenAI, and `npm run test:bot-mode` runs the opponent's tests.
 
 The default uses low reasoning effort with an eight-second server timeout. Routine replanning
 waits five seconds after the previous response, so response latency adds to the interval.
-Sightings, casualties, emergency retreats, and plants can trigger earlier requests, with at most
+Sightings, casualties, emergency retreats, grenade use or nearby hostile landings, and plants can trigger earlier requests, with at most
 one request running at a time. Each request contains the bot squad's health, positions,
 orders and local combat counts, sightings from the last eight seconds, and the public planted spike state.
 Attacking bots also know their own carrier and dropped spike position; defending bots do not.
@@ -151,6 +151,15 @@ It has no conversation history or memory across rounds. The returned action and 
 executed by the bot controller: movement usually stops on contact, except during
 retreat/regroup and coordinated retakes. OpenAI chooses objectives; game code chooses paths and cover.
 The **Enemy commander** panel shows the model, plan, latency, and any fallback error.
+
+On both sides, OpenAI also sees each bot's grenades remaining, nearby teammates at risk of sharing
+a blast, reachable enemy clusters, and which bots are dodging. Active grenades include their public
+positions, teams and remaining fuse after landing; hidden landing targets and enemy grenade supplies
+are not sent. Its instructions explain blast damage, walls, safe spacing and how to support a squad
+during a dodge. Throws and dodges still run immediately in game code, including while OpenAI is slow
+or unavailable. Bots ignore friendly grenades and blasts blocked by walls, stay clear until a hostile
+blast ends, then resume their orders. The enemy plan details show dodging and remaining grenades.
+Grenade events share the existing two-second minimum request interval, debounce and failure backoff.
 
 When OpenAI orders at least two defenders to retake, they assemble at their site's Link or rear
 hallway, favoring a route protected from recent sightings. Most of the assigned group must arrive

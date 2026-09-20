@@ -2,6 +2,7 @@
 import { generateText, jsonSchema, Output } from 'ai';
 import { MAPS } from './public/commander/world.js';
 import { opponentActions, validateOpponentPlan } from './public/commander/opponent.js';
+import { GRENADE } from './public/commander/sim.js';
 
 const map = MAPS.tactical;
 const zones = map.zones.map(z => z.name);
@@ -15,7 +16,17 @@ export function parseOpponentSnapshot(value: any) {
       || !['attack', 'defend'].includes(value.team)
       || !Array.isArray(value.squad) || value.squad.length < 1 || value.squad.length > 8
       || !Array.isArray(value.contacts) || value.contacts.length > 8
+      || !Array.isArray(value.grenades) || value.grenades.length > 8 * GRENADE.carried
       || !(value.team === 'attack' ? ['carried', 'dropped', 'planted'] : ['unplanted', 'planted']).includes(value.spike?.state)) bad();
+  const grenadeIds = new Set();
+  const grenades = value.grenades.map((g: any) => {
+    if (!g || !unitId(g.id) || grenadeIds.has(g.id) || !['attack', 'defend'].includes(g.team)
+        || !point(g.position) || typeof g.landed !== 'boolean'
+        || (g.landed ? !finite(g.secondsToExplosion, 0, GRENADE.fuse) : g.secondsToExplosion !== null)) bad();
+    grenadeIds.add(g.id);
+    return { id: g.id, team: g.team, position: { x: g.position.x, y: g.position.y },
+      landed: g.landed, secondsToExplosion: g.secondsToExplosion };
+  });
   const actions = opponentActions(value.team);
   const ids = new Set();
   const squad = value.squad.map((u: any) => {
@@ -26,9 +37,19 @@ export function parseOpponentSnapshot(value: any) {
     if (combat && (!Number.isInteger(combat.visibleEnemies) || !finite(combat.visibleEnemies, 0, 8)
         || !Number.isInteger(combat.nearbyAllies) || !finite(combat.nearbyAllies, 0, 7)
         || typeof combat.fallingBack !== 'boolean')) bad();
+    const opportunity = u.grenadeOpportunity;
+    if (!Number.isInteger(u.grenadesLeft) || !finite(u.grenadesLeft, 0, GRENADE.carried)
+        || !Number.isInteger(u.alliesWithinBlastRadius) || !finite(u.alliesWithinBlastRadius, 0, value.squad.length - 1)
+        || (opportunity !== null && (!opportunity || u.grenadesLeft < 1 || !point(opportunity.position)
+          || !Number.isInteger(opportunity.enemiesCaught) || !finite(opportunity.enemiesCaught, 2, 8)))
+        || (u.dodgingGrenadeId !== null && !grenades.some((g: any) =>
+          g.id === u.dodgingGrenadeId && g.landed && g.team !== value.team))) bad();
     return {
       id: u.id, name: u.name, hp: u.hp, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
       ...(combat && { combat: { visibleEnemies: combat.visibleEnemies, nearbyAllies: combat.nearbyAllies, fallingBack: combat.fallingBack } }),
+      grenadesLeft: u.grenadesLeft, alliesWithinBlastRadius: u.alliesWithinBlastRadius,
+      grenadeOpportunity: opportunity ? { position: { x: opportunity.position.x, y: opportunity.position.y }, enemiesCaught: opportunity.enemiesCaught } : null,
+      dodgingGrenadeId: u.dodgingGrenadeId,
       order: u.order && actions.includes(u.order.action) && zones.includes(u.order.zone)
         ? { action: u.order.action, zone: u.order.zone } : null,
     };
@@ -48,7 +69,7 @@ export function parseOpponentSnapshot(value: any) {
       || !zones.includes(c.zone) || !Number.isInteger(c.ready) || !finite(c.ready, 0, squad.length)
       || !Number.isInteger(c.required) || !finite(c.required, 1, squad.length))) bad();
   return {
-    team: value.team, time: value.time, secondsLeft: value.secondsLeft, squad, contacts,
+    team: value.team, time: value.time, secondsLeft: value.secondsLeft, squad, contacts, grenades,
     ...(c && { coordination: { phase: c.phase, site: c.site, zone: c.zone, ready: c.ready, required: c.required } }),
     spike: s.state === 'planted'
       ? { state: 'planted', site: s.site, position: { x: s.position.x, y: s.position.y }, secondsLeft: s.secondsLeft }
@@ -79,6 +100,22 @@ function planSchema(snapshot: ReturnType<typeof parseOpponentSnapshot>) {
     },
   };
 }
+
+const GRENADE_INSTRUCTIONS = `Each unit starts with ${GRENADE.carried} grenade. A blast reaches ${GRENADE.radius}m,
+deals up to ${GRENADE.centreDamage} damage, is blocked by walls, and never hurts the thrower's team.
+grenadesLeft is your unit's remaining supply; enemy supplies are unknown. grenadeOpportunity is
+a reachable cluster from current/recent sightings: bots automatically throw at two or more enemies.
+alliesWithinBlastRadius counts teammates within ${GRENADE.radius}m without a wall between them.
+Keep mutual support without packing everyone into one blast; use complementary nearby zones/angles
+when safe, while still protecting the carrier on attack or coordinating the retake on defense.
+grenades lists publicly visible current positions and teams. Airborne landing targets are unknown;
+secondsToExplosion is only known after landing. A grenade in this snapshot may be gone by the time
+your plan arrives. Never make the squad wait for your response to dodge it.
+dodgingGrenadeId means game code is moving that bot clear of a hostile blast, then it resumes its
+order after the blast. These immediate reflexes override every order, including plant and retake.
+Preserve useful objectives during a brief dodge; coordinate support and the next safe approach.
+Do not keep a regroup or hold objective on a currently threatened zone when a nearby safe route
+preserves the objective. Grenade throwing and dodging are automatic, not commander action names.`;
 
 const DEFEND_INSTRUCTIONS = `You command the DEFENDER bots in a fictional tactical game of Spike Rush.
 The human commands the attacking squad. Win by preventing a plant until time runs out,
@@ -177,7 +214,7 @@ export async function createOpponentPlan(input: unknown, {
   // Older non-reasoning models (e.g. a GPT-4.1 override) must not receive this option.
   const reasoningEffort = /^gpt-[56](?:[.-]|$)/.test(model) ? 'low' as const : undefined;
   const schema = planSchema(snapshot);
-  const instructions = snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS;
+  const instructions = `${snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS}\n\n${GRENADE_INSTRUCTIONS}`;
   const inputState = JSON.stringify({ ...snapshot, zones: map.zones.map(z => ({ name: z.name, center: z.center })) });
   const signal = AbortSignal.any([AbortSignal.timeout(8000), ...(callerSignal ? [callerSignal] : [])]);
   let plan: unknown;
