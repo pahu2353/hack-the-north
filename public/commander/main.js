@@ -111,6 +111,14 @@ function showScreen(name) {
   for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenSettings', 'screenResult']) {
     $(id).hidden = id !== name;
   }
+  // Keyboard users land on the thing they most likely want: the primary action if it's
+  // available, else the first thing they can use. Closing hands focus back to the page.
+  const screen = name && $(name);
+  const focus = screen && (screen.querySelector('.primary:not(:disabled)')
+    ?? screen.querySelector('button:not(:disabled), input:not(:disabled)'));
+  if (focus) focus.focus();
+  else if (!name) document.activeElement?.blur();
+  updateTitle();
 }
 
 function goToMenu() {
@@ -178,7 +186,7 @@ function applySettings() {
 function buildSettings() {
   $('toggles').replaceChildren(...SETTINGS.map(([key, label]) => {
     const button = el('button', {
-      type: 'button', className: 'toggle', textContent: settings[key] ? 'On' : 'Off',
+      type: 'button', className: 'toggle', textContent: settings[key] ? 'On' : 'Off', title: label,
       onclick: () => {
         settings[key] = !settings[key];
         applySettings();
@@ -186,6 +194,7 @@ function buildSettings() {
       },
     });
     button.setAttribute('aria-pressed', String(Boolean(settings[key])));
+    button.setAttribute('aria-label', label);
     return el('div', { className: 'toggle-row' }, [el('span', { textContent: label }), button]);
   }));
 }
@@ -819,6 +828,15 @@ function smoothPositions(dt) {
 
 // ---------- HUD ----------
 
+// An accurate title: which match you're in, or that you're in the menus.
+function updateTitle() {
+  const where = session && $('overlay').hidden
+    ? `${TEAMS[session.team].label} · ${session.kind === 'online' ? online?.code ?? 'online' : 'vs bots'}`
+    : 'Menu';
+  const title = `Commander — ${where}`;
+  if (document.title !== title) document.title = title;
+}
+
 function updateTeamUi() {
   const team = session?.team;
   // The card keeps its place between matches; only what it says changes.
@@ -827,8 +845,8 @@ function updateTeamUi() {
     ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}`
     : 'No match';
   $('textInput').placeholder = team === 'defend'
-    ? 'e.g. “Echo hold A, Golf rotate B”'
-    : 'e.g. “Alpha and Bravo push B”';
+    ? 'e.g. “Echo hold A, Golf rotate B”…'
+    : 'e.g. “Alpha and Bravo push B”…';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
   if (!team) {
@@ -888,6 +906,9 @@ function updateScorebar() {
     chip.classList.toggle('down', !u.alive);
     chip.classList.toggle('active', u.id === watchedId);
     chip.querySelector('.bar i').style.width = `${(u.hp / u.maxHp) * 100}%`;
+    const state = u.alive ? `${Math.round(u.hp)} HP` : 'down';
+    chip.setAttribute('aria-label', `${u.name}, ${state}${u.id === watchedId ? ', watching' : ''}`);
+    chip.setAttribute('aria-pressed', String(u.id === watchedId));
   }
   for (const u of view.roster ?? []) {
     const chip = $('enemyBar').querySelector(`[data-id="${u.id}"]`);
@@ -896,6 +917,9 @@ function updateScorebar() {
     // Dimmed while nobody on your team has eyes on them: their health is unknown.
     chip.classList.toggle('unseen', !u.seen && !u.down);
     chip.querySelector('.bar i').style.width = `${(u.seen ? u.hp : 1) * 100}%`;
+    // The dimming says this in colour; the label says it in words.
+    const state = u.down ? 'down' : u.seen ? `${Math.round(u.hp * 100)} HP, in sight` : 'not in sight';
+    chip.setAttribute('aria-label', `${u.name}, ${state}`);
   }
 }
 
@@ -976,6 +1000,7 @@ function updateHud() {
   if (!session || !view) return;
   const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  updateTitle();
   $('roundLabel').textContent = view.status.label;
   updateOpponentHud();
 
