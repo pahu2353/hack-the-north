@@ -3,7 +3,7 @@
 // browser for bot games and on the server for multiplayer.
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
-  MAPS, angleTo, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
+  MAPS, angleDiff, angleTo, blockedAt, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
 } from './world.js';
 
@@ -258,6 +258,8 @@ export function setOrder(game, u, order) {
   u.path = [];
   u.pathGoal = null;
   u.coverPoint = null;
+  u.settledAt = null; // a new order is worth walking for, even onto a crowded spot
+  u.approach = null;
 }
 
 // What carrying out the current order looks like, as an action.
@@ -545,6 +547,18 @@ function step(game, u, dest, dt) {
     u.moving = false;
     return;
   }
+  // Already given up on this destination because teammates are standing on it. Squads are sent
+  // to one point all the time ("everyone push B"), and the slot offsets can still collapse onto
+  // each other in a corner, so without this the last arrivals shove the others off the spot and
+  // walk back in, forever. It lasts only as long as the crowd does: once the spot clears, the
+  // agent goes and takes it.
+  if (u.settledAt && dist(dest, u.settledAt) < 0.5) {
+    if (touching(game, u)) {
+      u.moving = false;
+      return;
+    }
+    u.settledAt = null;
+  }
   const g = gridFor(game);
   if (!u.pathGoal || dist(u.pathGoal, dest) > 1.5 || game.time > u.repathAt) {
     u.path = walkableLine(g, u, dest) ? [dest] : findPath(g, u, dest);
@@ -558,11 +572,74 @@ function step(game, u, dest, dt) {
     return;
   }
   const heading = angleTo(u, waypoint);
-  if (game.time - u.lastShotAt > 0.4) u.facing = heading;
+  if (game.time - u.lastShotAt > 0.4) u.facing = turnToward(u.facing, heading, dt);
   const distance = Math.min(u.speed * dt, dist(u, waypoint));
-  u.x += Math.cos(heading) * distance;
-  u.y += Math.sin(heading) * distance;
-  u.moving = distance > 0.001;
+  const moved = advance(game, u, heading, distance);
+  u.moving = moved > 0.001;
+  noteProgress(game, u, dest);
+}
+
+// Whether the agent is actually getting anywhere, measured against the destination rather than
+// against the step it asked for. The shoving that makes a crowd vibrate happens in the
+// collision pass, after this one, so a step can be granted in full and then be undone; only the
+// distance still to go tells the truth. No progress for this long means something is in the way.
+const STALLED_SECONDS = 0.6;
+const PROGRESS = 0.3; // metres of closing that count as getting somewhere
+// Close enough to count as arrived when a teammate is already standing on the spot. Kept under
+// the 1.5 m a defuser has to be within, so settling can never talk an agent out of the defuse.
+const CROWDED_ENOUGH = 1.2;
+const touching = (game, u) => game.units.some(o =>
+  o !== u && o.alive && o.team === u.team && dist(o, u) < (u.r + o.r) * 1.35);
+
+function noteProgress(game, u, dest) {
+  const toGo = dist(u, dest);
+  if (!u.approach || dist(u.approach.dest, dest) > 0.5 || toGo < u.approach.best - PROGRESS) {
+    u.approach = { dest: { x: dest.x, y: dest.y }, best: toGo, since: game.time };
+    return;
+  }
+  if (game.time - u.approach.since < STALLED_SECONDS) return;
+  // Stalled. A teammate on the spot means the spot is taken — stop, we are close enough, rather
+  // than shoving them off it and walking back in for the rest of the round. Anything else means
+  // the route is wrong, so ask for a new one.
+  if (toGo < CROWDED_ENOUGH && touching(game, u)) u.settledAt = { x: dest.x, y: dest.y };
+  else u.repathAt = 0;
+  u.approach.since = game.time;
+}
+
+// Walking straight into a wall used to work like this: the step went in, the collision pass
+// snapped the agent back out, and the next frame started the same step again. The agent stood
+// there vibrating, and its heading — and so the model, the view cone and the first-person
+// camera — snapped back and forth with it. Slide instead: drop whichever axis of the step is
+// blocked and keep the other, the way a person brushes along a wall. Returns how far it got.
+function advance(game, u, heading, distance) {
+  const dx = Math.cos(heading) * distance;
+  const dy = Math.sin(heading) * distance;
+  if (!blockedAt(game.map, u.x + dx, u.y + dy, u.r)) {
+    u.x += dx;
+    u.y += dy;
+    return distance;
+  }
+  if (!blockedAt(game.map, u.x + dx, u.y, u.r)) {
+    u.x += dx;
+    return Math.abs(dx);
+  }
+  if (!blockedAt(game.map, u.x, u.y + dy, u.r)) {
+    u.y += dy;
+    return Math.abs(dy);
+  }
+  return 0;
+}
+
+// Aiming and throwing snap the agent round on purpose; walking does not. Capping how fast a
+// walking agent can turn keeps one frame's shove — from a wall, or from a teammate squeezing
+// past — from spinning it on the spot.
+const TURN_RATE = 10; // radians per second
+function turnToward(from, to, dt) {
+  const step = TURN_RATE * dt;
+  if (angleDiff(from, to) <= step) return to;
+  const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
+  // Normalised, so a long run of turns the same way cannot walk the angle off to infinity.
+  return Math.atan2(Math.sin(from + Math.sign(delta) * step), Math.cos(from + Math.sign(delta) * step));
 }
 
 // During prep a squad may walk around its own third of the map, and no further.

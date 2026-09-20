@@ -209,6 +209,11 @@ function segmentHitsRect(x1, y1, x2, y2, r) {
 
 export const hasLineOfSight = (map, a, b) => !map.walls.some(w => segmentHitsRect(a.x, a.y, b.x, b.y, w));
 
+// Would a unit of radius r standing here be inside a wall? The same closest-point test the
+// collision pass uses to push one back out, asked before the step instead of after it.
+export const blockedAt = (map, x, y, r) => map.walls.some(w =>
+  Math.hypot(x - clamp(x, w.x, w.x + w.w), y - clamp(y, w.y, w.y + w.h)) < r);
+
 // Nearest wall on a ray. Shared by first-person drawing and crosshair targeting.
 // Direction can be unnormalised (the renderer needs perpendicular depth).
 export function castRay(walls, ox, oy, dx, dy) {
