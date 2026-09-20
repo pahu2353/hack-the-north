@@ -1082,6 +1082,31 @@ function colorizeNames(text) {
     : part));
 }
 
+// The spike, once it's down, is the thing that decides the round: it gets a banner under the
+// scoreboard, it turns the clock red, and a defuse shows as a bar filling toward the steal.
+let plantAnnounced = null;
+
+function updateSpikeState() {
+  const spike = view.spike;
+  const planted = spike?.state === 'planted';
+  $('spikeState').hidden = !planted;
+  $('scoreClock').classList.toggle('spike', planted);
+  if (!planted) {
+    plantAnnounced = null;
+    return;
+  }
+  if (plantAnnounced !== spike.site) {
+    plantAnnounced = spike.site;
+    showToast(`Spike planted · ${spike.site}`);
+  }
+  const defusing = spike.defuse > 0;
+  $('spikeState').classList.toggle('defusing', defusing);
+  $('spikeWhat').textContent = defusing
+    ? `Defusing · ${Math.ceil((1 - spike.defuse) * 6)}s`
+    : `Spike · ${spike.site}`;
+  $('spikeBar').style.width = `${(defusing ? spike.defuse : 1 - spike.timer / 35) * 100}%`;
+}
+
 // Who an agent is shooting at, when Jev picked a target.
 function enemyName(u) {
   const target = u.decision?.target;
@@ -1093,6 +1118,7 @@ function updateHud() {
   const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   $('scoreClock').classList.toggle('prep', Boolean(view.status.prep));
+  updateSpikeState();
   updateTitle();
   $('roundLabel').textContent = view.match
     ? `Round ${view.match.round} · ${view.status.label}`
