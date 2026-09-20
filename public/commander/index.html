@@ -242,7 +242,8 @@
   }
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head .head-actions { display: flex; gap: 6px; }
-  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
+  /* Four of them, so they sit two by two rather than three and a lonely one. */
+  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 5px; }
   .signs span {
     display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
     padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;

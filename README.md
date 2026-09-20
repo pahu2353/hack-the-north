@@ -72,7 +72,7 @@ opponent.
 | **Text** | Type in the order box, press Enter. |
 | **Pointing** | Click the map, or point your index finger straight up at the camera, to mark a spot — then say "push there". |
 | **Aiming** | In first person, raise a fist: the crosshair follows it. Shooting stays automatic. |
-| **Switch agent** | ←/→, 1–5, click the top bar, or hold your thumb out sideways hitchhiker-style to step through the squad. |
+| **Switch agent** | ←/→, 1–5, click the top bar, or hold four fingers up to the camera to step through the squad — keep holding to keep stepping. |
 | **Switch view** | <kbd>Tab</kbd> or a pinch. <kbd>G</kbd> toggles the 3D and 2D first-person renderers. |
 | **Pause / settings** | <kbd>Esc</kbd>. Agent cards, kill feed, minimap, Jev numbers and control hints are all toggleable and remembered per machine. |
 
@@ -86,8 +86,8 @@ to pose, and a misread pose used to send the squad somewhere you never asked for
 don't steer with WASD — the agent keeps following orders and dodging on its own. Click the canvas
 once for mouse look — or just raise a fist and the crosshair follows it, with the middle of the
 camera frame straight ahead and a fist held near an edge turning that way, so you can come all the
-way round. Lower your hand and the agent goes back to firing on its own; a thumb out still changes
-agent without lowering it. Put an enemy under the crosshair: green crosshair means the aim bonus is
+way round. Lower your hand and the agent goes back to firing on its own; four fingers change agent
+without lowering it. Put an enemy under the crosshair: green crosshair means the aim bonus is
 live, a white marker confirms an assisted hit. Orders given in first person address only the agent
 you're watching.
 

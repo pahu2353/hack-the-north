@@ -138,7 +138,7 @@ function setView(next) {
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('arena').dataset.engine = using3d() ? '3d' : 'classic';
   $('hint').textContent = is3d
-    ? 'Auto fire. A fist aims (or click for mouse look); a thumb out, ←/→ or 1–5 changes agent. G: 2D/3D. Tab: map.'
+    ? 'Auto fire. A fist aims (or click for mouse look); four fingers, ←/→ or 1–5 changes agent. G: 2D/3D. Tab: map.'
     : 'Point up or click to mark a spot, then say what to do there. Orders are spoken or typed. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -1322,6 +1322,7 @@ function updateHud() {
     $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
   }
   updateOpponentHud();
+  if (!signTimer) renderGestureFeedback();
 
   const s = session.kind === 'bots' ? brains.summary() : online?.jev;
   if (s) {
@@ -1607,15 +1608,18 @@ function setIconState(id, state, label) {
 let gestures = null;
 let gestureFeedback = { stage: 'none', name: null };
 
-function renderGestureFeedback({ stage, name }) {
-  const sign = $('sign');
-  if (stage === 'none') { sign.hidden = true; return; }
-  sign.hidden = false;
-  if (stage === 'pointing') { sign.textContent = '☝️ Aiming'; return; }
-  const signal = SIGNALS[name];
-  sign.textContent = stage === 'confirmed' ? `✓ ${signal.emoji} ${signal.label}`
-    : stage === 'stabilizing' ? `${signal.emoji} ${signal.label}…`
-      : `${signal.emoji} ${signal.label} detected`;
+// What the camera is doing right now, in the corner of the preview. Only the three things it
+// acts on: the recognizer still confirms the old hand signals, but nothing listens to them, so
+// announcing "✋ Hold detected" would promise an order that never arrives.
+let lastSign = '';
+function renderGestureFeedback({ stage } = gestureFeedback) {
+  const text = aimSource === 'hand' ? '✊ Aiming'
+    : stage === 'pointing' ? '☝️ Marking a spot'
+      : '';
+  if (text === lastSign) return;
+  lastSign = text;
+  $('sign').hidden = !text;
+  $('sign').textContent = text;
 }
 
 $('previewBtn').onclick = () => {
@@ -1661,7 +1665,7 @@ async function startCamera() {
         if (!signTimer) renderGestureFeedback(feedback);
       },
       // Three things the camera does, and nothing else: a fist aims in first person, a finger
-      // points at the map, and a thumb out changes agent. Every order is spoken or typed, so no
+      // points at the map, and four fingers change agent. Every order is spoken or typed, so no
       // hand shape can fire one by accident. The recognizer still confirms the old signals and
       // nothing listens; commander.signal() replays one for a scripted demo.
       aiming: () => is3d && matchActive(),
@@ -1677,8 +1681,8 @@ async function startCamera() {
         // The defending map is turned around, so pointing “up there” means up the screen.
         pointer = { ...(flippedFor(session?.team) ? flipPoint(map, spot) : spot), at: performance.now() };
       },
-      // A thumb out sideways picks the agent on that side; pinch still switches map/first-person.
-      // Swiping used to do this too, and went off whenever a hand moved quickly.
+      // Four fingers step to the next agent; pinch still switches map/first-person. A thumb out
+      // used to do this, and a swipe before that, which went off whenever a hand moved quickly.
       onPointDirection: dir => {
         if (matchActive()) cycleAgent(dir);
       },
@@ -1708,16 +1712,17 @@ let signTimer = null;
 function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
+  lastSign = '';
   clearTimeout(signTimer);
   signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
 const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  signChip('☝️', 'point', 'Point straight up to mark a spot on the map, then say what to do there'),
-  signChip('✊', 'aim', 'In first person, a raised fist aims: the crosshair follows it'),
-  signChip('🫱', 'agent', 'Hold your thumb out left or right to step through the squad'),
-  signChip('🤏', 'view', 'Pinch to switch between the map and first-person'),
+  signChip('☝️', 'mark spot', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
+  signChip('4️⃣', 'next agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('🤏', 'swap view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.

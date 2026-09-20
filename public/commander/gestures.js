@@ -96,14 +96,28 @@ export function aimFist(hand) {
   return Math.min(1, closed / 4);
 }
 
+// Four fingers up, thumb tucked in: the sign for "next agent". Four extended fingers are
+// nothing like a fist or a single pointing finger, and the tucked thumb keeps it clear of a
+// flat open palm, so an ordinary waving hand doesn't step through the squad.
+export function fourFingers(hand) {
+  const d = (x, y) => Math.hypot(hand[x].x - hand[y].x, hand[x].y - hand[y].y);
+  if (d(4, 0) > d(3, 0) * 1.3) return 0; // thumb out as well: that's an open palm, not four
+  let out = 0;
+  for (const [tip, pip] of [[8, 6], [12, 10], [16, 14], [20, 18]]) {
+    if (d(tip, 0) < d(pip, 0) * 1.15) return 0; // that one is curled
+    out += Math.min(1, (d(tip, 0) / d(pip, 0) - 1.15) / 0.2);
+  }
+  return Math.min(1, out / 4);
+}
+
 // Aiming and changing agent share one hand, so one rule decides between them every frame.
 // A fist keeps hold of the aim across the gaps in hand tracking (a blink must not hand the
-// squad to a stray reading), but a thumb held clearly out always wins straight away: it is
-// the only way to change agent without lowering your hand, and waiting out the grace period
-// would make it feel broken.
-export function aimOrStep(fist, thumb, msSinceFist) {
-  if (thumb) return { steering: false, thumb };
-  return { steering: fist > 0 || msSinceFist < FIST_GRACE_MS, thumb: null };
+// squad to a stray reading), but four fingers always win straight away: they are the only way
+// to change agent without lowering your hand, and waiting out the grace period would make it
+// feel broken.
+export function aimOrStep(fist, step, msSinceFist) {
+  if (step) return { steering: false, step: true };
+  return { steering: fist > 0 || msSinceFist < FIST_GRACE_MS, step: false };
 }
 
 // Pointing up aims at the map; a sideways thumb switches the watched agent.
@@ -114,6 +128,8 @@ export function pointDirection(hand) {
   return Math.abs(dy) > Math.abs(dx) && dy > 0 ? 'up' : null;
 }
 
+// Dormant: a thumb held out sideways used to step through the squad, before four fingers took
+// that over. Kept, like the signal filter, so it can be put back by wiring it up again.
 export function thumbDirection(hand) {
   const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
   const extended = (tip, pip) => d(tip, 0) > d(pip, 0) * 1.15;
@@ -435,18 +451,18 @@ export async function createGestures({
     // not swiped or stepped through by accident.
     const fist = aiming() ? aimFist(hand) : 0;
     if (fist) lastFistAt = now;
-    const { steering, thumb } = aimOrStep(fist, thumbDirection(hand), now - lastFistAt);
-    if (thumb) lastFistAt = -Infinity; // the aim is handed over, not resumed half a second later
+    const { steering, step } = aimOrStep(fist, fourFingers(hand), now - lastFistAt);
+    if (step) lastFistAt = -Infinity; // the aim is handed over, not resumed half a second later
     let name = top?.categoryName ?? 'None';
-    if (steering) name = 'None';
+    if (steering || step) name = 'None';
     else if (pointingUp) name = 'Pointing_Up';
-    else if (thumb) name = thumb === 'right' ? 'Thumb_Right' : 'Thumb_Left';
     else if (name === 'Pointing_Up') name = 'None';
 
-    // Navigation gestures keep their short local timing and never call Jev.
-    if (thumb) {
-      if (name !== pointing) {
-        pointing = name;
+    // Stepping through the squad keeps its short local timing and never calls Jev: hold four
+    // fingers up and it keeps going, faster the longer you hold.
+    if (step) {
+      if (pointing !== 'Four') {
+        pointing = 'Four';
         pointingSince = now;
         pointingFiredAt = -Infinity;
         pointingSteps = 0;
@@ -455,7 +471,7 @@ export async function createGestures({
         now - pointingFiredAt > repeatDelay(pointingSteps) && now > quietUntil) {
         pointingFiredAt = now;
         pointingSteps++;
-        onPointDirection?.(thumb === 'right' ? 1 : -1);
+        onPointDirection?.(1);
       }
     } else {
       pointing = null;
@@ -467,7 +483,7 @@ export async function createGestures({
     track.push({ x: palmX, t: now });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
     const travel = palmX - track[0].x;
-    if (!pointingUp && !thumb && !steering && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
+    if (!pointingUp && !step && !steering && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
       motion(now);
       onSwipe?.(travel > 0 ? 1 : -1);
       return;
@@ -502,7 +518,7 @@ export async function createGestures({
     // aim sits still when your hand does.
     onAim?.(aimPointer.update(fist ? { x: palmX, y: palmY } : null, fist, now));
     const { feedback, confirmed } = gestures.update(name, score, now, {
-      handPresent: true, pointing: Boolean(pointingUp || thumb || steering),
+      handPresent: true, pointing: Boolean(pointingUp || step || steering),
     });
     publishFeedback(feedback, smoothed);
     // Nothing is wired to the signals any more: orders are spoken or typed. The recognizer
