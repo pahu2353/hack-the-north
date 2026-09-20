@@ -302,7 +302,7 @@
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
   }
   /* Clear of the agent HUD, which sits bottom centre. */
-  .arena[data-view="pov"] .hint { bottom: 62px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
+  .arena[data-view="pov"] .hint { bottom: 84px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
@@ -317,12 +317,12 @@
 <main class="layout">
   <section class="arena" id="arena" data-view="map">
     <canvas id="map" aria-label="Battle map"></canvas>
-    <canvas id="pov" class="pov-only" aria-label="First-person view"></canvas>
+    <canvas id="pov" class="pov-only" aria-label="First-person view: automatic shooting, click for mouse look, aim at enemies for better accuracy, Escape to release cursor"></canvas>
     <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
     <div class="pov-zone pov-only" id="povZone"></div>
     <div class="pov-hud pov-only">
       <span class="hp" id="povHp"></span>
-      <span class="who"><b id="povName"></b><span id="povAction"></span></span>
+      <span class="who"><b id="povName"></b><span id="povAction"></span><span id="povControl"></span></span>
     </div>
     <div class="scorebar" id="scorebar" hidden>
       <div class="team" id="squadBar"></div>
@@ -346,13 +346,13 @@
 
       <section id="screenBots" hidden>
         <h2>Vs Bots</h2>
-        <p>Choose your side and who commands the opposing squad.</p>
+        <p>Choose your side and difficulty. Both use the same health and weapons.</p>
         <label class="side-choice" for="botSide">Your side
           <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
         </label>
         <div class="choices">
-          <button id="botsOpenAI" class="primary big" type="button">OpenAI commander<small>Recommended · Plans from its squad's sightings</small></button>
-          <button id="botsScripted" class="big" type="button">Scripted bots<small>A predictable opponent for practice</small></button>
+          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · Adapts its squad's strategy</small></button>
+          <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · Predictable tactics for practice</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
         <button id="botsBack" class="link" type="button">← Back</button>

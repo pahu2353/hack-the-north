@@ -7,7 +7,7 @@ import { createCamera, createPovRenderer } from './pov.js';
 import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
   createGestures, reliableGestureForSpeech } from './gestures.js';
 import { createRenderer } from './render.js';
-import { OWN_COLORS, TEAMS, actionLabel, createGame, otherTeam, stepGame, teamView } from './sim.js';
+import { MANUAL_AIM, OWN_COLORS, TEAMS, actionLabel, createGame, otherTeam, setManualAim, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
@@ -56,6 +56,10 @@ let is3d = false; // first-person view of one agent, instead of the top-down map
 let watchedId = null; // which agent that is
 const positions = new Map(); // smoothed unit positions for multiplayer
 let recentGesture = null;
+let aim = null; // first-person mouse look; the agent always fires automatically
+let lastAimSent = 0;
+let lastAimEnded = -Infinity;
+let lastCamera = null;
 
 // ---------- view: the top-down map (default) or one agent's first-person view ----------
 
@@ -63,10 +67,11 @@ const ownUnits = () => (view?.units ?? []).filter(u => u.team === view.team);
 const watched = () => ownUnits().find(u => u.id === watchedId && u.alive) ?? null;
 
 function setView(next) {
+  if (!next) stopAiming();
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('hint').textContent = is3d
-    ? 'Orders here go to this agent. ←/→ or thumb: switch agent. Tab or pinch: map.'
+    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–4: switch. Tab: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -89,6 +94,10 @@ function cycleAgent(dir) {
 }
 
 function watchAgent(u) {
+  if (u.id !== watchedId && aim) {
+    aim = { unitId: u.id, yaw: u.facing, pitch: 0 };
+    sendAim(); // only the newly watched agent can receive the crosshair bonus
+  }
   watchedId = u.id;
   showToast(u.name.toUpperCase());
   updateScorebar();
@@ -107,6 +116,7 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 // ---------- screens ----------
 
 function showScreen(name) {
+  if (name) stopAiming();
   $('overlay').hidden = !name;
   for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenSettings', 'screenResult']) {
     $(id).hidden = id !== name;
@@ -433,6 +443,7 @@ $('copyInvite').onclick = async () => {
 };
 
 function leaveOnline() {
+  stopAiming();
   if (!online) return;
   const { ws } = online;
   online = null;
@@ -442,6 +453,8 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
+  stopAiming();
+  lastCamera = null;
   resetSpeech();
   if (readDevices().mic !== false) ensureMic();
   pov.reset();
@@ -773,6 +786,10 @@ let lastHud = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  if (aim) {
+    if (!matchActive() || !is3d) stopAiming();
+    else if (session.kind === 'bots' || now - lastAimSent >= 50) sendAim();
+  }
   if (session?.kind === 'bots' && game) {
     if (!game.result && !paused()) {
       accumulator += dt;
@@ -792,7 +809,8 @@ function frame(now) {
   if (u) {
     const at = unit => smoothed?.get(unit.id) ?? unit;
     pov.setPointer(activePointer());
-    pov.draw(view, u, camera.update({ ...u, ...at(u) }, dt), at);
+    lastCamera = camera.update({ ...u, ...at(u) }, dt, aim);
+    pov.draw(view, u, lastCamera, at);
     minimap.draw(view, { pointer: activePointer(), positions: smoothed, focusId: u.id, mini: true });
   } else {
     renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
@@ -831,7 +849,7 @@ function smoothPositions(dt) {
 // An accurate title: which match you're in, or that you're in the menus.
 function updateTitle() {
   const where = session && $('overlay').hidden
-    ? `${TEAMS[session.team].label} · ${session.kind === 'online' ? online?.code ?? 'online' : 'vs bots'}`
+    ? `${TEAMS[session.team].label} · ${session.kind === 'online' ? online?.code ?? 'online' : `vs bots · ${botOpponent === 'openai' ? 'Hard' : 'Easy'}`}`
     : 'Menu';
   const title = `Commander — ${where}`;
   if (document.title !== title) document.title = title;
@@ -842,7 +860,7 @@ function updateTeamUi() {
   // The card keeps its place between matches; only what it says changes.
   $('teamBadge').className = `badge ${team ?? ''}`;
   $('teamBadge').textContent = team
-    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}`
+    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ` · ${botOpponent === 'openai' ? 'Hard' : 'Easy'} bots`}`
     : 'No match';
   $('textInput').placeholder = team === 'defend'
     ? 'e.g. “Echo hold A, Golf rotate B”…'
@@ -1046,6 +1064,10 @@ function updateHud() {
   const watching = watched();
   if (watching) {
     $('povHp').textContent = Math.round(watching.hp);
+    $('povHp').title = `${Math.round(watching.hp)} / ${watching.maxHp} HP`;
+    $('povControl').textContent = aim
+      ? `AUTO FIRE · ${watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy'} · Esc releases cursor`
+      : 'AUTO FIRE · Click for mouse look · Aim at an enemy for better accuracy';
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
     $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
@@ -1153,12 +1175,57 @@ canvas.addEventListener('click', e => {
   pointer = { ...p, at: performance.now() };
 });
 
-// No aiming in first-person: it's a view for watching one agent, not for marking spots.
-povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
+// Pointer lock gives mouse aiming without hitting the edges of the canvas. We transmit
+// camera direction at 20 Hz; the shared simulation owns automatic shots and accuracy.
+function sendAim() {
+  if (!session) return;
+  lastAimSent = performance.now();
+  if (session.kind === 'bots' && game) setManualAim(game, session.team, aim);
+  else if (online?.ws.readyState === WebSocket.OPEN) online.ws.send(JSON.stringify({ type: 'aim', aim }));
+}
+
+function stopAiming() {
+  if (aim) {
+    aim = null;
+    lastAimEnded = performance.now();
+    sendAim();
+  }
+  if (document.pointerLockElement === povCanvas) document.exitPointerLock();
+}
+
+povCanvas.addEventListener('mousedown', async e => {
+  if (e.button !== 0 || !matchActive() || !is3d || !watched()) return;
+  e.preventDefault();
+  if (aim) return;
+  try {
+    await povCanvas.requestPointerLock();
+  } catch {
+    showToast('Click again to aim; your agent is still firing automatically.');
+  }
+});
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement !== povCanvas) { stopAiming(); return; }
+  const u = watched();
+  if (!matchActive() || !is3d || !u) { stopAiming(); return; }
+  document.activeElement?.blur();
+  aim = { unitId: u.id, yaw: lastCamera?.unitId === u.id ? lastCamera.angle : u.facing, pitch: 0 };
+  sendAim();
+});
+document.addEventListener('mousemove', e => {
+  if (!aim || document.pointerLockElement !== povCanvas) return;
+  aim.yaw = Math.atan2(Math.sin(aim.yaw + e.movementX * 0.002), Math.cos(aim.yaw + e.movementX * 0.002));
+  aim.pitch = Math.max(-MANUAL_AIM.maxPitch, Math.min(MANUAL_AIM.maxPitch, aim.pitch - e.movementY * 0.002));
+});
+window.addEventListener('blur', stopAiming);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAiming(); });
 
 const typing = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 document.addEventListener('keydown', e => {
   if (typing()) return;
+  if (e.code === 'Escape' && (aim || performance.now() - lastAimEnded < 250)) {
+    stopAiming();
+    return;
+  }
   // Escape is the way back to the menu now that there's no header.
   if (e.code === 'Escape' && session && view && !view.result) {
     e.preventDefault();

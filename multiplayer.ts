@@ -4,7 +4,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { TEAMS, createGame, otherTeam, stepGame, teamView } from './public/commander/sim.js';
+import { TEAMS, createGame, otherTeam, setManualAim, stepGame, teamView } from './public/commander/sim.js';
 import { createBrains } from './public/commander/brain.js';
 
 type Team = 'attack' | 'defend';
@@ -76,6 +76,7 @@ export function createRooms(evaluate: Evaluate) {
           && (!room.game || room.game.result)) startMatch(room);
       else if (message.type === 'side' && ws === room.host) chooseSide(room, message.team);
       else if (message.type === 'command') command(room, currentTeam, message);
+      else if (message.type === 'aim' && room.game) setManualAim(room.game, currentTeam, message.aim);
     });
     ws.on('close', () => {
       const currentTeam = TEAM_LIST.find(side => room.players[side] === ws);
