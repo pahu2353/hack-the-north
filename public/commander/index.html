@@ -182,30 +182,22 @@
   .segment { display: flex; border: 1px solid var(--border); background: var(--panel); }
   .segment button {
     border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px; flex: 1;
-    position: relative;
-    /* The ring is always here, just invisible. A shadow fading up from `none` does not
-       interpolate, so it would snap in; a colour fading up from transparent does. */
-    box-shadow: inset 0 0 0 2px transparent;
-    transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+    position: relative; transition: background-color 140ms ease, color 140ms ease;
   }
   .segment button:first-child { border-left: 0; }
-  /* The generic button hover brightens border-color, and the only border these have is the
-     divider on their left — so hovering lit one edge of the wrong element and tinted the rest
-     faintly, which read as nothing in particular. Hold the divider still and answer the
-     pointer with a ring drawn inside the button, the full shape of what a click would hit. */
+  /* Hover is a lift of the ground, the same one the big menu buttons use, and nothing else.
+     The generic button hover brightens border-color, and the only border these have is the
+     divider on their left, so it lit one edge of the boundary between two options rather than
+     either option: hold it still, and let the fill say which one the pointer is on. */
   .segment button:hover:not(:disabled) {
     border-left-color: var(--border);
-    background: var(--panel-2); color: var(--ink);
-    box-shadow: inset 0 0 0 2px var(--ink-2);
+    background: #253440; color: var(--ink);
   }
   .segment button[aria-checked="true"] { background: var(--raised); color: var(--accent); }
-  .segment button[aria-checked="true"]:hover:not(:disabled) {
-    background: #24333d; color: var(--accent);
-    box-shadow: inset 0 0 0 2px var(--accent);
-  }
+  .segment button[aria-checked="true"]:hover:not(:disabled) { background: #2b3c47; color: var(--accent); }
   /* A rule of accent under the option in force: the same mark the screen headings use. It
-     stays put while hovered — the ring's bottom edge lands on the same pixels in the same
-     colour, so the underline reads as growing into the ring instead of blinking out. */
+     stays put through a hover — switching it off there meant it vanished the instant the
+     pointer arrived, and `content` cannot fade. */
   .segment button[aria-checked="true"]::after {
     content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent);
   }
