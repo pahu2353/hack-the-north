@@ -69,12 +69,12 @@ const orderGate = names => ({
 
 // The words people actually shout, not the tidy ones. Each list was grown from phrasings that
 // came back wrong: "rotate to a" was read as a flank, "camp b" as a push, "on me" as a push.
-const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek / shift';
-const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / anchor / sit on / lock down, without advancing';
+const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek / shift / collapse on';
+const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / anchor / sit on / lock down / play ("play b site" is holding it), without advancing';
 const AROUND = 'flank: swing around / go around / lurk / take the long way to hit them from the side';
 const BACK = 'fall back / retreat / pull out / get out / back off / reset';
 const TOGETHER = 'group up / regroup / stack up / on me / come together with the squad';
-const NADE = 'throw a grenade / nade / frag / flash the location';
+const NADE = 'throw a grenade / nade / frag / flash / util / molly / incendiary at the location';
 const ORDERS = {
   attack: {
     push: `${MOVE} to the location, and going at the enemy to fight them`,
@@ -83,7 +83,7 @@ const ORDERS = {
     retreat: BACK,
     regroup: TOGETHER,
     grenade: NADE,
-    plant: 'plant the spike (only when told to plant)',
+    plant: 'plant the spike, and only when told to: plant it / get the spike down / put it down / stick it',
   },
   defend: {
     push: `${MOVE} to the location, retake it, or go at the enemy to fight them`,
@@ -92,7 +92,7 @@ const ORDERS = {
     retreat: BACK,
     regroup: TOGETHER,
     grenade: NADE,
-    defuse: 'go defuse the planted spike (only when told to defuse)',
+    defuse: 'go defuse the planted spike, and only when told to: defuse it / get it off / stop the timer',
   },
 };
 

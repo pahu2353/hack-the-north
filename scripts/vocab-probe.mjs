@@ -75,6 +75,38 @@ const CASES = [
   { text: 'frag them out', order: 'grenade', target: 'enemy' },
   { text: 'throw a nade at a site', order: 'grenade', target: 'A Site' },
   { text: 'plant it on b', order: 'plant', target: 'B Site' },
+
+  // Candidate phrasings, being measured rather than guessed at: whatever passes is already
+  // handled and needs no code, whatever fails is a word missing from the lists above.
+  { text: 'advance on b', order: 'push', target: 'B Site' },
+  { text: 'commit to b', order: 'push', target: 'B Site' },
+  { text: 'crash b site', order: 'push', target: 'B Site' },
+  { text: 'press mid', order: 'push', target: 'Mid' },
+  { text: 'collapse on mid', order: 'push', target: 'Mid' },
+  { text: 'post up on b', order: 'hold', target: 'B Site' },
+  { text: 'play b site', order: 'hold', target: 'B Site' },
+  { text: 'hold this angle', order: 'hold', target: 'current' },
+  { text: 'stay back', order: ['hold', 'retreat'], target: ['current', 'Attacker Spawn', 'back'] },
+  { text: "don't move", order: 'hold', target: 'current' },
+  { text: 'wrap around to a', order: 'flank', target: ['A Site', 'A Link'] },
+  { text: 'go the long way to a', order: 'flank', target: ['A Site', 'A Link'] },
+  { text: 'split off to a link', order: 'flank', target: ['A Link', 'A Site'] },
+  { text: 'disengage', order: 'retreat', target: ['Attacker Spawn', 'current'] },
+  { text: 'bail out', order: 'retreat', target: ['Attacker Spawn', 'current'] },
+  { text: 'get back', order: 'retreat', target: ['Attacker Spawn', 'current', 'back'] },
+  { text: 'everyone back off', order: 'retreat', target: ['Attacker Spawn', 'current', 'back'] },
+  { text: 'link up', order: 'regroup', target: null },
+  { text: 'with me', order: 'regroup', target: null },
+  { text: 'everyone together', order: 'regroup', target: null },
+  { text: 'buddy up', order: 'regroup', target: null },
+  { text: 'pop a nade on mid', order: 'grenade', target: 'Mid' },
+  { text: 'util mid', order: 'grenade', target: 'Mid' },
+  // Measured and left out rather than dropped quietly: "molly b main" stayed on hold at 40%
+  // even with molly in the grenade list, which reads like Jev taking it for a person's name.
+  // A molly is an incendiary and this game has one grenade type, so it is not worth bending
+  // the prompt around. "util mid" and "pop a nade on mid" cover the same intent.
+  { text: 'get the spike down on b', order: 'plant', target: 'B Site' },
+  { text: 'put it down on a', order: 'plant', target: 'A Site' },
 ];
 
 // Follow-ups lean on what was said a moment ago, and chatter must still be ignored: the
