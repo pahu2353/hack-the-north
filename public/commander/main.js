@@ -1752,22 +1752,12 @@ function showSign(text) {
   signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
-const HAND_ICONS = {
-  mark: '<path d="M12 3.5v8"/><path d="M7.5 11.5v3a4.5 4.5 0 0 0 9 0v-2.5"/>',
-  fist: '<rect x="6.5" y="8.5" width="11" height="10" rx="3.5"/><path d="M9 12.5h6"/>',
-  four: '<path d="M8 11V6M10.7 11V4.8M13.3 11V4.8M16 11V6"/><path d="M8 11v3.5a4 4 0 0 0 8 0V11"/>',
-  pinch: '<path d="M8.5 5.5c-1.2 3.2-.3 6 2 7.6"/><path d="M16 8c-.9 2.4-2.3 4-3.9 5.2"/><path d="M7.5 16.5a5 5 0 0 0 9 0"/>',
-};
-const signChip = (shape, word, title) => {
-  const glyph = el('b');
-  glyph.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${HAND_ICONS[shape]}</svg>`;
-  return el('span', { title }, [glyph, word]);
-};
+const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  signChip('mark', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
-  signChip('fist', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
-  signChip('four', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
-  signChip('pinch', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
+  signChip('☝️', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
+  signChip('4️⃣', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('🤏', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
