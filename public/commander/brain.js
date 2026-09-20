@@ -471,7 +471,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         // leaves the job they are already doing exactly as it was.
         if (order.choice === 'rifle') {
           unit.knifeOrdered = false;
+          // Putting the knife away is not enough on its own: a standing knife order derives
+          // the knife action again on the very next frame and the blade is straight back in
+          // their hand. The order has to stop being a knife order too. They were sent at
+          // somebody and they still go — with the rifle.
+          if (unit.order.type === 'knife') {
+            setOrder(game, unit, { ...unit.order, type: 'push', pace: tempo.pace, spread: tempo.spread });
+          }
           setWeapon(unit, 'rifle');
+          unit.action = orderAction(game, unit);
           lastAppliedCommand.set(unit, commandId);
           return {
             name: unit.name, addressed, applied: true, order: order.choice,

@@ -327,3 +327,71 @@ test('naming the way overrides the route the map would have picked', () => {
   assert.equal(a.order.route.length, 1, 'one node, the one that was asked for');
   assert.ok(dist(a.order.route[0], asked) < 0.01, 'the commander outranks the map');
 });
+
+// A stubbed Jev that gives every addressed agent the same order and place.
+function commander(order, target) {
+  return createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        if (q.type === 'boolean') {
+          return [id, { probability: ['is_order', 'addresses_everyone'].includes(id) || id.endsWith('_addressed') ? 1 : 0 }];
+        }
+        if (q.type === 'score') return [id, { score: 0 }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? order : id.endsWith('_target') ? target : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+}
+
+test('"guns out" actually puts the knife away, and it stays away', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack' });
+  const [a] = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  const run = seconds => { for (let f = 0; f < Math.round(seconds / STEP); f++) stepGame(game, STEP); };
+
+  await commander('knife', 'enemy').interpretCommand(game, 'attack', { source: 'voice', text: 'alpha go knife someone' });
+  run(0.5);
+  assert.equal(a.weapon, 'knife');
+  assert.equal(a.order.type, 'knife');
+
+  await commander('rifle', 'current').interpretCommand(game, 'attack', { source: 'voice', text: 'alpha guns out' });
+  run(0.1);
+  assert.equal(a.weapon, 'rifle', 'the rifle comes back');
+  // The real failure this guards: putting the knife away is not enough while a knife order
+  // still stands, because the order derives the knife action again on the next frame.
+  assert.notEqual(a.order.type, 'knife', 'and the order stops being a knife order');
+  run(5);
+  assert.equal(a.weapon, 'rifle', 'still a rifle five seconds later, not just for one frame');
+  assert.equal(a.knifeOrdered, false);
+});
+
+test('the switch is not one-way: the knife can come back out after', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack' });
+  const [a] = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  const run = seconds => { for (let f = 0; f < Math.round(seconds / STEP); f++) stepGame(game, STEP); };
+
+  await commander('knife', 'enemy').interpretCommand(game, 'attack', { source: 'voice', text: 'knife out' });
+  run(0.3);
+  await commander('rifle', 'current').interpretCommand(game, 'attack', { source: 'voice', text: 'guns out' });
+  run(0.3);
+  assert.equal(a.weapon, 'rifle');
+  await commander('knife', 'enemy').interpretCommand(game, 'attack', { source: 'voice', text: 'knife out again' });
+  run(0.3);
+  assert.equal(a.weapon, 'knife', 'and back out again');
+  assert.equal(a.knifeOrdered, true);
+});
+
+test('a rifle order leaves an ordinary order alone', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack' });
+  const [a] = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  await commander('push', 'B Site').interpretCommand(game, 'attack', { source: 'voice', text: 'everyone push b' });
+  const sent = { ...a.order.point };
+  await commander('rifle', 'current').interpretCommand(game, 'attack', { source: 'voice', text: 'guns out' });
+  assert.equal(a.order.type, 'push', 'it changes what is in their hands, not where they are going');
+  assert.deepEqual({ x: a.order.point.x, y: a.order.point.y }, sent);
+});
