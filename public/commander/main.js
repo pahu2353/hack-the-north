@@ -4,7 +4,6 @@
 import { createBrains } from './brain.js';
 import { createOpponentCommander } from './opponent.js';
 import { createCamera, createPovRenderer } from './pov.js';
-import { createPov3dRenderer } from './pov3d.js';
 import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
   createGestures, reliableGestureForSpeech } from './gestures.js';
 import { createRenderer, flipPoint, flippedFor } from './render.js';
@@ -62,8 +61,22 @@ const minimap = createRenderer($('minimap'));
 const camera = createCamera();
 // Two first-person engines behind one interface: the WebGL one by default, the raycaster as a
 // fallback. Built on first use so a machine without WebGL still reaches the menu.
+//
+// pov3d is loaded on its own rather than imported, because it pulls in three.js: a static
+// import makes the whole page depend on it, and a browser that cannot resolve one module in
+// the graph runs none of them — the menu would render with every button dead. Loading it
+// separately means a missing dependency, or a machine with no WebGL, costs the 3D view and
+// nothing else. It also keeps three.js off the path to the menu.
 let pov3d = null;
 let pov3dFailed = false;
+let createPov3dRenderer = null;
+const using3d = () => use3d && !pov3dFailed && Boolean(createPov3dRenderer);
+import('./pov3d.js')
+  .then(module => {
+    createPov3dRenderer = module.createPov3dRenderer;
+    if (session) setView(is3d); // the arena can show the WebGL canvas now that there is one
+  })
+  .catch(error => dropTo2d(`it could not be loaded (${error.message})`));
 // Leaving the 3D view for the raycaster, whether it never started or the GPU took its context
 // away mid-round. Announced either way: the arena hides whichever canvas the engine isn't
 // using, so a silent switch would leave the raycaster drawing into a hidden element.
@@ -78,7 +91,7 @@ function dropTo2d(reason) {
 }
 
 function engine() {
-  if (!use3d || pov3dFailed) return pov;
+  if (!using3d()) return pov;
   if (!pov3d) {
     try {
       pov3d = createPov3dRenderer($('pov3d'), $('pov3dHud'), { onLost: dropTo2d });
@@ -117,7 +130,7 @@ function setView(next) {
   if (!next) stopAiming();
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
-  $('arena').dataset.engine = use3d && !pov3dFailed ? '3d' : 'classic';
+  $('arena').dataset.engine = using3d() ? '3d' : 'classic';
   $('hint').textContent = is3d
     ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–5: switch. G: 2D/3D. Tab: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
@@ -965,7 +978,7 @@ function frame(now) {
     if (frameFailures === 0) console.error('Frame failed; the loop is still running.', err);
     // A renderer that fails every frame is not going to recover on its own, and the raycaster
     // draws the same match from the same snapshot.
-    if (++frameFailures > 30 && use3d && !pov3dFailed) dropTo2d('it failed 30 frames in a row');
+    if (++frameFailures > 30 && using3d()) dropTo2d('it failed 30 frames in a row');
   }
   const took = performance.now() - began;
   diag.lastFrameAt = performance.now();
@@ -1485,7 +1498,7 @@ document.addEventListener('keydown', e => {
     // the canvas being replaced, and V is already push-to-talk.
     stopAiming();
     use3d = !use3d;
-    if (is3d) showToast(use3d && !pov3dFailed ? '3D' : '2D');
+    if (is3d) showToast(using3d() ? '3D' : '2D');
     setView(is3d);
   } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
     e.preventDefault();
