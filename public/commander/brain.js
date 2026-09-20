@@ -194,7 +194,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
   async function interpretCommand(game, team, { source, text, gesture, pointer, direction, voiceContext, only, seq }) {
-    const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
+    // In first person you are looking through one agent's eyes, so an order with no name on
+    // it is for them. It is a default, not a lock: "everyone knife out" and "two of you go
+    // A" are plainly about the squad, and hard-filtering to the watched agent threw the
+    // rest of the sentence away. Everyone is asked; the watched one is who it falls to.
+    const squad = aliveTeam(game, team);
+    const watching = only && squad.some(u => u.name === only) ? only : null;
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     const roster = game.units.filter(u => u.team === team).map(u => u.name);
     // From here on the order says "Charlie", never "c": one spelling for the state Jev reads,
@@ -215,7 +220,9 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         : z.description;
       return [z.name, CALLOUTS[z.name] ? `${what}; called: ${CALLOUTS[z.name]}` : what];
     }));
-    if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone})`;
+    // Only when they actually referred to it. A marker left on the map from a minute ago
+    // must not turn "pull your knife out" into an order to walk to wherever it is.
+    if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone}) — only when they actually refer to it, with "there", "here", "this spot", "that corner". Never pick this just because a marker exists.`;
     // "At them" is a place too: wherever the enemy was last seen. Without it, an order about
     // the enemy rather than the map has nowhere to land.
     const contact = enemyContact(game, team);
@@ -251,11 +258,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const questions = {};
     for (const { name } of squad) {
       const key = name.toLowerCase();
-      if (!only) questions[`${key}_addressed`] = {
+      questions[`${key}_addressed`] = {
         type: 'boolean',
         // Wording picked by measurement: it handles orders that give different jobs to
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
-        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if ${name} is called by their first letter "${name[0]}" as the one being told to do something, if no names appear at all, if it addresses the whole squad ("everyone", "guys", "all of you"), or if it says "everyone else" / "the rest". A lone "A" or "B" that says where to go is the bomb site, not an agent.`,
+        instructions: `${watching ? `The commander is watching through ${watching}'s eyes, so an order that names nobody at all is for ${watching} alone — but one that speaks to the squad ("everyone", "all of you") or asks for a number of them ("two of you") still reaches the others. ` : ''}The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if ${name} is called by their first letter "${name[0]}" as the one being told to do something, if no names appear at all, if it addresses the whole squad ("everyone", "guys", "all of you"), or if it says "everyone else" / "the rest". A lone "A" or "B" that says where to go is the bomb site, not an agent.`,
       };
       // Both questions are about what the commander JUST said. current_orders is in the state
       // so a follow-up can be resolved, but pointing the questions at it made Jev answer with
@@ -353,7 +360,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const status = voiceContext ? roundStatus(game, team) : null;
     const state = {
       commander_says: said,
-      ...(only && { talking_to: only }),
+      ...(watching && { watching_through: watching }),
       ...(source && { command_source: source }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
@@ -385,7 +392,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const isOrder = result.answers.is_order.probability;
     // One squad-level answer, and it wins: if the order was for all of them it was for this
     // one, whatever its own question happened to say.
-    const wholeSquad = !only && (result.answers.addresses_everyone?.probability ?? 0) > 0.5;
+    const wholeSquad = (result.answers.addresses_everyone?.probability ?? 0) > 0.5;
     const ux = voiceContext ? {
       urgency: result.answers.command_urgency?.choice ?? 'normal',
       certainty: result.answers.commander_certainty?.choice ?? 'normal',
@@ -403,10 +410,17 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     // Captured before anything is overwritten: a thrower who is stood down goes back to
     // the job it had rather than to nothing.
     const wasDoing = new Map(squad.map(unit => [unit, unit.order && { ...unit.order }]));
+    // Did the order pick anybody out at all? If not, and we are watching one agent, it is
+    // theirs; if so, first person does not stop it reaching whoever it named.
+    const addressesAnyone = wholeSquad
+      || squad.some(u => (result.answers[`${u.name.toLowerCase()}_addressed`]?.probability ?? 0) > 0.5);
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
-      const addressed = only || wholeSquad ? 1 : a[`${key}_addressed`]?.probability ?? 0;
+      const own = a[`${key}_addressed`]?.probability ?? 0;
+      // Watching someone makes them the fallback: if the order named nobody and does not
+      // speak to the squad, it is for the agent whose eyes you are using.
+      const addressed = wholeSquad || (watching === unit.name && !addressesAnyone) ? 1 : own;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
       const skipReason = addressed < 0.5 ? 'not addressed'

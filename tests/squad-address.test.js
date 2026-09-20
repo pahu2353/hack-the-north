@@ -85,13 +85,38 @@ test('chatter that happens to say "guys" is still chatter', async () => {
   assert.deepEqual(result.plan, []);
 });
 
-test('in first person a squad word still addresses only the agent being watched', async () => {
+test('in first person a squad word still reaches the whole squad', async () => {
   const game = createGame();
   const { brains, reply, pending } = harness();
   const run = brains.interpretCommand(game, 'attack', { source: 'voice', text: 'everyone push B', only: 'Charlie' });
-  assert.deepEqual(asked(pending[0].questions), []);
-  reply(0, { charlie: ['push', 'B Site'] });
+  // Looking through one agent's eyes does not make the other four stop existing: they are
+  // all asked about, and the squad-level answer is what decides.
+  assert.equal(asked(pending[0].questions).length, 5);
+  const all = Object.fromEntries(['alpha', 'bravo', 'charlie', 'delta', 'echo']
+    .map(n => [n, ['push', 'B Site']]));
+  reply(0, all, 1, 1);
   const { plan } = await run;
-  assert.equal(plan.length, 1);
-  assert.equal(plan[0].name, 'Charlie');
+  assert.equal(plan.length, 5);
+  assert.ok(everyoneOrdered('push', plan));
+});
+
+test('in first person an order that names nobody is for the agent being watched', async () => {
+  const game = createGame();
+  const { brains, reply } = harness();
+  const run = brains.interpretCommand(game, 'attack', { source: 'voice', text: 'hold this angle', only: 'Charlie' });
+  // Nobody is picked out and it does not speak to the squad, so it falls to whoever the
+  // commander is looking through — and to nobody else.
+  reply(0, { charlie: ['hold', 'current'] }, 1, 0);
+  const { plan } = await run;
+  assert.deepEqual(plan.filter(p => p.applied).map(p => p.name), ['Charlie']);
+});
+
+test('in first person naming someone else still reaches them', async () => {
+  const game = createGame();
+  const { brains, reply } = harness();
+  const run = brains.interpretCommand(game, 'attack', { source: 'voice', text: 'Echo fall back', only: 'Charlie' });
+  reply(0, { echo: ['retreat', 'Attacker Spawn'] }, 1, 0);
+  const { plan } = await run;
+  assert.deepEqual(plan.filter(p => p.applied).map(p => p.name), ['Echo'],
+    'the watched agent is a fallback, not a filter');
 });

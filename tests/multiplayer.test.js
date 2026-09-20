@@ -82,10 +82,12 @@ test('a defending host owns start controls; guest commands and forfeits follow t
   host.send({ type: 'command', id: 2, only: 'Foxtrot', text: 'Hold' });
   await host.take(m => m.type === 'plan' && m.id === 2);
   assert(!host.messages.some(m => m.type === 'sides' || m.type === 'started'));
-  assert(calls.some(s => s.talking_to === 'Foxtrot' && Object.keys(s.squad).join() === 'Foxtrot'));
+  // First person says whose eyes the commander is using. It no longer hides the rest of
+  // the squad from the call, because "everyone" spoken in first person still means everyone.
+  assert(calls.some(s => s.watching_through === 'Foxtrot' && Object.keys(s.squad).length === 5));
   guest.send({ type: 'command', id: 3, only: 'Alpha', text: 'Hold' });
   await guest.take(m => m.type === 'plan' && m.id === 3);
-  assert(calls.some(s => s.talking_to === 'Alpha'));
+  assert(calls.some(s => s.watching_through === 'Alpha'));
   guest.ws.close();
   const final = (await host.take(m => m.type === 'state' && m.view.result)).view;
   assert.equal(final.result.winner, 'defend');
