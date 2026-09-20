@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createGame, obeying, setOrder, stepGame, teamUnits, throwGrenade } from '../public/commander/sim.js';
+import { createGame, enemyContact, obeying, setOrder, stepGame, teamUnits, throwGrenade } from '../public/commander/sim.js';
 import { zoneByName } from '../public/commander/world.js';
 
 const step = (game, seconds) => {
@@ -16,6 +16,17 @@ function facingOff() {
   stepGame(game, 1 / 60);
   return game;
 }
+
+test('enemy contact falls back to the enemy spawn on each map', () => {
+  for (const map of ['tactical', 'dust2']) {
+    const game = createGame({ map });
+    for (const team of ['attack', 'defend']) {
+      const contact = enemyContact(game, team);
+      const enemySpawn = zoneByName(game.map, game.map.home[team === 'attack' ? 'defend' : 'attack']);
+      assert.deepEqual(contact, { ...enemySpawn.center, seenAgo: null });
+    }
+  }
+});
 
 test('a fresh order is carried out even with an enemy in sight', () => {
   const game = facingOff();

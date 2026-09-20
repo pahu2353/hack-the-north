@@ -237,7 +237,7 @@ export function enemyContact(game, team) {
     if (!best || seen.t > best.t) best = seen;
   }
   if (best) return { x: best.x, y: best.y, seenAgo: game.time - best.t };
-  const spawn = zoneByName(game.map, otherTeam(team) === 'attack' ? 'Attacker Spawn' : 'Defender Spawn');
+  const spawn = zoneByName(game.map, game.map.home[otherTeam(team)]);
   return { x: spawn.center.x, y: spawn.center.y, seenAgo: null };
 }
 
