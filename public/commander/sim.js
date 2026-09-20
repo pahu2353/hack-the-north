@@ -221,6 +221,20 @@ export const teamUnits = (game, team) => game.units.filter(u => u.team === team)
 export const aliveTeam = (game, team) => game.units.filter(u => u.team === team && u.alive);
 export const unitById = (game, id) => game.units.find(u => u.id === id);
 
+// Where the enemy is, as far as this team knows: the freshest sighting any of them has. It is
+// what "go at them" means, and it stays inside the fog of war — an unseen enemy is not here.
+// With nothing seen all round, the enemy's own spawn is the honest direction to head.
+export function enemyContact(game, team) {
+  let best = null;
+  for (const [id, seen] of game.intel[team]) {
+    if (!unitById(game, id)?.alive) continue;
+    if (!best || seen.t > best.t) best = seen;
+  }
+  if (best) return { x: best.x, y: best.y, seenAgo: game.time - best.t };
+  const spawn = zoneByName(game.map, otherTeam(team) === 'attack' ? 'Attacker Spawn' : 'Defender Spawn');
+  return { x: spawn.center.x, y: spawn.center.y, seenAgo: null };
+}
+
 function gridFor(game) {
   if (!game.grids.has('agent')) game.grids.set('agent', buildGrid(game.map, 0.7));
   return game.grids.get('agent');

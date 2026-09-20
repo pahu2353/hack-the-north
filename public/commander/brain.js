@@ -4,7 +4,7 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
+import { aliveTeam, enemyContact, grenadeSpot, incomingGrenade, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -22,30 +22,38 @@ function voicePaceMultiplier(context) {
 // "Alpha and Bravo hold B site" reads as a description of what they are doing and scores 23%.
 const orderGate = names => ({
   type: 'boolean',
-  instructions: `The commander is speaking to their squad (${names.join(', ')}) during a match. Anything that tells one or more of them where to be or what to do is an order, even when it is phrased as a plain statement: "${names[0]} and ${names[1]} hold B site" is an order to hold B site, not a description. Is this an order, or is the commander just talking (reacting, asking, thinking out loud)?`,
+  instructions: `The commander is speaking to their squad (${names.join(', ')}) during a match. Anything that tells one or more of them where to be or what to do is an order, even when it is phrased as a plain statement: "${names[0]} and ${names[1]} hold B site" is an order to hold B site, not a description. A short follow-up to the last command is an order too, even on its own: "you too", "${names[2]} as well", "same", "keep going". So are terse game calls that say where to go or what to do: "peek a main", "rotate b", "lurk b". Calling out what the enemy is doing ("two on b", "they're pushing mid") is not an order. Is this an order, or is the commander just talking (reacting, asking, thinking out loud)?`,
   criteria: {
     true: 'an order: it tells at least one of them where to go, what to hold, or what to do',
     false: 'not an order: a reaction, a question, or thinking out loud',
   },
 });
 
+// The words people actually shout, not the tidy ones. Each list was grown from phrasings that
+// came back wrong: "rotate to a" was read as a flank, "camp b" as a push, "on me" as a push.
+const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek';
+const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / anchor / sit on / lock down, without advancing';
+const AROUND = 'flank: swing around / go around / lurk / take the long way to hit them from the side';
+const BACK = 'fall back / retreat / pull out / get out / back off / reset';
+const TOGETHER = 'group up / regroup / stack up / on me / come together with the squad';
+const NADE = 'throw a grenade / nade / frag / flash the location';
 const ORDERS = {
   attack: {
-    push: 'go to / rush / attack / take / move to the location',
-    hold: 'hold / defend / watch / stay at the location',
-    flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
-    retreat: 'fall back / retreat / pull out',
-    regroup: 'group up / stack together with the squad',
-    grenade: 'throw a grenade / nade / frag the location',
+    push: `${MOVE} to the location, and going at the enemy to fight them`,
+    hold: `${STAY} at the location`,
+    flank: AROUND,
+    retreat: BACK,
+    regroup: TOGETHER,
+    grenade: NADE,
     plant: 'plant the spike (only when told to plant)',
   },
   defend: {
-    push: 'go to / rush / retake / attack / move to the location',
-    hold: 'hold / defend / watch / stay at the location',
-    flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
-    retreat: 'fall back / retreat / pull out',
-    regroup: 'group up / stack together with the squad',
-    grenade: 'throw a grenade / nade / frag the location',
+    push: `${MOVE} to the location, retake it, or go at the enemy to fight them`,
+    hold: `${STAY} at the location`,
+    flank: AROUND,
+    retreat: BACK,
+    regroup: TOGETHER,
+    grenade: NADE,
     defuse: 'go defuse the planted spike (only when told to defuse)',
   },
 };
@@ -107,7 +115,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         : z.description,
     ]));
     if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone})`;
-    locations.current = 'stay where they are now';
+    // "At them" is a place too: wherever the enemy was last seen. Without it, an order about
+    // the enemy rather than the map has nowhere to land.
+    const contact = enemyContact(game, team);
+    locations.enemy = contact.seenAgo === null
+      ? 'at the enemy: nobody has been seen, so towards their side of the map'
+      : `at the enemy: where they were last seen, in ${zoneAt(game.map, contact).name}`;
+    locations.current = 'stay exactly where they are now, going nowhere';
 
     const questions = {};
     for (const { name } of squad) {
@@ -118,8 +132,30 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
         instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, or if it says "everyone else" / "the rest".`,
       };
-      questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do? Use current_orders and recent_commands to resolve follow-ups; the new command takes precedence.`, criteria: ORDERS[team] };
-      questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about? Use current_orders and recent_commands when the commander refers to an earlier assignment.`, criteria: locations };
+      // Both questions are about what the commander JUST said. current_orders is in the state
+      // so a follow-up can be resolved, but pointing the questions at it made Jev answer with
+      // the order the squad already had, whatever was said: while pushing B Site, "nade mid"
+      // came back as a grenade on B Site, and "take A site" as a push to B Site.
+      questions[`${key}_order`] = {
+        type: 'choice',
+        instructions: `What has the commander just told ${name} to do? Answer from what they said, not from the order ${name} already has. Telling them to stay somewhere once they get there ("camp b", "hold b", "watch b main", "lock down mid") is holding, not pushing, even though they have to walk there first. Only when the new words carry no instruction of their own: "keep going" / "same again" means carry on with ${name}'s own order in current_orders, and "you too" / "as well" / "same" means the order in the last of recent_commands, the one just given to someone else.`,
+        criteria: ORDERS[team],
+      };
+      questions[`${key}_target`] = {
+        type: 'choice',
+        // Each line below is a phrasing that was measured going wrong: two places in one
+        // breath, the sites being called A and B (so "a site" is not "some site"), orders
+        // about the enemy rather than a place, and falling back to nowhere in particular.
+        instructions: `Where does what the commander just said send ${name}? Take the place from their words:
+- Two places, or a correction ("A site, no, B site" / "A or B" / "A site... B site"): the last one they land on wins.
+- The sites, mains and links are named A and B. "a site", "the a site", "a main", "a link" mean the A one, never "some site", and a bare letter ("rush b", "lurk b", "go a") means that site.
+- An order about the enemy rather than a place on the map ("at them", "push them", "fight", "kill them", "go at the enemy"): the enemy.
+- Falling back or retreating with no place named: their own spawn.
+- No place named at all ("move", "push", "go go go"): keep where ${name} is already headed in current_orders.
+- "you too" / "as well" / "same": the place named in the last of recent_commands, the one just given to someone else, not ${name}'s own.
+- "current" only when told to stop or stay put with no place named at all ("stop", "wait", "hold"). An order to hold or camp a named place ("hold b", "lock down mid") sends them to that place.`,
+        criteria: locations,
+      };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
     if (voiceContext) {
@@ -206,6 +242,9 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         if (target.choice === 'pointed' && pointer) {
           point = { x: pointer.x, y: pointer.y };
           zone = pointerZone;
+        } else if (target.choice === 'enemy') {
+          point = { x: contact.x, y: contact.y };
+          zone = zoneAt(game.map, contact).name;
         } else if (target.choice === 'current' || target.choice === 'pointed') {
           point = { x: unit.x, y: unit.y };
           zone = zoneAt(game.map, unit).name;

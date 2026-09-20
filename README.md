@@ -130,6 +130,27 @@ Two layers, both just typed questions:
    orders score 89–97%, so chatter is greyed out in the log and ignored. Then three questions per
    agent: does this apply to you, what order (push, hold, flank, retreat, regroup, plant, defuse),
    and where.
+
+**Saying it the way you'd say it.** The order question knows the words people actually use — move,
+push, rush, run it down, rotate, peek, take; hold, camp, watch, anchor, lock down; lurk and swing
+around; fall back, get out; stack up, on me — and the place question handles how orders really come
+out: a correction ("A site, no wait, B site") takes the last place named; an order about the enemy
+rather than the map ("go at them", "fight fight fight") sends them to wherever your team last saw
+one, inside the fog of war; a bare verb ("move", "push") carries on to where they were already
+headed instead of stopping; "take a site" is the A site, not "some site"; and "camp b" walks there
+first, then holds. Follow-ups work too — "keep going" carries on, "Charlie you too" copies the order
+just given to someone else — while enemy callouts ("two on b") stay chatter and change nothing.
+
+`scripts/vocab-probe.mjs` is how that was tuned: 41 labelled phrasings plus 9 follow-up and chatter
+cases, scored against the live gateway. The wording went from **25/41 orders, 10/41
+order-and-place and 6/9 follow-ups** to **41/41, 41/41 and 9/9**. The biggest win wasn't vocabulary
+at all: the questions used to point at the squad's current orders, so Jev answered with the order
+they already had whatever you said — while pushing B Site, "nade mid" came back as a grenade on B
+Site. Run it after changing any question wording:
+
+```sh
+node --env-file-if-exists=.env.local scripts/vocab-probe.mjs
+```
 2. **Agent brains.** In a fight, each agent sends its situation to Jev about twice a second —
    health, current order, visible enemies, teammates in contact, the spike — and gets back an action
    (fight, cover, advance, hold, support, throw or dodge a grenade) and a target. Out of contact
@@ -181,6 +202,7 @@ immediately, and it binds to localhost only, because it spends your credits.
 | `multiplayer.ts` | Rooms, invite codes, the server-side match loop, per-team views over `/api/room` |
 | `public/commander/` | `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, visibility), `world.js` (maps, pathfinding), `render.js` (top-down), `pov3d.js` / `pov.js` (first person, WebGL and raycaster), `voice.js`, `gestures.js` |
 | `public/index.html` | The visualizer, one file, no build step |
+| `scripts/vocab-probe.mjs` | Scores how well Jev reads spoken orders, against the live gateway |
 | `scripts/play-online.sh` | `npm run online` |
 | `scripts/rate-limit-probe.ts` | Measures Jev's rate limit on your tier |
 
