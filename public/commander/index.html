@@ -113,13 +113,16 @@
   }
 
   .overlay { z-index: 2; }
-  /* Anchored to the top, not centred: centring meant every screen's own height decided where
-     the heading sat, so switching screens slid the title up and down the page. */
+  /* Centring meant every screen's own height decided where the heading sat, so switching
+     screens slid the title up and down the page. Instead the first grid row is a spacer sized
+     as a fraction of the arena: the block still starts around the middle, but where it starts
+     no longer depends on what is in it. */
   .overlay {
-    position: absolute; inset: 0; display: grid; align-content: start; justify-items: center;
-    overflow: auto; padding: 52px 16px 24px; gap: 18px;
+    position: absolute; inset: 0; display: grid; grid-template-rows: minmax(24px, 30%) auto auto;
+    align-content: start; justify-items: center; overflow: auto; padding: 0 16px 24px; gap: 18px;
     background: radial-gradient(circle at 50% 38%, rgba(18, 30, 38, 0.86), rgba(6, 9, 12, 0.96) 70%);
   }
+  .overlay::before { content: ""; }
   .overlay[hidden], .overlay section[hidden] { display: none; }
   .overlay section {
     width: min(520px, 100%); text-align: center; display: grid; gap: 14px; justify-items: center;
@@ -510,7 +513,7 @@
       </section>
 
       <section id="screenBots" data-title="Vs Bots" hidden>
-        <p>Difficulty changes the enemy commander only — same health and weapons either way.</p>
+        <p>Difficulty changes the enemy commander, not its health or weapons.</p>
         <div class="pickers">
           <label class="side-choice" for="botSide">Side
             <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
