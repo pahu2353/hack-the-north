@@ -250,7 +250,8 @@
   }
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head .head-actions { display: flex; gap: 6px; }
-  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
+  /* Four of them, so they sit two by two rather than three and a lonely one. */
+  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 5px; }
   .signs span {
     display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
     padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
@@ -355,7 +356,9 @@
 
   /* First-person view: scoreboard on top, minimap top-left, HUD at the bottom. */
   .arena[data-view="map"] #map { height: calc(100% - 62px); margin-top: 62px; }
-  .arena[data-view="map"] .pov-only, .arena[data-view="map"] #pov, .arena[data-view="pov"] #map { display: none; }
+  /* Match both canvas IDs so their display rule cannot override map-view hiding. */
+  .arena[data-view="map"] .pov-only, .arena[data-view="map"] #pov,
+  .arena[data-view="map"] #pov3d, .arena[data-view="pov"] #map { display: none; }
   #pov, #pov3d { width: 100%; height: 100%; display: block; cursor: crosshair; }
   /* Only one first-person engine draws at a time: 3d is WebGL, classic is the raycaster. */
   .arena[data-engine="3d"] #pov { display: none; }
@@ -513,7 +516,7 @@
       </section>
 
       <section id="screenBots" data-title="Vs Bots" hidden>
-        <p>Difficulty changes the enemy commander, not its health or weapons.</p>
+        <p>Hard gives the enemy a smarter commander and tougher bots. Your squad never changes.</p>
         <div class="pickers">
           <label class="side-choice" for="botSide">Side
             <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
@@ -526,7 +529,7 @@
           </label>
         </div>
         <div class="choices">
-          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · adapts</small></button>
+          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · 175 HP, sharper aim, led grenades</small></button>
           <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · predictable</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
@@ -608,7 +611,7 @@
       <div class="status" id="jevStats">—</div>
     </div>
     <div class="card">
-      <div class="card-head">Signals
+      <div class="card-head">Hands
         <span class="head-actions">
           <button id="previewBtn" class="icon-btn" type="button" hidden data-state="on" aria-label="Hide preview" title="Hide preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/><path class="slash" d="M4 20 20 4"/></svg></button>
           <button id="camBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on camera" title="Turn on camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M4 20 20 4"/></svg></button>

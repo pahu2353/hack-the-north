@@ -93,3 +93,60 @@ test('after contact ends, an agent returns to its saved hold position without an
   brains.update(game, 'attack');
   assert.equal(agent.action, 'hold');
 });
+
+// One canned answer per question, so a command can be interpreted without the network.
+function answering({ order, target, addressed = 1 }) {
+  return (state, questions) => {
+    const answers = {};
+    for (const key of Object.keys(questions)) {
+      if (key === 'is_order') answers[key] = { probability: 0.95 };
+      else if (key.endsWith('_addressed')) answers[key] = { probability: addressed };
+      else if (key.endsWith('_order')) answers[key] = { choice: order, probabilities: { [order]: 0.9 } };
+      else if (key.endsWith('_target')) answers[key] = { choice: target, probabilities: { [target]: 0.9 } };
+    }
+    return Promise.resolve({ answers, latency: 1, state, usage: {} });
+  };
+}
+
+test('an order about the enemy sends the squad to where the enemy was last seen', async () => {
+  const game = createGame({ defenders: 'bots', playerTeam: 'attack' });
+  const brains = createBrains({ evaluate: answering({ order: 'push', target: 'enemy' }) });
+  const [seenLater, seenEarlier] = teamUnits(game, 'defend');
+  game.time = 20;
+  game.intel.attack.set(seenEarlier.id, { x: 67, y: 14, t: 5 });
+  game.intel.attack.set(seenLater.id, { x: 12, y: 14, t: 18 }); // A Site, and more recent
+  const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: 'fight fight fight' });
+  assert.equal(result.plan[0].target, 'enemy');
+  for (const u of teamUnits(game, 'attack')) {
+    assert.equal(u.order.zone, 'A Site', 'the freshest sighting wins, not the oldest');
+    assert.ok(Math.hypot(u.order.point.x - 12, u.order.point.y - 14) < 4);
+  }
+  // The question has to offer it, and say where it leads.
+  const asked = [];
+  const brains2 = createBrains({ evaluate: (state, questions) => {
+    asked.push(questions);
+    return answering({ order: 'push', target: 'enemy' })(state, questions);
+  } });
+  await brains2.interpretCommand(game, 'attack', { source: 'voice', text: 'go at them' });
+  assert.match(asked[0].alpha_target.criteria.enemy, /last seen, in A Site/);
+});
+
+test('with nobody seen all round, going at the enemy heads for their spawn', async () => {
+  const game = createGame({ defenders: 'bots', playerTeam: 'attack' });
+  const brains = createBrains({ evaluate: answering({ order: 'push', target: 'enemy' }) });
+  await brains.interpretCommand(game, 'attack', { source: 'voice', text: 'push them' });
+  const [alpha] = teamUnits(game, 'attack');
+  assert.equal(alpha.order.zone, 'Defender Spawn');
+});
+
+test('an eliminated enemy is not somewhere to be sent', async () => {
+  const game = createGame({ defenders: 'bots', playerTeam: 'attack' });
+  const brains = createBrains({ evaluate: answering({ order: 'push', target: 'enemy' }) });
+  const [dead, alive] = teamUnits(game, 'defend');
+  game.time = 10;
+  game.intel.attack.set(dead.id, { x: 12, y: 14, t: 9 }); // seen most recently, but gone
+  game.intel.attack.set(alive.id, { x: 67, y: 14, t: 4 });
+  dead.alive = false;
+  await brains.interpretCommand(game, 'attack', { source: 'voice', text: 'go at the enemy' });
+  assert.equal(teamUnits(game, 'attack')[0].order.zone, 'B Site');
+});

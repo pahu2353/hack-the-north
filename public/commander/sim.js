@@ -1,5 +1,5 @@
 // Spike Rush simulation: attackers vs defenders, five each. A team is either commanded by a
-// player (agents steered by Jev) or, for defenders in bot mode, scripted bots. Runs in the
+// player (agents steered by Jev) or bots executing scripted/OpenAI objectives. Runs in the
 // browser for bot games and on the server for multiplayer.
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
@@ -24,11 +24,15 @@ export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37', '#b2352
 // enough that positioning and grenades decide them rather than whoever fires first.
 export const MAX_HP = 150;
 export const RIFLE = { range: 45, damage: 28, interval: 0.22, accuracy: 0.38 };
+// Hard opponents get a modest combat advantage to challenge first-person aim assistance.
+// This profile belongs only to bot-mode opponents, including during a planner outage.
+export const HARD_BOT = { hp: 175, accuracy: 0.5, speed: 5, reaction: 0.25 };
 // First-person aim boosts automatic accuracy only on the enemy under the crosshair.
+// These chances still lose accuracy over distance and against moving targets.
 // Dimensions match the renderer; damage, reaction time and fire rate stay the same.
 export const MANUAL_AIM = {
   eye: 1.6, height: 1.8, halfWidth: 0.375, maxPitch: Math.PI / 4,
-  accuracy: 0.9, movingAccuracy: 0.8, lease: 0.6,
+  accuracy: 0.7, movingAccuracy: 0.5, lease: 0.6,
 };
 const SIGHT = 45;
 const PLANT_SECONDS = 3;
@@ -54,6 +58,7 @@ export const GRENADE = {
   carried: 1, range: 26, radius: 6, centreDamage: 85, edgeDamage: 30,
   speed: 17, fuse: 1.5, cooldown: 1.5, clusterGap: 5,
 };
+const TRACK_MAX_SPEED = 8; // reject teleports/collision spikes in observed movement
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
 const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 1.1, y: 2.4 }, { x: -1.1, y: 2.4 }];
@@ -161,9 +166,12 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
   };
   for (const team of ['attack', 'defend']) map.spawns[team].forEach((post, i) => {
     if (team === game.botTeam) {
+      const hard = game.opponent === 'openai';
+      const hp = hard ? HARD_BOT.hp : MAX_HP;
       game.units.push(makeUnit(game, {
-        team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp: MAX_HP, maxHp: MAX_HP,
-        speed: 4.5, reaction: 0.28 + Math.random() * 0.12, facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
+        team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp, maxHp: hp,
+        speed: hard ? HARD_BOT.speed : 4.5, reaction: hard ? HARD_BOT.reaction : 0.28 + Math.random() * 0.12,
+        facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
       }));
     } else {
       game.units.push(makeAgent(game, team, TEAMS[team].names[i], post, i));
@@ -220,6 +228,20 @@ export function defaultOrder(game, u) {
 export const teamUnits = (game, team) => game.units.filter(u => u.team === team);
 export const aliveTeam = (game, team) => game.units.filter(u => u.team === team && u.alive);
 export const unitById = (game, id) => game.units.find(u => u.id === id);
+
+// Where the enemy is, as far as this team knows: the freshest sighting any of them has. It is
+// what "go at them" means, and it stays inside the fog of war — an unseen enemy is not here.
+// With nothing seen all round, the enemy's own spawn is the honest direction to head.
+export function enemyContact(game, team) {
+  let best = null;
+  for (const [id, seen] of game.intel[team]) {
+    if (!unitById(game, id)?.alive) continue;
+    if (!best || seen.t > best.t) best = seen;
+  }
+  if (best) return { x: best.x, y: best.y, seenAgo: game.time - best.t };
+  const spawn = zoneByName(game.map, otherTeam(team) === 'attack' ? 'Attacker Spawn' : 'Defender Spawn');
+  return { x: spawn.center.x, y: spawn.center.y, seenAgo: null };
+}
 
 function gridFor(game) {
   if (!game.grids.has('agent')) game.grids.set('agent', buildGrid(game.map, 0.7));
@@ -326,7 +348,21 @@ function updateVision(game) {
       }
     }
     u.visible = visible.sort((a, b) => dist(u, a) - dist(u, b));
-    for (const other of visible) game.intel[u.team].set(other.id, { x: other.x, y: other.y, t: game.time });
+    for (const other of visible) {
+      const previous = game.intel[u.team].get(other.id);
+      if (previous?.t === game.time) continue; // one observation per team per simulation step
+      const elapsed = game.time - (previous?.t ?? -Infinity);
+      const continuous = elapsed > 0 && elapsed <= 0.25;
+      const vx = continuous ? (other.x - previous.x) / elapsed : 0;
+      const vy = continuous ? (other.y - previous.y) / elapsed : 0;
+      const tracked = continuous && Math.hypot(vx, vy) <= TRACK_MAX_SPEED;
+      game.intel[u.team].set(other.id, {
+        x: other.x, y: other.y, t: game.time,
+        vx: tracked ? vx * 0.6 + (previous.vx ?? 0) * 0.4 : 0,
+        vy: tracked ? vy * 0.6 + (previous.vy ?? 0) * 0.4 : 0,
+        trackedFor: tracked ? Math.min(1, (previous.trackedFor ?? 0) + elapsed) : 0,
+      });
+    }
   }
 }
 
@@ -477,10 +513,16 @@ export function crosshairTarget(game, u) {
 }
 
 export function rifleAccuracy(game, u, target) {
-  if (crosshairTarget(game, u) === target) return u.moving ? MANUAL_AIM.movingAccuracy : MANUAL_AIM.accuracy;
-  let p = RIFLE.accuracy * clamp(1 - dist(u, target) / 55, 0.15, 1);
-  if (u.moving) p *= 0.3;
-  else if (game.time - u.stillSince > 1) p *= 1.25;
+  let p;
+  if (crosshairTarget(game, u) === target) {
+    // The aimed standing chance already includes steadiness; don't stack the idle bonus.
+    p = u.moving ? MANUAL_AIM.movingAccuracy : MANUAL_AIM.accuracy;
+  } else {
+    p = u.kind === 'bot' && game.opponent === 'openai' ? HARD_BOT.accuracy : RIFLE.accuracy;
+    if (u.moving) p *= 0.3;
+    else if (game.time - u.stillSince > 1) p *= 1.25;
+  }
+  p *= clamp(1 - dist(u, target) / 55, 0.15, 1);
   if (target.moving) p *= 0.8;
   return p;
 }
@@ -713,7 +755,11 @@ function pushOutOfRect(u, w) {
 // ---------- bots (scripted execution, with optional OpenAI objectives) ----------
 
 function controlBot(game, u, dt) {
-  const focus = u.visible.find(v => v.alive);
+  const targets = u.visible.filter(v => v.alive);
+  // Finish exposed wounded enemies together instead of each bot duelling the nearest one.
+  const focus = game.opponent === 'openai'
+    ? targets.sort((a, b) => Math.ceil(a.hp / RIFLE.damage) - Math.ceil(b.hp / RIFLE.damage) || dist(u, a) - dist(u, b))[0]
+    : targets[0];
   // Bots use grenades by rule: punish a group, and don't stand in one.
   // Keep clear until this blast is over, even after leaving the initial danger radius.
   // Otherwise a hold/regroup order can pull the bot straight back into the same grenade.
@@ -728,11 +774,13 @@ function controlBot(game, u, dt) {
     return;
   }
   u.botDodge = null;
-  // Throwing is instant, so it happens the moment a group is in sight, whether the bot then
-  // holds its angle or falls back. A squad that moves as one clump pays for it.
+  // Throw before holding or falling back. Hard bots briefly track the group's movement
+  // first, so their one grenade is not spent on an unobserved guess at first contact.
   if (u.grenades > 0) {
     const clump = grenadeSpot(game, u);
-    if (clump && clump.caught >= 2) throwGrenade(game, u, clump.spot);
+    if (clump && clump.caught >= 2 && (game.opponent !== 'openai' || clump.ready)) {
+      throwGrenade(game, u, clump.spot);
+    }
   }
   const planned = opponentDestination(game, u);
   if (planned && ['retreat', 'regroup'].includes(u.botOrder.action)) {
@@ -770,8 +818,9 @@ function controlBot(game, u, dt) {
     }
   }
   const group = game.botRetake;
-  if (planned && group?.unitIds.includes(u.id)) {
-    // Gather under fire, then advance together. The survival reflex above still takes priority.
+  if (planned && (group?.unitIds.includes(u.id) || u.botOrder.action === 'flank')) {
+    // Retakes and flanks must keep moving through contact to complete the maneuver.
+    // Grenade avoidance and the survival reflex above still take priority.
     moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
     if (focus) shoot(game, u, focus);
     return;
@@ -816,24 +865,57 @@ function controlBot(game, u, dt) {
 
 // The point that catches the most enemies: the middle of a group. Like a real player, this
 // counts people seen a moment ago as well as right now, so a squad moving as one clump can be
-// hit just after it ducks out of sight.
+// hit just after it ducks out of sight. Hard bots lead reliable observed movement.
 export function grenadeSpot(game, u, memory = 2) {
-  const marks = u.visible.filter(e => e.alive).map(e => ({ x: e.x, y: e.y }));
+  const lead = u.kind === 'bot' && game.opponent === 'openai';
+  const marks = u.visible.filter(e => e.alive).map(e => ({ ...game.intel[u.team].get(e.id), x: e.x, y: e.y }));
   for (const [id, seen] of game.intel[u.team]) {
     const target = unitById(game, id);
     if (!target?.alive || target.team === u.team) continue;
     if (game.time - seen.t > memory || u.visible.some(v => v.id === id)) continue;
-    marks.push({ x: seen.x, y: seen.y });
+    marks.push({ ...seen });
   }
   if (marks.length < 2) return null;
   let best = null;
   for (const centre of marks) {
     const caught = marks.filter(m => dist(m, centre) <= GRENADE.clusterGap);
-    const spot = average(caught);
+    let spot = average(caught);
+    if (lead) {
+      // Recalculate flight time as the aim point moves. Prediction uses observed velocity,
+      // never an enemy's destination/path, and stops at walls instead of predicting turns.
+      for (let i = 0; i < 3; i++) {
+        const horizon = Math.max(0.35, dist(u, spot) / GRENADE.speed) + GRENADE.fuse;
+        spot = average(caught.map(mark => predictGrenadeTarget(game, mark, horizon)));
+      }
+    }
     if (!hasLineOfSight(game.map, u, spot) || dist(u, spot) > GRENADE.range) continue;
-    if (!best || caught.length > best.caught) best = { spot, caught: caught.length };
+    const horizon = Math.max(0.35, dist(u, spot) / GRENADE.speed) + GRENADE.fuse;
+    const hits = lead ? marks.filter(mark => {
+      const predicted = predictGrenadeTarget(game, mark, horizon);
+      return dist(predicted, spot) <= GRENADE.clusterGap && hasLineOfSight(game.map, spot, predicted);
+    }).length : caught.length;
+    if ((!lead || hits >= 2) && (!best || hits > best.caught)) {
+      best = { spot, caught: hits, ...(lead && { ready: caught.every(mark => mark.trackedFor >= 0.12) }) };
+    }
   }
   return best;
+}
+
+function predictGrenadeTarget(game, mark, horizon) {
+  const age = game.time - mark.t;
+  // A fresh sighting needs several samples; lost contacts quickly lose reliable direction.
+  if (!(mark.trackedFor >= 0.12) || age > 0.25) return { x: mark.x, y: mark.y };
+  const seconds = Math.min(3.1, horizon + Math.max(0, age));
+  const at = share => ({ x: mark.x + mark.vx * seconds * share, y: mark.y + mark.vy * seconds * share });
+  const grid = gridFor(game);
+  if (walkableLine(grid, mark, at(1))) return at(1);
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 8; i++) {
+    const mid = (lo + hi) / 2;
+    if (walkableLine(grid, mark, at(mid))) lo = mid;
+    else hi = mid;
+  }
+  return at(lo);
 }
 
 export function throwGrenade(game, u, point) {

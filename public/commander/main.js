@@ -16,7 +16,10 @@ const STEP = 1 / 60;
 const RECENT_GESTURE_MS = 2000;
 const $ = id => document.getElementById(id);
 
-const ORDER_TERMS = ['spike', 'flank', 'regroup', 'rotate'];
+// The words the squad is most likely to hear. The ones that used to be hand signals are in
+// here too, now that the only way to give those orders is to say them.
+const ORDER_TERMS = ['spike', 'flank', 'regroup', 'rotate', 'push', 'hold', 'fall back', 'split',
+  'grenade', 'nade', 'camp', 'lurk', 'peek'];
 // Whichever map is being played. The view carries its id, so zone lookups, callouts and the
 // hand-to-map mapping all follow the match instead of assuming the default layout.
 const currentMap = () => MAPS[view?.mapId] ?? MAPS.tactical;
@@ -116,7 +119,10 @@ let use3d = true; // which first-person engine: WebGL (default) or the flat rayc
 let watchedId = null; // which agent that is
 const positions = new Map(); // smoothed unit positions for multiplayer
 let recentGesture = null;
-let aim = null; // first-person mouse look; the agent always fires automatically
+let aim = null; // first-person look, from the mouse or a raised fist; the agent fires by itself
+let aimSource = null; // 'mouse' | 'hand'
+let handAim = null; // the smoothed centre of your fist, from the camera: { x, y, at }
+let handYaw = 0; // where the middle of the frame points, which holding a fist at an edge turns
 let lastAimSent = 0;
 let lastAimEnded = -Infinity;
 let lastCamera = null;
@@ -132,8 +138,8 @@ function setView(next) {
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('arena').dataset.engine = using3d() ? '3d' : 'classic';
   $('hint').textContent = is3d
-    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–5: switch. G: 2D/3D. Tab: map.'
-    : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
+    ? 'Auto fire. A fist aims (or click for mouse look); four fingers, ←/→ or 1–5 changes agent. G: 2D/3D. Tab: map.'
+    : 'Point up or click to mark a spot, then say what to do there. Orders are spoken or typed. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -1047,6 +1053,7 @@ function frame(now) {
 function drawFrame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  updateHandAim(dt);
   if (aim) {
     if (!matchActive() || !is3d) stopAiming();
     else if (session.kind === 'bots' || now - lastAimSent >= 50) sendAim();
@@ -1324,6 +1331,7 @@ function updateHud() {
     $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
   }
   updateOpponentHud();
+  if (!signTimer) renderGestureFeedback();
 
   const s = session.kind === 'bots' ? brains.summary() : online?.jev;
   if (s) {
@@ -1374,9 +1382,10 @@ function updateHud() {
   if (watching) {
     $('povHp').textContent = Math.round(watching.hp);
     $('povHp').title = `${Math.round(watching.hp)} / ${watching.maxHp} HP`;
-    $('povControl').textContent = aim
-      ? `AUTO FIRE · ${watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy'} · Esc releases cursor`
-      : 'AUTO FIRE · Click for mouse look · Aim at an enemy for better accuracy';
+    const bonus = watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy';
+    $('povControl').textContent = aimSource === 'hand' ? `AUTO FIRE · ✊ Fist aim · ${bonus}`
+      : aim ? `AUTO FIRE · ${bonus} · Esc releases cursor`
+      : 'AUTO FIRE · Raise a fist or click to aim · Aim at an enemy for better accuracy';
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
     $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
@@ -1492,6 +1501,34 @@ canvas.addEventListener('click', e => {
   pointer = { ...p, at: performance.now() };
 });
 
+// A raised fist aims the first-person view: it lands on the screen like a laser pointer,
+// straight ahead from the middle of the frame. Held out near the edge it keeps turning that
+// way, so you can still come all the way round without reaching off camera.
+const HAND_AIM = { yaw: 1.1, pitch: 0.5, edge: 0.34, turn: 1.8, holdMs: 350 };
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+
+function updateHandAim(dt) {
+  if (aimSource === 'mouse') return; // a locked cursor owns the view until it is released
+  const u = watched();
+  const live = handAim && performance.now() - handAim.at < HAND_AIM.holdMs;
+  if (!live || !is3d || !matchActive() || !u) {
+    if (aimSource === 'hand') stopAiming(); // hand down (or out of the view): back to auto
+    return;
+  }
+  const dx = handAim.x - 0.5;
+  const dy = handAim.y - 0.5;
+  if (aimSource !== 'hand' || aim?.unitId !== u.id) {
+    aimSource = 'hand';
+    // Pick up from wherever this agent is already looking, without a jump.
+    handYaw = wrapAngle((lastCamera?.unitId === u.id ? lastCamera.angle : u.facing) - dx * 2 * HAND_AIM.yaw);
+    aim = { unitId: u.id, yaw: u.facing, pitch: 0 };
+  }
+  const over = Math.max(0, Math.abs(dx) - HAND_AIM.edge) / (0.5 - HAND_AIM.edge);
+  handYaw = wrapAngle(handYaw + Math.sign(dx) * over * HAND_AIM.turn * dt);
+  aim.yaw = wrapAngle(handYaw + dx * 2 * HAND_AIM.yaw);
+  aim.pitch = Math.max(-MANUAL_AIM.maxPitch, Math.min(MANUAL_AIM.maxPitch, -dy * 2 * HAND_AIM.pitch));
+}
+
 // Pointer lock gives mouse aiming without hitting the edges of the canvas. We transmit
 // camera direction at 20 Hz; the shared simulation owns automatic shots and accuracy.
 function sendAim() {
@@ -1504,9 +1541,11 @@ function sendAim() {
 function stopAiming() {
   if (aim) {
     aim = null;
+    aimSource = null;
     lastAimEnded = performance.now();
     sendAim();
   }
+  aimSource = null;
   if (lockedForAim()) document.exitPointerLock();
 }
 
@@ -1514,7 +1553,7 @@ for (const surface of aimSurfaces) {
   surface.addEventListener('mousedown', async e => {
     if (e.button !== 0 || !matchActive() || !is3d || !watched()) return;
     e.preventDefault();
-    if (aim) return;
+    if (aimSource === 'mouse') return; // a hand aim can still be taken over by the cursor
     try {
       await surface.requestPointerLock();
     } catch {
@@ -1528,6 +1567,7 @@ document.addEventListener('pointerlockchange', () => {
   if (!matchActive() || !is3d || !u) { stopAiming(); return; }
   document.activeElement?.blur();
   aim = { unitId: u.id, yaw: lastCamera?.unitId === u.id ? lastCamera.angle : u.facing, pitch: 0 };
+  aimSource = 'mouse';
   sendAim();
 });
 document.addEventListener('mousemove', e => {
@@ -1583,15 +1623,18 @@ function setIconState(id, state, label) {
 let gestures = null;
 let gestureFeedback = { stage: 'none', name: null };
 
-function renderGestureFeedback({ stage, name }) {
-  const sign = $('sign');
-  if (stage === 'none') { sign.hidden = true; return; }
-  sign.hidden = false;
-  if (stage === 'pointing') { sign.textContent = '☝️ Aiming'; return; }
-  const signal = SIGNALS[name];
-  sign.textContent = stage === 'confirmed' ? `✓ ${signal.emoji} ${signal.label}`
-    : stage === 'stabilizing' ? `${signal.emoji} ${signal.label}…`
-      : `${signal.emoji} ${signal.label} detected`;
+// What the camera is doing right now, in the corner of the preview. Only the three things it
+// acts on: the recognizer still confirms the old hand signals, but nothing listens to them, so
+// announcing "✋ Hold detected" would promise an order that never arrives.
+let lastSign = '';
+function renderGestureFeedback({ stage } = gestureFeedback) {
+  const text = aimSource === 'hand' ? '✊ Aiming'
+    : stage === 'pointing' ? '☝️ Marking a spot'
+      : '';
+  if (text === lastSign) return;
+  lastSign = text;
+  $('sign').hidden = !text;
+  $('sign').textContent = text;
 }
 
 $('previewBtn').onclick = () => {
@@ -1636,6 +1679,12 @@ async function startCamera() {
         gestureFeedback = feedback;
         if (!signTimer) renderGestureFeedback(feedback);
       },
+      // Three things the camera does, and nothing else: a fist aims in first person, a finger
+      // points at the map, and four fingers change agent. Every order is spoken or typed, so no
+      // hand shape can fire one by accident. The recognizer still confirms the old signals and
+      // nothing listens; commander.signal() replays one for a scripted demo.
+      aiming: () => is3d && matchActive(),
+      onAim: p => { handAim = p && { x: p.x, y: p.y, at: performance.now() }; },
       // Pointing works in first person too: the minimap shows the mark, and the 3D view
       // plants a beacon on it. The hand maps to the whole map either way, so the gesture
       // means the same thing in both views.
@@ -1647,14 +1696,8 @@ async function startCamera() {
         // The defending map is turned around, so pointing “up there” means up the screen.
         pointer = { ...(flippedFor(session?.team) ? flipPoint(map, spot) : spot), at: performance.now() };
       },
-      onSignal: handleSignal,
-      onSwipe: dir => {
-        if (!matchActive()) return;
-        // Swiping drags the bar like a carousel: hand to the right brings the agent on the left.
-        showSign(dir > 0 ? '👉 Previous agent' : '👈 Next agent');
-        cycleAgent(-dir);
-      },
-      // A thumb out sideways picks the agent on that side; pinch still switches map/first-person.
+      // Four fingers step to the next agent; pinch still switches map/first-person. A thumb out
+      // used to do this, and a swipe before that, which went off whenever a hand moved quickly.
       onPointDirection: dir => {
         if (matchActive()) cycleAgent(dir);
       },
@@ -1684,17 +1727,17 @@ let signTimer = null;
 function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
+  lastSign = '';
   clearTimeout(signTimer);
   signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
 const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  signChip('☝️', 'aim', 'Point straight up to mark a spot on the map'),
-  signChip('🫱', 'agent', 'Hold your thumb out left or right to keep stepping through the squad'),
-  signChip('🤏', 'view', 'Pinch to switch between the map and first-person'),
-  ...Object.entries(SIGNALS).map(([name, s]) =>
-    signChip(s.emoji, name === 'ILoveYou' ? 'special' : s.label.toLowerCase(), s.meaning)),
+  signChip('☝️', 'mark spot', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
+  signChip('4️⃣', 'next agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('🤏', 'swap view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
@@ -1743,6 +1786,9 @@ window.commander = {
   issueCommand,
   signal: handleSignal,
   get is3d() { return is3d; },
+  get aim() { return aim && { ...aim, source: aimSource }; },
+  // Feed a hand position (0-1 across the camera frame) to try first-person aim without a camera.
+  handAim: p => { handAim = p && { x: p.x, y: p.y, at: performance.now() }; },
   setView,
   cycleAgent,
   get utterances() { return [...utterances]; },
