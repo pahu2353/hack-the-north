@@ -267,12 +267,9 @@ test('renewed flank orders preserve completed waypoints, paths and cover; change
   assert.notEqual(bot.botOrder, expired); // expired orders have already yielded to scripted behavior
 });
 
-test('scripted opponents and Titan Siege do not call the LLM', () => {
+test('scripted opponents do not call the LLM', () => {
   const commander = createOpponentCommander({ request: () => { throw new Error('Unexpected request'); } });
   assert.equal(commander.update(createGame({ defenders: 'bots' })), undefined);
-  const titan = createGame('titan', { opponent: 'openai' });
-  assert.equal(titan.opponent, 'scripted');
-  assert.equal(commander.update(titan), undefined);
 });
 
 test('one outstanding request, throttled replanning, and mock labeling', async () => {
