@@ -558,47 +558,96 @@ function showResult() {
   $('resultText').textContent = match?.reason ?? view.result.reason;
   renderMatchScore(match);
   renderScoreboard(match);
+  renderResultInsights(match);
   updateResultActions();
   showScreen('screenResult');
+  $('overlay').scrollTop = 0;
 }
 
-// Rounds won, yours first.
+// Both teams use the same score and table columns, from the player's perspective.
 function renderMatchScore(match) {
   $('matchScore').hidden = !match;
   if (!match) return;
+  const score = (team, mine) => el('div', { className: mine ? 'own' : 'them' }, [
+    el('span', { className: 'score-label', textContent: mine ? 'Your squad' : 'Opponent' }),
+    el('strong', { textContent: String(match.score[team]) }),
+    el('span', { className: 'score-label', textContent: TEAMS[team].label }),
+  ]);
   $('matchScore').replaceChildren(
-    el('span', { className: 'own', textContent: String(match.score[session.team]) }),
-    el('span', { className: 'of', textContent: match.over ? `best of ${match.bestOf}` : `first to ${match.needed}` }),
-    el('span', { className: 'them', textContent: String(match.score[otherTeam(session.team)]) }),
+    score(session.team, true),
+    el('div', { className: 'of' }, [
+      el('span', { textContent: match.over ? 'Match complete' : `Round ${match.round} complete` }),
+      el('span', { textContent: `First to ${match.needed} · Best of ${match.bestOf}` }),
+    ]),
+    score(otherTeam(session.team), false),
   );
 }
 
-// Kills, deaths and damage for every agent, totalled over the rounds played so far.
-const SCORE_COLUMNS = [['K', r => r.kills], ['D', r => r.deaths], ['DMG', r => r.damage]];
+const SCORE_COLUMNS = [['Kills', r => r.kills], ['Deaths', r => r.deaths], ['Damage', r => r.damage]];
+const scoreTotal = rows => rows.reduce((total, row) => ({
+  kills: total.kills + row.kills, deaths: total.deaths + row.deaths, damage: total.damage + row.damage,
+}), { kills: 0, deaths: 0, damage: 0 });
+const formatScore = value => value.toLocaleString('en-US');
 
 function renderScoreboard(match) {
   $('scoreboard').hidden = !match;
   if (!match) return;
-  $('scoreboard').replaceChildren(...[session.team, otherTeam(session.team)]
-    .map(team => scoreTable(match.scoreboard?.[team] ?? [], team)));
+  $('scoreboard').replaceChildren(
+    el('div', { className: 'scoreboard-heading' }, [
+      el('h3', { textContent: 'Agent performance' }),
+      el('span', { textContent: 'Match totals · across all rounds' }),
+    ]),
+    ...[session.team, otherTeam(session.team)]
+      .map(team => scoreTable(match.scoreboard?.[team] ?? [], team)),
+    el('p', { className: 'scoreboard-note', textContent: 'Damage is HP dealt. Status shows who survived the latest round.' }),
+  );
 }
 
 function scoreTable(rows, team) {
   const mine = team === session.team;
   const colors = mine ? OWN_COLORS : ENEMY_COLORS;
+  const cells = row => SCORE_COLUMNS.map(([, value]) => el('td', { textContent: formatScore(value(row)) }));
   return el('table', {}, [
-    el('caption', { className: mine ? 'own' : 'them', textContent: mine ? 'Your squad' : TEAMS[team].label }),
+    el('caption', { className: mine ? 'own' : 'them', textContent: `${mine ? 'Your squad' : 'Opponent'} · ${TEAMS[team].label}` }),
+    el('colgroup', {}, [el('col', { className: 'agent-column' }), ...Array.from({ length: 3 }, () => el('col'))]),
     el('thead', {}, [el('tr', {}, [
-      el('th', { textContent: 'Agent' }),
-      ...SCORE_COLUMNS.map(([head]) => el('th', { textContent: head })),
+      el('th', { scope: 'col', textContent: 'Agent / status' }),
+      ...SCORE_COLUMNS.map(([head]) => el('th', { scope: 'col', textContent: head })),
     ])]),
     el('tbody', {}, rows.map(row => el('tr', {}, [
-      el('td', { className: 'agent', style: `--agent:${colors[row.slot % colors.length]}` }, [
-        el('i'), row.name,
+      el('th', { scope: 'row' }, [
+        el('span', { className: 'score-agent', style: `--agent:${colors[row.slot % colors.length]}` }, [
+          el('i', { ariaHidden: 'true' }),
+          el('span', {}, [el('b', { textContent: row.name }), el('small', {
+            textContent: row.alive == null ? '—' : row.alive ? 'Survived' : 'Eliminated',
+          })]),
+        ]),
       ]),
-      ...SCORE_COLUMNS.map(([, value]) => el('td', { textContent: String(value(row)) })),
+      ...cells(row),
     ]))),
+    el('tfoot', {}, [el('tr', {}, [el('th', { scope: 'row', textContent: 'Squad total' }), ...cells(scoreTotal(rows))])]),
   ]);
+}
+
+function renderResultInsights(match) {
+  $('resultInsights').hidden = !match;
+  if (!match) return;
+  const own = match.scoreboard?.[session.team] ?? [];
+  const enemy = match.scoreboard?.[otherTeam(session.team)] ?? [];
+  const damage = scoreTotal(own).damage;
+  const gap = damage - scoreTotal(enemy).damage;
+  const leaders = own.filter(row => row.damage > 0 && row.damage === Math.max(...own.map(r => r.damage)));
+  const latest = match.rounds?.at(-1);
+  const card = (label, value, detail) => el('div', { className: 'result-insight' }, [
+    el('span', { textContent: label }), el('strong', { textContent: value }), el('small', { textContent: detail }),
+  ]);
+  $('resultInsights').replaceChildren(
+    card('Latest round', latest ? `${Math.floor(latest.seconds / 60)}:${String(latest.seconds % 60).padStart(2, '0')}` : '—',
+      latest?.reason ?? 'No completed round'),
+    card('Squad damage · match', formatScore(damage), gap === 0 ? 'Even with opponent' : `${formatScore(Math.abs(gap))} ${gap > 0 ? 'more' : 'less'} than opponent`),
+    card('Damage leader · your squad', leaders.length === 1 ? leaders[0].name : leaders.length ? `${leaders.length} agents tied` : '—',
+      leaders.length ? `${formatScore(leaders[0].damage)} damage across the match` : 'No damage dealt yet'),
+  );
 }
 
 function updateResultActions() {
