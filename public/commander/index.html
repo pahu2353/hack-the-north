@@ -189,7 +189,12 @@
     position: absolute; left: 8px; bottom: 8px; background: rgba(8, 10, 14, 0.78); border: 1px solid var(--border);
     padding: 3px 8px; font-weight: 700; font-size: 12px;
   }
-  .cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
+  /* The frame stays in place with the camera off, so the panel doesn't jump when you toggle it. */
+  .cam .off {
+    position: absolute; inset: 0; display: grid; place-items: center; align-content: center; gap: 8px;
+    background: #05070a; color: var(--muted); font-size: 12px; text-align: center; padding: 12px;
+  }
+  .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head span { display: flex; gap: 6px; }
   .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
   .signs span {
@@ -480,10 +485,10 @@
           <button id="camBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on camera" title="Turn on camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M4 20 20 4"/></svg></button>
         </span>
       </div>
-      <div class="cam" id="cam" hidden>
+      <div class="cam" id="cam">
         <video id="video" playsinline muted></video>
         <canvas id="hand"></canvas>
-        <div class="off" id="camOff">Camera off</div>
+        <div class="off" id="camOff"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M3 21 21 3"/></svg><span>Camera off</span></div>
         <div class="sign" id="sign" hidden></div>
       </div>
       <div class="signs" id="signs"></div>

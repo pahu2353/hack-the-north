@@ -1049,7 +1049,7 @@ function stopCamera() {
     gestures = null;
     setIconState('camBtn', 'off', 'Turn on camera');
     $('camOff').hidden = false;
-    $('cam').hidden = true;
+    $('cam').hidden = false;
     $('previewBtn').hidden = true;
     $('sign').hidden = true;
     setStatus('camStatus', 'Camera off');
