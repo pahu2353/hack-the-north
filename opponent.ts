@@ -2,7 +2,7 @@
 import { generateText, jsonSchema, Output } from 'ai';
 import { MAPS } from './public/commander/world.js';
 import { opponentActions, validateOpponentPlan } from './public/commander/opponent.js';
-import { GRENADE, MAX_HP, RIFLE } from './public/commander/sim.js';
+import { GRENADE, HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE } from './public/commander/sim.js';
 
 // Which map a snapshot belongs to is part of the snapshot, so one server serves any of them.
 // Validation still has to be strict: the zone list is the map's own, not a union across maps,
@@ -21,7 +21,7 @@ export function parseOpponentSnapshot(value: any) {
       || !['attack', 'defend'].includes(value.team)
       || !Array.isArray(value.squad) || value.squad.length < 1 || value.squad.length > 8
       || !Array.isArray(value.contacts) || value.contacts.length > 8
-      || !Array.isArray(value.grenades) || value.grenades.length > 8 * GRENADE.carried
+      || !Array.isArray(value.grenades) || value.grenades.length > 2 * 8 * GRENADE.carried
       || !(value.team === 'attack' ? ['carried', 'dropped', 'planted'] : ['unplanted', 'planted']).includes(value.spike?.state)) bad();
   const grenadeIds = new Set();
   const grenades = value.grenades.map((g: any) => {
@@ -35,7 +35,8 @@ export function parseOpponentSnapshot(value: any) {
   const actions = opponentActions(value.team);
   const ids = new Set();
   const squad = value.squad.map((u: any) => {
-    if (!u || !unitId(u.id) || ids.has(u.id) || !finite(u.hp, 1, MAX_HP) || !point(u.position)
+    const maxHp = u?.maxHp ?? MAX_HP;
+    if (!u || !unitId(u.id) || ids.has(u.id) || ![MAX_HP, HARD_BOT.hp].includes(maxHp) || !finite(u.hp, 1, maxHp) || !point(u.position)
         || !zones.includes(u.zone) || typeof u.name !== 'string' || !/^E\d{1,2}$/.test(u.name)) bad();
     ids.add(u.id);
     const combat = u.combat;
@@ -50,7 +51,7 @@ export function parseOpponentSnapshot(value: any) {
         || (u.dodgingGrenadeId !== null && !grenades.some((g: any) =>
           g.id === u.dodgingGrenadeId && g.landed && g.team !== value.team))) bad();
     return {
-      id: u.id, name: u.name, hp: u.hp, maxHp: MAX_HP, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
+      id: u.id, name: u.name, hp: u.hp, maxHp, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
       ...(combat && { combat: { visibleEnemies: combat.visibleEnemies, nearbyAllies: combat.nearbyAllies, fallingBack: combat.fallingBack } }),
       grenadesLeft: u.grenadesLeft, alliesWithinBlastRadius: u.alliesWithinBlastRadius,
       grenadeOpportunity: opportunity ? { position: { x: opportunity.position.x, y: opportunity.position.y }, enemiesCaught: opportunity.enemiesCaught } : null,
@@ -112,6 +113,8 @@ const GRENADE_INSTRUCTIONS = `Each unit starts with ${GRENADE.carried} grenade. 
 deals up to ${GRENADE.centreDamage} damage, is blocked by walls, and never hurts the thrower's team.
 grenadesLeft is your unit's remaining supply; enemy supplies are unknown. grenadeOpportunity is
 a reachable cluster from current/recent sightings: bots automatically throw at two or more enemies.
+Hard bots lead sustained observed movement through flight time plus the fuse. Prediction stops at
+walls and becomes uncertain after losing sight; enemies can still stop or turn after a throw.
 alliesWithinBlastRadius counts teammates within ${GRENADE.radius}m without a wall between them.
 Keep mutual support without packing everyone into one blast; use complementary nearby zones/angles
 when safe, while still protecting the carrier on attack or coordinating the retake on defense.
@@ -130,7 +133,8 @@ eliminating the attackers, or retaking and defusing a planted spike (6 seconds n
 Give exactly one order to each living defender, using each unitId exactly once.
 Orders last about 5-12 seconds. Preserve useful existing assignments; coordinate different jobs.
 hold: keep the current angle if already in the zone, otherwise move there. rotate: reinforce another zone.
-flank: approach a site through its Link. retreat: move toward the zone even under fire.
+flank: approach a site through its Link, continuing through contact unless survival requires cover.
+retreat: move toward the zone even under fire.
 regroup: move to a shared safe zone even under fire, then wait there for the next coordinated order.
 retake: approach the planted spike's exact position to defuse; use only after a plant.
 When you assign retake to two or more bots, game code picks a nearby staging position and waits
@@ -139,7 +143,8 @@ reflexes still apply. It skips waiting when the defuse deadline is close or a bo
 The optional coordination field reports gathering/pushing and the ready/required counts.
 Preserve those retake orders while they assemble or enter, unless new threats justify changing them.
 Prefer a coordinated retake over sending individual bots or repeatedly changing the rally location.
-Bots shoot automatically and stop for fights unless retreating/regrouping or making a coordinated retake. They immediately seek
+Bots shoot automatically, favoring visible enemies they can finish in fewer hits. They stop for fights
+unless flanking, retreating/regrouping or making a coordinated retake. They immediately seek
 cover at a 2:1 local disadvantage, or when hurt and outnumbered, and pause there for support.
 Each defender's combat field reports current visible enemies, nearby allies within 12m who can
 see the defender or share a visible enemy, and whether an emergency fallback is active.
@@ -154,8 +159,8 @@ After a plant, prefer assigning retake to a supporting group; its staging is han
 On a planted spike, allow travel time plus the 6-second defuse; do not waste the deadline regrouping far away.
 React to sightings and plants. Last-known contacts are uncertain, not live wall vision.
 React to the geography supplied below rather than assuming a layout.
-Movement to a new zone ends at its supplied center, not at the next zone beyond it. Top Hall's center
-is on the west/A side; use the coordinates when choosing a nearby retreat or rally point for B.
+Movement to a new zone ends at its supplied center, not at the next zone beyond it. A rear hallway's
+center can be far from the threatened site; use the coordinates to choose a nearby retreat or rally.
 Do not invent unseen positions, read the player's orders, or give physics/shooting instructions.
 Return a concise strategy summary (maximum 240 characters) and structured orders.`;
 
@@ -166,14 +171,16 @@ carrier and dropped spike location, but only sees enemy contacts that its own bo
 Give exactly one order to every living unit in squad, using every unitId once.
 push: move to a zone; site pushes approach through their Main lane unless already nearby.
 hold: keep the current angle if already there, otherwise move there.
-flank: approach a site through its Link. retreat/regroup: keep moving toward the zone under fire.
+flank: approach a site through its Link, continuing through contact unless survival requires cover.
+retreat/regroup: keep moving toward the zone under fire.
 plant: approach A Site or B Site through its Main lane; the carrier automatically plants after standing still for 3s
 without an enemy in sight. The nearest attacker recovers a dropped spike when out of contact.
 Choose one site for a concentrated attack with nearby support for the carrier. Avoid splitting
 your squad into isolated duels. Only flank when the others can keep the carrier safe.
 After planting, hold mutually supporting positions around that site and stop the defuse; do not
 send everyone back across the map. Prefer useful existing orders instead of oscillating sites.
-Bots shoot automatically and usually stop on contact. They seek cover at a 2:1 local disadvantage
+Bots shoot automatically, favoring visible enemies they can finish in fewer hits. They stop on contact
+except when flanking or retreating/regrouping. They seek cover at a 2:1 local disadvantage
 or when hurt and outnumbered. Combat fields show local enemy counts, nearby support, and fallback.
 Actions target the supplied zone centers, with small formation offsets. You cannot choose exact
 aim, physics, or cover positions. React to the geography supplied below rather than assuming
@@ -226,8 +233,8 @@ export function mockOpponentPlan(snapshot: ReturnType<typeof parseOpponentSnapsh
       : threatened ? `Reinforce ${threatened}; keep the opposite site covered.` : 'Cover both sites and keep a rotator in Mid.',
     orders: snapshot.squad.map((u: any, i: number) => ({
       unitId: u.id,
-      action: planted ? 'retake' : u.hp < MAX_HP * 0.35 ? 'retreat' : threatened && i > 0 ? 'rotate' : 'hold',
-      zone: planted ? snapshot.spike.site : u.hp < MAX_HP * 0.35 ? map.home.defend
+      action: planted ? 'retake' : u.hp < (u.maxHp ?? MAX_HP) * 0.35 ? 'retreat' : threatened && i > 0 ? 'rotate' : 'hold',
+      zone: planted ? snapshot.spike.site : u.hp < (u.maxHp ?? MAX_HP) * 0.35 ? map.home.defend
         : threatened && i > 0 ? threatened : map.patrol[i % map.patrol.length],
     })),
   };
@@ -247,9 +254,12 @@ export async function createOpponentPlan(input: unknown, {
   const reasoningEffort = /^gpt-[56](?:[.-]|$)/.test(model) ? 'low' as const : undefined;
   const schema = planSchema(snapshot);
   const instructions = `${snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS}\n\n${GRENADE_INSTRUCTIONS}
-All units start with ${MAX_HP} HP. Rifles deal ${RIFLE.damage} damage, need ${Math.ceil(MAX_HP / RIFLE.damage)} hits to kill,
-and automatic fire is inaccurate, especially while moving. The human can manually aim one agent's
-crosshair at an enemy to improve automatic shooting accuracy; its damage and fire rate are unchanged.
+Human agents start with ${MAX_HP} HP (${Math.ceil(MAX_HP / RIFLE.damage)} hits to kill). Your Hard bots start with
+${HARD_BOT.hp} HP (${Math.ceil(HARD_BOT.hp / RIFLE.damage)} hits to kill); each unit's maxHp is supplied. Rifles deal ${RIFLE.damage} damage.
+Your bots have ${HARD_BOT.accuracy} base accuracy versus the human squad's ${RIFLE.accuracy}, before range/movement penalties.
+Automatic fire is inaccurate, especially while moving. The human can manually aim one agent's
+crosshair at an enemy for ${Math.round(MANUAL_AIM.accuracy * 100)}% standing / ${Math.round(MANUAL_AIM.movingAccuracy * 100)}% moving accuracy,
+before the same range and moving-target penalties, with no extra idle bonus. Its damage and fire rate are unchanged.
 The agent keeps shooting normally when the crosshair is off target. Do not assume an exposed duel is safe.
 
 ${geography(mapOf(snapshot))}`;

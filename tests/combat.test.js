@@ -5,7 +5,7 @@ import { opponentSnapshot } from '../public/commander/opponent.js';
 import { createCamera } from '../public/commander/pov.js';
 import { castRay } from '../public/commander/world.js';
 import {
-  MANUAL_AIM, MAX_HP, RIFLE, createGame, crosshairTarget, manualAimFor, rifleAccuracy,
+  HARD_BOT, MANUAL_AIM, MAX_HP, RIFLE, createGame, crosshairTarget, manualAimFor, rifleAccuracy,
   setManualAim, setOrder, stepGame, teamView, throwGrenade,
 } from '../public/commander/sim.js';
 
@@ -35,10 +35,10 @@ function bench(t) {
   return { game, shooter, target, enemies, place, aim, advance };
 }
 
-test('both sides and difficulties share 150 HP and less accurate automatic rifles', () => {
+test('human squads and Easy bots keep 150 HP and less accurate automatic rifles', () => {
   for (const opponent of ['scripted', 'openai']) for (const playerTeam of ['attack', 'defend']) {
     const game = createGame({ opponent, playerTeam });
-    assert(game.units.every(u => u.hp === 150 && u.maxHp === 150));
+    assert(game.units.filter(u => u.kind === 'agent' || opponent === 'scripted').every(u => u.hp === 150 && u.maxHp === 150));
     const u = { x: 0, y: 0, moving: false, stillSince: 0 };
     const target = { x: 20, y: 0, moving: false };
     game.time = 2;
@@ -78,15 +78,44 @@ test('crosshair changes the target and boosts only the aligned enemy, without by
   shooter.reaction = 0.3;
   aim(); stepGame(game, STEP);
   assert.equal(crosshairTarget(game, shooter), aligned);
-  assert.equal(rifleAccuracy(game, shooter, aligned), MANUAL_AIM.accuracy);
-  assert(rifleAccuracy(game, shooter, target) < MANUAL_AIM.accuracy);
+  const standingAccuracy = rifleAccuracy(game, shooter, aligned);
+  assert(standingAccuracy < MANUAL_AIM.accuracy, 'distance still reduces aimed accuracy');
+  assert(rifleAccuracy(game, shooter, target) < standingAccuracy);
   assert.equal(aligned.hp, MAX_HP, 'reaction time still applies');
   advance(0.3);
   assert.equal(shooter.targetId, aligned.id);
   assert.equal(aligned.hp, MAX_HP - RIFLE.damage);
   assert.equal(target.hp, MAX_HP);
   shooter.moving = true;
-  assert.equal(rifleAccuracy(game, shooter, aligned), MANUAL_AIM.movingAccuracy);
+  assert(rifleAccuracy(game, shooter, aligned) < standingAccuracy);
+  assert(rifleAccuracy(game, shooter, aligned) < MANUAL_AIM.movingAccuracy);
+});
+
+for (const scenario of [
+  { label: 'close aim keeps a useful bonus', distance: 10, roll: 0.55, hit: true },
+  { label: 'longer shots can miss despite crosshair alignment', distance: 20, roll: 0.5, hit: false },
+  { label: 'midrange aim still beats normal settled fire', distance: 20, roll: 0.4, hit: true },
+  { label: 'a moving target is harder to hit', distance: 20, targetMoves: true, roll: 0.4, hit: false },
+  { label: 'moving while aiming still costs accuracy', distance: 20, shooterMoves: true, roll: 0.35, hit: false },
+  { label: 'moving aim remains useful', distance: 20, shooterMoves: true, roll: 0.3, hit: true },
+  { label: 'waiting cannot stack an idle bonus onto aimed fire', distance: 2, roll: 0.7, hit: false },
+]) test(`aim balance: ${scenario.label}`, t => {
+  const { game, shooter, target, place, aim } = bench(t);
+  t.mock.method(Math, 'random', () => scenario.roll);
+  game.time = 2; // long enough to earn the normal idle bonus
+  shooter.stillSince = 0;
+  place(target, shooter.x + scenario.distance, shooter.y);
+  for (const [u, moves] of [[shooter, scenario.shooterMoves], [target, scenario.targetMoves]]) {
+    if (moves) setOrder(game, u, { type: 'push', zone: 'Top Hall', point: { x: u.x + 5, y: u.y } });
+  }
+  // Let both units start moving before the test shot; units update in squad order.
+  shooter.cooldown = STEP * 2;
+  aim(); stepGame(game, STEP); stepGame(game, STEP);
+  assert.equal(crosshairTarget(game, shooter), target, 'the shot remains aligned');
+  assert.equal(shooter.moving, Boolean(scenario.shooterMoves));
+  assert.equal(target.moving, Boolean(scenario.targetMoves));
+  assert.equal(target.hp, MAX_HP - (scenario.hit ? RIFLE.damage : 0));
+  assert.equal(game.effects.filter(e => e.kind === 'tracer').length, 1, 'the rifle fires automatically');
 });
 
 for (const [label, patch] of [['sideways', { yaw: Math.PI / 2 }], ['above', { pitch: 0.2 }], ['below', { pitch: -0.3 }]]) {
@@ -190,10 +219,10 @@ test('shared wall rays handle parallel rays and report the closest wall', () => 
   assert.equal(castRay(walls, 10, 3, 0, 1), null);
 });
 
-for (const playerTeam of ['attack', 'defend']) test(`${playerTeam}: OpenAI accepts 150 HP and receives the new combat rules`, async () => {
+for (const playerTeam of ['attack', 'defend']) test(`${playerTeam}: OpenAI accepts Hard bot health and receives both sides' combat rules`, async () => {
   const snapshot = opponentSnapshot(createGame({ opponent: 'openai', playerTeam }));
-  assert(parseOpponentSnapshot(snapshot).squad.every(u => u.hp === MAX_HP && u.maxHp === MAX_HP));
-  const invalid = structuredClone(snapshot); invalid.squad[0].hp = MAX_HP + 1;
+  assert(parseOpponentSnapshot(snapshot).squad.every(u => u.hp === HARD_BOT.hp && u.maxHp === HARD_BOT.hp));
+  const invalid = structuredClone(snapshot); invalid.squad[0].hp = HARD_BOT.hp + 1;
   assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   await createOpponentPlan(snapshot, {
     env: { OPENAI_API_KEY: 'test-only' },
@@ -201,6 +230,7 @@ for (const playerTeam of ['attack', 'defend']) test(`${playerTeam}: OpenAI accep
       const body = JSON.parse(options.body);
       assert.match(body.instructions, /150 HP/);
       assert.match(body.instructions, /6 hits to kill/);
+      assert.match(body.instructions, /175 HP \(7 hits to kill\)/);
       assert.match(body.instructions, /manually aim/);
       return { ok: true, json: async () => ({ status: 'completed', output: [{ content: [{ type: 'output_text', text: JSON.stringify({
         summary: 'Hold supporting angles', orders: snapshot.squad.map(u => ({ unitId: u.id, action: 'hold', zone: u.zone })),

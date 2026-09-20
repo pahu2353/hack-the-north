@@ -43,7 +43,7 @@ export function opponentSnapshot(game) {
       const dodging = incomingGrenade(game, u) ?? game.grenades.find(g =>
         g.id === u.botDodge?.grenadeId && g.team !== team && g.explodeAt > game.time);
       return {
-        id: u.id, name: u.name, hp: Math.round(u.hp), position: position(u), zone: zoneAt(game.map, u).name,
+        id: u.id, name: u.name, hp: Math.round(u.hp), maxHp: u.maxHp, position: position(u), zone: zoneAt(game.map, u).name,
         combat: defenderCombat(game, u),
         grenadesLeft: u.grenades,
         alliesWithinBlastRadius: bots.filter(m => m !== u && dist(u, m) <= GRENADE.radius
@@ -110,9 +110,9 @@ export function applyOpponentPlan(game, plan) {
     // Holding a site should not pull an anchor off their existing angle into its center.
     let target = order.action === 'hold' && zoneAt(game.map, u).name === order.zone
       ? position(u) : zoneByName(game.map, order.zone).center;
-    // Different arrival spots let an attacking carrier stop and plant without being shoved.
-    if (u.team === 'attack' && order.action !== 'hold') {
-      const slots = [[0, 0], [2.2, 0.6], [-2.2, 0.6], [0, 2.4]];
+    // Five distinct arrival spots avoid stacking the fifth bot on the first one.
+    if (order.action !== 'hold' || zoneAt(game.map, u).name !== order.zone) {
+      const slots = [[0, 0], [2.2, 0.6], [-2.2, 0.6], [1.1, 2.4], [-1.1, 2.4]];
       const [dx, dy] = slots[u.slot % slots.length];
       target = nearestOpenPoint(tacticsGrid(game), { x: target.x + dx, y: target.y + dy });
     }
@@ -184,7 +184,7 @@ export function updateOpponentTactics(game) {
   if (!game.botRetake || game.botRetake.site !== game.spike.site) game.botRetake = createRetake(game, members);
   const group = game.botRetake;
   group.unitIds = members.map(u => u.id);
-  const slots = [[0, 0], [1.8, 0], [-1.8, 0], [0, 1.8]];
+  const slots = [[0, 0], [1.8, 0], [-1.8, 0], [0.9, 1.8], [-0.9, 1.8]];
   for (const u of members) {
     if (!group.spots[u.id]) {
       const [dx, dy] = slots[u.slot % slots.length];
