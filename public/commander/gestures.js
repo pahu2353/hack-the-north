@@ -12,6 +12,7 @@ const PINCH_MS = 110;
 const PINCH_CLOSED = 0.45;
 const PINCH_OPEN = 0.6;
 const MOTION_QUIET_MS = 700;
+const FIST_GRACE_MS = 500; // hand tracking blinks; a fist stays in charge across the gaps
 export const GESTURE_THRESHOLDS = {
   historyMs: 400,
   minRecognitionConfidence: 0.58,
@@ -75,6 +76,34 @@ function isPointing(hand) {
   const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
   const extended = (tip, pip) => d(tip, 0) > d(pip, 0) * 1.15;
   return extended(8, 6) && !extended(12, 10) && !extended(16, 14) && !extended(20, 18);
+}
+
+// A closed fist is the first-person aiming pose: every finger curled, thumb tucked in. It was
+// a finger gun, but an extended finger flickers in and out of the pointing and thumb shapes
+// while you move it around, which switched agents by accident. A fist holds its shape.
+// Returns how tightly it is closed, as a confidence.
+export function aimFist(hand) {
+  const d = (a, b) => Math.hypot(hand[a].x - hand[b].x, hand[a].y - hand[b].y);
+  const span = Math.max(0.001, d(0, 9)); // wrist to middle knuckle: the hand's own scale
+  // Only a thumb held clearly out is the agent-switch signal. A fist whose thumb creeps out a
+  // little still aims: it is the marginal readings that used to switch agents mid-shot.
+  if (d(4, 0) > d(3, 0) * 1.3) return 0;
+  let closed = 0;
+  for (const [tip, pip] of [[8, 6], [12, 10], [16, 14], [20, 18]]) {
+    if (d(tip, 0) > d(pip, 0) * 1.05) return 0; // that finger is out: not a fist
+    closed += Math.min(1, (d(pip, 0) - d(tip, 0)) / (span * 0.35));
+  }
+  return Math.min(1, closed / 4);
+}
+
+// Aiming and changing agent share one hand, so one rule decides between them every frame.
+// A fist keeps hold of the aim across the gaps in hand tracking (a blink must not hand the
+// squad to a stray reading), but a thumb held clearly out always wins straight away: it is
+// the only way to change agent without lowering your hand, and waiting out the grace period
+// would make it feel broken.
+export function aimOrStep(fist, thumb, msSinceFist) {
+  if (thumb) return { steering: false, thumb };
+  return { steering: fist > 0 || msSinceFist < FIST_GRACE_MS, thumb: null };
 }
 
 // Pointing up aims at the map; a sideways thumb switches the watched agent.
@@ -301,7 +330,8 @@ export function createPointerSmoother() {
 }
 
 export async function createGestures({
-  video, overlay, onPointer, onSignal, onFeedback, onSwipe, onPinch, onPointDirection, onStatus,
+  video, overlay, onPointer, onAim, onSignal, onFeedback, onSwipe, onPinch, onPointDirection, onStatus,
+  aiming = () => false, // true while the first-person view is up: a fist then aims
 }) {
   onStatus('Loading hand tracking…', 'pending');
   const { FilesetResolver, GestureRecognizer, DrawingUtils } = await import(`${VISION}/vision_bundle.mjs`);
@@ -337,6 +367,8 @@ export async function createGestures({
 
   const gestures = createGestureFilter();
   const pointer = createPointerSmoother();
+  const aimPointer = createPointerSmoother(); // the first-person crosshair, smoothed the same way
+  let lastFistAt = -Infinity;
   let lastFeedback = '';
   let lastVideoTime = -1;
   let running = true;
@@ -374,13 +406,21 @@ export async function createGestures({
     if (video.currentTime === lastVideoTime) return;
     lastVideoTime = video.currentTime;
     const now = performance.now();
-    const result = recognizer.recognizeForVideo(video, now);
+    // Turning the camera off stops the stream mid-frame, and the recognizer then throws on a
+    // video frame that no longer exists. There is nothing to recognize, so skip it.
+    let result;
+    try {
+      result = recognizer.recognizeForVideo(video, now);
+    } catch {
+      return;
+    }
     canvasContext.clearRect(0, 0, overlay.width, overlay.height);
     const hand = result.landmarks[0];
     if (!hand) {
       track = [];
       pinchedSince = 0;
       pointing = null;
+      onAim?.(aimPointer.update(null, 0, now));
       onPointer(pointer.update(null, 0, now));
       publishFeedback(gestures.update('None', 0, now, { handPresent: false }).feedback, null);
       return;
@@ -389,10 +429,17 @@ export async function createGestures({
     draw.drawLandmarks(hand, { color: '#ffd24a', radius: 3 });
     const top = result.gestures[0]?.[0];
     const score = top?.score ?? 0;
-    const aiming = pointDirection(hand) === 'up';
-    const thumb = thumbDirection(hand);
+    const pointingUp = pointDirection(hand) === 'up';
+    // In first person a fist is the crosshair, not the regroup signal, and nothing else may
+    // read it: while one is up (and for a moment after, since tracking blinks) the squad is
+    // not swiped or stepped through by accident.
+    const fist = aiming() ? aimFist(hand) : 0;
+    if (fist) lastFistAt = now;
+    const { steering, thumb } = aimOrStep(fist, thumbDirection(hand), now - lastFistAt);
+    if (thumb) lastFistAt = -Infinity; // the aim is handed over, not resumed half a second later
     let name = top?.categoryName ?? 'None';
-    if (aiming) name = 'Pointing_Up';
+    if (steering) name = 'None';
+    else if (pointingUp) name = 'Pointing_Up';
     else if (thumb) name = thumb === 'right' ? 'Thumb_Right' : 'Thumb_Left';
     else if (name === 'Pointing_Up') name = 'None';
 
@@ -416,10 +463,11 @@ export async function createGestures({
     }
 
     const palmX = 1 - (hand[0].x + hand[5].x + hand[17].x) / 3;
+    const palmY = (hand[0].y + hand[5].y + hand[17].y) / 3;
     track.push({ x: palmX, t: now });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
     const travel = palmX - track[0].x;
-    if (!aiming && !thumb && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
+    if (!pointingUp && !thumb && !steering && Math.abs(travel) > SWIPE_DIST && now > quietUntil) {
       motion(now);
       onSwipe?.(travel > 0 ? 1 : -1);
       return;
@@ -437,23 +485,29 @@ export async function createGestures({
       if (pinchGap(hand) > PINCH_OPEN) pinchArmed = true;
     }
     if (now < quietUntil) {
+      onAim?.(aimPointer.update(null, 0, now));
       onPointer(pointer.update(null, 0, now));
       publishFeedback(gestures.update('None', 0, now, { handPresent: false }).feedback, null);
       return;
     }
 
     const discreteName = Object.hasOwn(SIGNALS, name) && score >= GESTURE_THRESHOLDS.minRecognitionConfidence ? name : 'None';
-    const pointScore = aiming && discreteName === 'None' ? pointingConfidence(hand) : 0;
+    const pointScore = pointingUp && discreteName === 'None' ? pointingConfidence(hand) : 0;
     // Mirror the live pointer and smooth only its coordinates, not command recognition.
     const point = pointScore >= GESTURE_THRESHOLDS.pointerMinConfidence
       ? { x: 1 - hand[8].x, y: hand[8].y } : null;
     const smoothed = pointer.update(point, pointScore, now);
     onPointer(smoothed);
+    // The middle of the fist is the crosshair. A palm moves less than a fingertip, so the
+    // aim sits still when your hand does.
+    onAim?.(aimPointer.update(fist ? { x: palmX, y: palmY } : null, fist, now));
     const { feedback, confirmed } = gestures.update(name, score, now, {
-      handPresent: true, pointing: Boolean(aiming || thumb),
+      handPresent: true, pointing: Boolean(pointingUp || thumb || steering),
     });
     publishFeedback(feedback, smoothed);
-    if (confirmed) onSignal({ ...confirmed, pointer: pointer.recent(now) });
+    // Nothing is wired to the signals any more: orders are spoken or typed. The recognizer
+    // keeps confirming them so one can be put back by passing onSignal.
+    if (confirmed) onSignal?.({ ...confirmed, pointer: pointer.recent(now) });
   }
   frame();
 
@@ -462,7 +516,9 @@ export async function createGestures({
       running = false;
       stream.getTracks().forEach(track => track.stop());
       video.srcObject = null;
-      recognizer.close();
+      // A frame handed to the recognizer is still being processed; closing it underneath that
+      // throws from inside the WASM module, so let the current one finish first.
+      setTimeout(() => recognizer.close(), 100);
     },
     get debug() { return { ...gestures.debug, pointer: pointer.debug }; },
   };

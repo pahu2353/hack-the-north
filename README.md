@@ -1,6 +1,6 @@
 # Commander
 
-Command a squad of five AI agents by voice and hand signal. You never control a unit
+Command a squad of five AI agents by voice, with your hands on the map. You never control a unit
 yourself — you give orders, and [Jev](https://vercel.com/ai-gateway/models/jev) turns them into
 per-agent plans and split-second combat decisions.
 
@@ -67,20 +67,25 @@ opponent.
 | **Voice** | Hands-free by default: the mic opens when a match starts, and each sentence becomes an order when you pause. "Alpha and Bravo push B, Charlie hold mid, Delta flank A." Switch to hold-to-talk (<kbd>V</kbd>) in the side panel. |
 | **Text** | Type in the order box, press Enter. |
 | **Pointing** | Click the map, or point your index finger straight up at the camera, to mark a spot — then say "push there". |
-| **Hand signals** | Hold a sign for about half a second: 👍 go · ✋ hold · ✊ regroup · 👎 fall back · ✌️ split into pairs · 🤟 special (attackers plant, defenders retake). |
+| **Aiming** | In first person, raise a fist: the crosshair follows it. Shooting stays automatic. |
 | **Switch agent** | ←/→, 1–5, click the top bar, or hold your thumb out sideways hitchhiker-style to step through the squad. |
 | **Switch view** | <kbd>Tab</kbd> or a pinch. <kbd>G</kbd> toggles the 3D and 2D first-person renderers. |
 | **Pause / settings** | <kbd>Esc</kbd>. Agent cards, kill feed, minimap, Jev numbers and control hints are all toggleable and remembered per machine. |
 
 Mic and camera are both required — one **Allow mic and camera** button in the side panel, remembered
-after that. The mic only listens during a match, the camera feed never leaves the browser, and hand
-signals are ignored while a menu is open.
+after that. The mic only listens during a match, the camera feed never leaves the browser, and your
+hands are ignored while a menu is open. The camera does exactly three things: point at the map, aim
+in first person, and change agent. Every order is spoken or typed — an order is easier to say than
+to pose, and a misread pose used to send the squad somewhere you never asked for.
 
 **First person.** The map is the default view; switch to see one agent's eyes plus a minimap. You
 don't steer with WASD — the agent keeps following orders and dodging on its own. Click the canvas
-once for mouse look, then put an enemy under the crosshair: green crosshair means the aim bonus is
+once for mouse look — or just raise a fist and the crosshair follows it, with the middle of the
+camera frame straight ahead and a fist held near an edge turning that way, so you can come all the
+way round. Lower your hand and the agent goes back to firing on its own; a thumb out still changes
+agent without lowering it. Put an enemy under the crosshair: green crosshair means the aim bonus is
 live, a white marker confirms an assisted hit. Orders given in first person address only the agent
-you're watching. Pointing, ✌️ split and 🤟 special stay map-only.
+you're watching.
 
 ## Technical background
 
@@ -119,8 +124,8 @@ to call several times a second. Requests cap at 64k tokens (32k of state) and ne
 
 Two layers, both just typed questions:
 
-1. **Order interpretation.** Every order — a voice transcript, typed text, or a hand signal's
-   meaning, plus wherever you're pointing — goes to Jev in one call. One question asks whether it's
+1. **Order interpretation.** Every order — a voice transcript or typed text, plus wherever you're
+   pointing — goes to Jev in one call. One question asks whether it's
    an order at all, which matters with a live mic: chatter like "nice shot" scores 5–14% while real
    orders score 89–97%, so chatter is greyed out in the log and ignored. Then three questions per
    agent: does this apply to you, what order (push, hold, flank, retreat, regroup, plant, defuse),
@@ -147,9 +152,8 @@ interpretation carries a sequence number, so a slow guess can never overwrite a 
 
 Hand tracking is MediaPipe's gesture recognizer, running entirely in the browser. Voice streams
 through the local server to Deepgram, so that key never reaches the client. The two inputs meet in
-the same interpretation call: a hand signal becomes a sentence ("Everyone push there"), and it
-carries whatever spot you last marked — by click or by pointing — as its location. That's why
-"point, then say push there" and "point, then thumbs up" land the same order.
+the same interpretation call: what you say carries whatever spot you last marked — by click or by
+pointing — as its location, which is what makes "push there" mean anything.
 
 ### The Hard bot
 
