@@ -431,12 +431,19 @@ function pushOutOfRect(u, w) {
 function controlBot(game, u, dt) {
   const focus = u.visible.find(v => v.alive);
   // Bots use grenades by rule: punish a group, and don't stand in one.
-  const bomb = incomingGrenade(game, u);
+  // Keep clear until this blast is over, even after leaving the initial danger radius.
+  // Otherwise a hold/regroup order can pull the bot straight back into the same grenade.
+  const bomb = incomingGrenade(game, u) ?? game.grenades.find(g =>
+    g.id === u.botDodge?.grenadeId && g.team !== u.team && g.explodeAt > game.time);
   if (bomb) {
-    moveToward(game, u, evadePoint(game, u, bomb), dt);
+    if (u.botDodge?.grenadeId !== bomb.id) {
+      u.botDodge = { grenadeId: bomb.id, point: evadePoint(game, u, bomb) };
+    }
+    moveToward(game, u, dist(u, u.botDodge.point) < 0.5 ? null : u.botDodge.point, dt);
     if (focus) shoot(game, u, focus);
     return;
   }
+  u.botDodge = null;
   // Throwing is instant, so it happens the moment a group is in sight, whether the bot then
   // holds its angle or falls back. A squad that moves as one clump pays for it.
   if (u.grenades > 0) {
@@ -559,10 +566,11 @@ export function throwGrenade(game, u, point) {
   return true;
 }
 
-// A grenade already on the ground near a unit, which it should run away from.
+// Only hostile, unshielded blasts are dangerous: grenades cannot hurt their own team.
 export function incomingGrenade(game, u) {
   return game.grenades
-    .filter(g => g.explodeAt && dist(g, u) <= GRENADE.radius + 2)
+    .filter(g => g.team !== u.team && g.explodeAt > game.time && dist(g, u) <= GRENADE.radius + 2
+      && hasLineOfSight(game.map, g, u))
     .sort((a, b) => a.explodeAt - b.explodeAt)[0] ?? null;
 }
 

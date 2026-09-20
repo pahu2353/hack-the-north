@@ -856,7 +856,7 @@ function updateOpponentHud() {
   };
   const text = game.result ? 'round finished' : labels[s?.status] ?? 'starting…';
   setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
-  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, and plants. Bots keep acting while it thinks.';
+  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, grenades, and plants. Bots keep acting while it thinks.';
   $('opponentReason').textContent = s?.status === 'thinking' ? `Replanning: ${s.planningReason}`
     : s?.status === 'fallback' ? '' : s?.reason ? `Why this plan: ${s.reason}` : '';
   $('opponentSummary').textContent = s?.error || (s?.summary
@@ -870,10 +870,11 @@ function updateOpponentHud() {
     $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
       const unit = game.units.find(u => u.id === order.unitId);
       const escape = unit?.botFallback;
-      const reflex = escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
+      const reflex = unit?.botDodge ? 'dodging grenade · '
+        : escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
       return el('div', {
         className: 'order',
-        textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone}` : 'eliminated'}`,
+        textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone} · ${unit.grenades} grenade${unit.grenades === 1 ? '' : 's'} left` : 'eliminated'}`,
       });
     }));
   }

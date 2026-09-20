@@ -1,6 +1,6 @@
 // OpenAI commands the opposing squad; ordinary game code executes these bounded orders.
 // This module has no DOM or Jev dependency so either renderer can use it.
-import { ROUND_SECONDS } from './sim.js';
+import { GRENADE, grenadeSpot, incomingGrenade, ROUND_SECONDS } from './sim.js';
 import { buildGrid, dist, findPath, hasLineOfSight, nearestOpenPoint, zoneAt, zoneByName } from './world.js';
 
 export const OPPONENT_ACTIONS = ['hold', 'rotate', 'flank', 'retreat', 'regroup', 'retake'];
@@ -37,11 +37,26 @@ export function opponentSnapshot(game) {
     time: Math.round(game.time * 10) / 10,
     team,
     secondsLeft: Math.max(0, Math.round(ROUND_SECONDS - game.time)),
-    squad: bots.map(u => ({
-      id: u.id, name: u.name, hp: Math.round(u.hp), position: position(u), zone: zoneAt(game.map, u).name,
-      combat: defenderCombat(game, u),
-      order: u.botOrder && u.botOrder.expiresAt > game.time
-        ? { action: u.botOrder.action, zone: u.botOrder.zone } : null,
+    squad: bots.map(u => {
+      const target = u.grenades > 0 ? grenadeSpot(game, u) : null;
+      const dodging = incomingGrenade(game, u) ?? game.grenades.find(g =>
+        g.id === u.botDodge?.grenadeId && g.team !== team && g.explodeAt > game.time);
+      return {
+        id: u.id, name: u.name, hp: Math.round(u.hp), position: position(u), zone: zoneAt(game.map, u).name,
+        combat: defenderCombat(game, u),
+        grenadesLeft: u.grenades,
+        alliesWithinBlastRadius: bots.filter(m => m !== u && dist(u, m) <= GRENADE.radius
+          && hasLineOfSight(game.map, u, m)).length,
+        grenadeOpportunity: target?.caught >= 2 ? { position: position(target.spot), enemiesCaught: target.caught } : null,
+        dodgingGrenadeId: dodging?.id ?? null,
+        order: u.botOrder && u.botOrder.expiresAt > game.time
+          ? { action: u.botOrder.action, zone: u.botOrder.zone } : null,
+      };
+    }),
+    // Matches the public grenade view: current positions only, never hidden throw targets.
+    grenades: game.grenades.map(g => ({
+      id: g.id, team: g.team, position: position(g), landed: Boolean(g.explodeAt),
+      secondsToExplosion: g.explodeAt ? Math.max(0, Math.round((g.explodeAt - game.time) * 10) / 10) : null,
     })),
     ...(game.botRetake && { coordination: {
       phase: game.botRetake.phase, site: game.botRetake.site, zone: game.botRetake.zone,
@@ -210,6 +225,10 @@ function combatReason(snapshot, previous) {
   const living = new Set(snapshot.squad.map(u => u.id));
   const lost = previous.squad.filter(u => !living.has(u.id)).map(u => u.name);
   const escaping = snapshot.squad.filter(u => u.combat?.fallingBack && !previousBots.get(u.id)?.combat?.fallingBack);
+  const thrown = snapshot.squad.filter(u => u.grenadesLeft < previousBots.get(u.id)?.grenadesLeft);
+  const newThreats = snapshot.grenades.filter(g => g.team !== snapshot.team && g.landed
+    && !previous.grenades.some(old => old.id === g.id && old.landed)
+    && snapshot.squad.some(u => u.dodgingGrenadeId === g.id));
   const known = new Map(previous.contacts.map(c => [c.id, c.zone]));
   const sightings = new Map();
   for (const contact of snapshot.contacts) {
@@ -219,6 +238,8 @@ function combatReason(snapshot, previous) {
   return [
     ...(lost.length ? [`${lost.join(', ')} eliminated`] : []),
     ...escaping.map(u => `${u.name} taking cover`),
+    ...thrown.map(u => `${u.name} used a grenade`),
+    ...(newThreats.length ? ['Enemy grenade near squad: bots dodging'] : []),
     ...[...sightings].map(([zone, count]) => `${count} enem${count === 1 ? 'y' : 'ies'} spotted at ${zone}`),
   ].join(' · ') || null;
 }
