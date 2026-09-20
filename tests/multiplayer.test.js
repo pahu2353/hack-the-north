@@ -112,3 +112,32 @@ test('both clients update when sides swap, and a swapped host can start a rematc
   assert.match((await replacement.take(m => m.type === 'closed')).reason, /host left/);
   assert.equal((await replacement.take(m => m.type === 'state' && m.view.result)).view.result.winner, 'defend');
 });
+
+for (const side of ['attack', 'defend']) test(`${side}: multiplayer aim assistance stays with its owner and does not fire without contact`, async t => {
+  const { connect } = await multiplayer(t);
+  const host = await connect();
+  if (side === 'defend') {
+    host.send({ type: 'side', team: side });
+    await host.take(m => m.type === 'sides');
+  }
+  const guest = await connect(host.joined.code);
+  host.send({ type: 'start' });
+  await host.take(m => m.type === 'started');
+  const first = (await host.take(m => m.type === 'state')).view;
+  const own = first.units.filter(u => u.team === side);
+  assert(own.every(u => u.hp === 150));
+  const intent = { unitId: own[0].id, yaw: 0, pitch: 0 };
+  // The guest cannot take a host unit, even if it supplies the host's team or damage.
+  guest.send({ type: 'aim', team: side, aim: { ...intent, damage: 999 } });
+  const afterInvalid = (await host.take(m => m.type === 'state' && m.view.time > first.time + 0.1)).view;
+  assert(afterInvalid.units.filter(u => u.team === side).every(u => !u.manualAim));
+  host.send({ type: 'aim', aim: intent });
+  const active = (await host.take(m => m.type === 'state' && m.view.units.some(u => u.id === own[0].id && u.manualAim))).view;
+  assert.equal(active.units.find(u => u.id === own[0].id).firing, false, 'aim input alone does not shoot into empty space');
+  host.send({ type: 'aim', aim: { ...intent, unitId: own[1].id } });
+  const switched = (await host.take(m => m.type === 'state' && m.view.units.some(u => u.id === own[1].id && u.manualAim))).view;
+  assert.equal(switched.units.find(u => u.id === own[0].id).manualAim, false);
+  host.send({ type: 'aim', aim: null });
+  const released = (await host.take(m => m.type === 'state' && m.view.time > switched.time)).view;
+  assert(released.units.filter(u => u.team === side).every(u => !u.manualAim));
+});

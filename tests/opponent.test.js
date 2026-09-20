@@ -163,7 +163,7 @@ test('a healthy isolated OpenAI defender immediately escapes a rush and stays in
   const game = rushFixture();
   const anchor = bots(game)[0];
   stepGame(game, 1 / 60);
-  assert.equal(anchor.hp, 100);
+  assert.equal(anchor.hp, anchor.maxHp);
   assert.equal(anchor.visible.length, 4);
   assert.equal(anchor.moving, true);
   assert(anchor.botFallback);
@@ -193,7 +193,7 @@ test('supported defenders stand their ground in a fair fight; scripted mode reta
   assert.equal(defenderCombat(together, bots(together)[0]).nearbyAllies, 3);
   const scripted = rushFixture({ opponent: 'scripted' });
   stepGame(scripted, 1 / 60);
-  assert.equal(bots(scripted)[0].hp, 100);
+  assert.equal(bots(scripted)[0].hp, bots(scripted)[0].maxHp);
   assert.equal(bots(scripted)[0].moving, false);
   assert(!bots(scripted)[0].botFallback);
 });

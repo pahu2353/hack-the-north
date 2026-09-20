@@ -3,7 +3,7 @@
 // browser for bot games and on the server for multiplayer.
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
-  MAPS, angleTo, buildGrid, clamp, dist, findPath, hasLineOfSight,
+  MAPS, angleTo, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
   nearestOpenPoint, walkableLine, zoneAt, zoneByName,
 } from './world.js';
 
@@ -20,9 +20,16 @@ export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd'];
 export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37'];
 
-// Rifles are deliberately weak: four hits to kill, and misses are common. Fights last long
+// Rifles take six hits to kill, and automatic fire misses often. Fights last long
 // enough that positioning and grenades decide them rather than whoever fires first.
-export const RIFLE = { range: 45, damage: 28, interval: 0.22, accuracy: 0.55 };
+export const MAX_HP = 150;
+export const RIFLE = { range: 45, damage: 28, interval: 0.22, accuracy: 0.38 };
+// First-person aim boosts automatic accuracy only on the enemy under the crosshair.
+// Dimensions match the renderer; damage, reaction time and fire rate stay the same.
+export const MANUAL_AIM = {
+  eye: 1.6, height: 1.8, halfWidth: 0.375, maxPitch: Math.PI / 4,
+  accuracy: 0.9, movingAccuracy: 0.8, lease: 0.6,
+};
 const SIGHT = 45;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
@@ -60,11 +67,12 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
     intel: { attack: new Map(), defend: new Map() },
     grenades: [],
     knownDown: { attack: new Set(), defend: new Set() },
+    manualAim: { attack: null, defend: null },
   };
   for (const team of ['attack', 'defend']) map.spawns[team].forEach((post, i) => {
     if (team === game.botTeam) {
       game.units.push(makeUnit(game, {
-        team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp: 100, maxHp: 100,
+        team, kind: 'bot', name: `E${i + 1}`, slot: i, x: post.x, y: post.y, post, r: 0.6, hp: MAX_HP, maxHp: MAX_HP,
         speed: 4.5, reaction: 0.28 + Math.random() * 0.12, facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
       }));
     } else {
@@ -80,7 +88,7 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
 
 function makeAgent(game, team, name, at, slot) {
   return makeUnit(game, {
-    team, kind: 'agent', name, slot, x: at.x, y: at.y, r: 0.6, hp: 100, maxHp: 100, speed: 5, reaction: 0.25,
+    team, kind: 'agent', name, slot, x: at.x, y: at.y, r: 0.6, hp: MAX_HP, maxHp: MAX_HP, speed: 5, reaction: 0.25,
     facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
     action: team === 'attack' ? 'advance' : 'hold', focusId: null, decision: null,
   });
@@ -99,6 +107,7 @@ function makeUnit(game, props) {
     visible: [],
     targetId: null,
     lastShotAt: -Infinity,
+    lastAimHitAt: -Infinity,
     stillSince: 0,
     grenades: GRENADE.carried,
     throwReadyAt: 0,
@@ -226,7 +235,7 @@ function updateVision(game) {
 // ---------- agents (Jev picks u.action; this executes it every frame) ----------
 
 function controlAgent(game, u, dt) {
-  const focus = u.visible.find(e => e.id === u.focusId) ?? u.visible[0] ?? null;
+  const focus = crosshairTarget(game, u) ?? u.visible.find(e => e.id === u.focusId) ?? u.visible[0] ?? null;
   // Your order comes first: while it is fresh the agent simply carries it out. A grenade
   // about to go off is the one thing worth asking Jev about, so that decision is left alone.
   if (obeying(game, u) && !incomingGrenade(game, u)) {
@@ -325,6 +334,59 @@ function findCover(game, u) {
   return nearestOpenPoint(g, { x: u.x + Math.cos(away) * 6, y: u.y + Math.sin(away) * 6 });
 }
 
+// Only camera direction comes from a client. Shooting always stays automatic.
+// A short lease removes the accuracy bonus if a tab stops sending aim updates.
+export function setManualAim(game, team, input) {
+  if (!Object.hasOwn(game.manualAim, team)) return false;
+  if (input === null) { game.manualAim[team] = null; return true; }
+  if (game.result || !input || !Number.isInteger(input.unitId)
+      || !Number.isFinite(input.yaw) || !Number.isFinite(input.pitch)
+      || Math.abs(input.pitch) > MANUAL_AIM.maxPitch) return false;
+  const u = unitById(game, input.unitId);
+  if (!u?.alive || u.team !== team || u.kind !== 'agent') return false;
+  game.manualAim[team] = {
+    unitId: u.id, yaw: Math.atan2(Math.sin(input.yaw), Math.cos(input.yaw)), pitch: input.pitch,
+    expiresAt: game.time + MANUAL_AIM.lease,
+  };
+  return true;
+}
+
+export function manualAimFor(game, u) {
+  const aim = game.manualAim[u.team];
+  return !game.result && u.alive && aim?.unitId === u.id && aim.expiresAt > game.time ? aim : null;
+}
+
+export function crosshairTarget(game, u) {
+  const aim = manualAimFor(game, u);
+  if (!aim) return null;
+  const dx = Math.cos(aim.yaw), dy = Math.sin(aim.yaw);
+  let reach = Math.min(RIFLE.range, castRay(game.map.walls, u.x, u.y, dx, dy)?.t ?? Infinity);
+  let target = null;
+  // Match the billboard's width/height. Nearest enemy stops the bullet; walls always block.
+  for (const e of u.visible) {
+    if (!e.alive || dist(u, e) > RIFLE.range) continue;
+    const x = e.x - u.x, y = e.y - u.y;
+    const along = x * dx + y * dy;
+    const across = -x * dy + y * dx;
+    const height = MANUAL_AIM.eye + Math.tan(aim.pitch) * along;
+    if (along > 0 && along < reach && Math.abs(across) <= MANUAL_AIM.halfWidth
+        && height >= 0 && height <= MANUAL_AIM.height) {
+      target = e;
+      reach = along;
+    }
+  }
+  return target;
+}
+
+export function rifleAccuracy(game, u, target) {
+  if (crosshairTarget(game, u) === target) return u.moving ? MANUAL_AIM.movingAccuracy : MANUAL_AIM.accuracy;
+  let p = RIFLE.accuracy * clamp(1 - dist(u, target) / 55, 0.15, 1);
+  if (u.moving) p *= 0.3;
+  else if (game.time - u.stillSince > 1) p *= 1.25;
+  if (target.moving) p *= 0.8;
+  return p;
+}
+
 function shoot(game, u, target) {
   if (u.cooldown > 0 || !target.alive) return;
   if (game.time - (u.seen.get(target.id) ?? game.time) < u.reaction) return;
@@ -334,18 +396,17 @@ function shoot(game, u, target) {
   u.facing = angleTo(u, target);
   u.targetId = target.id;
   u.lastShotAt = game.time;
-  // Standing still is what wins gunfights: moving costs 70% of your accuracy.
-  let p = RIFLE.accuracy * clamp(1 - d / 55, 0.15, 1);
-  if (u.moving) p *= 0.3;
-  else if (game.time - u.stillSince > 1) p *= 1.25; // holding an angle
-  if (target.moving) p *= 0.8;
-  const hit = Math.random() < p;
+  // Normal automatic fire loses 70% accuracy while moving; crosshair assistance is tighter.
+  const hit = Math.random() < rifleAccuracy(game, u, target);
   const miss = hit ? 0 : (Math.random() - 0.5) * 3;
   game.effects.push({
     kind: 'tracer', team: u.team, ttl: 0.08,
     x1: u.x, y1: u.y, x2: target.x + miss, y2: target.y - miss,
   });
-  if (hit) damage(game, target, RIFLE.damage, u);
+  if (hit) {
+    if (crosshairTarget(game, u) === target) u.lastAimHitAt = game.time;
+    damage(game, target, RIFLE.damage, u);
+  }
 }
 
 function damage(game, target, amount, source) {
@@ -483,7 +544,7 @@ function controlBot(game, u, dt) {
     const combat = defenderCombat(game, u);
     const strength = combat.nearbyAllies + 1;
     const overwhelmed = combat.visibleEnemies >= strength * 2
-      || (u.hp < 50 && combat.visibleEnemies > strength);
+      || (u.hp < u.maxHp / 2 && combat.visibleEnemies > strength);
     if (overwhelmed) {
       if (!u.botFallback) {
         u.botFallback = { point: findCover(game, u), recheckAt: game.time + 0.5 };
@@ -515,7 +576,7 @@ function controlBot(game, u, dt) {
   }
   if (focus) {
     // Outnumbered and hurt: fall back to cover instead of trading badly.
-    if (u.hp < 50 && u.visible.length >= 2) {
+    if (u.hp < u.maxHp / 2 && u.visible.length >= 2) {
       if (!u.coverPoint || hasLineOfSight(game.map, focus, u.coverPoint)) u.coverPoint = findCover(game, u);
       moveToward(game, u, u.coverPoint, dt);
     } else {
@@ -766,6 +827,9 @@ function ownUnit(game, u) {
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
     hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
     obeying: obeying(game, u),
+    manualAim: Boolean(manualAimFor(game, u)),
+    aimTargetId: crosshairTarget(game, u)?.id ?? null,
+    aimHit: game.time - u.lastAimHitAt < 0.15,
     firing: game.time - u.lastShotAt < 0.08,
     orderLabel: u.order ? orderLabel(u) : null,
     dest: u.alive && u.order ? orderDestination(game, u) : null,
