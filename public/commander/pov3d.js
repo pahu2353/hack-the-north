@@ -207,6 +207,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     nades.clear();
     for (const b of blasts) disposeBlast(b);
     blasts.length = 0;
+    ownHp = undefined;
+    ownHurt = 0;
   }
 
   function fit() {
@@ -280,7 +282,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       renderer.render(vmScene, vmCamera);
     }
 
-    drawHud(view, unit);
+    drawHud(view, unit, dt);
   }
 
   // ---------- entities ----------
@@ -325,6 +327,16 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       const alpha = clamp((near - 0.9) / 1.1, 0, 1);
       f.group.visible = alpha > 0.02;
       setFigureAlpha(f, alpha);
+
+      // How hard they were hit decides how hard it reads: a graze is a tint, a near-fatal
+      // hit is the whole body. It fades in about a third of a second either way.
+      const hp = u.hp ?? 0;
+      if (f.lastHp !== undefined && hp < f.lastHp) {
+        f.hurt = Math.min(1, (f.hurt ?? 0) + 0.35 + (f.lastHp - hp) / 70);
+      }
+      f.lastHp = hp;
+      f.hurt = Math.max(0, (f.hurt ?? 0) - dt * 2.8);
+      setFigureHurt(f, f.hurt);
 
       f.parts.flash.visible = Boolean(u.firing);
       if (u.firing) {
@@ -677,8 +689,14 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   // ---------- HUD ----------
 
-  function drawHud(view, unit) {
-    vignette();
+  // Your own hit has nowhere to show: you never see your own body. The screen takes it instead.
+  let ownHp;
+  let ownHurt = 0;
+  function drawHud(view, unit, dt) {
+    if (ownHp !== undefined && unit.hp < ownHp) ownHurt = Math.min(1, ownHurt + 0.45 + (ownHp - unit.hp) / 70);
+    ownHp = unit.hp;
+    ownHurt = Math.max(0, ownHurt - dt * 2.2);
+    vignette(ownHurt);
     // Name tags and health bars sit on the 2D overlay: crisper than sprites and no depth fighting.
     for (const [id, f] of figures) {
       if (!f.group.visible) continue;
@@ -716,11 +734,19 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   // Darkened corners pull the eye to the crosshair and hide the fact that the scene has no
   // post-processing. Two pixels of cost, drawn on the overlay rather than in WebGL.
-  function vignette() {
+  function vignette(hurt = 0) {
     const g = hud.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.72);
     g.addColorStop(0, 'rgba(0,0,0,0)');
     g.addColorStop(1, 'rgba(0,0,0,0.42)');
     hud.fillStyle = g;
+    hud.fillRect(0, 0, W, H);
+    if (hurt <= 0.01) return;
+    // Red from the edges in, never over the middle: the moment you are hit is the moment you
+    // most need to see what hit you.
+    const r = hud.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.16, W / 2, H / 2, Math.max(W, H) * 0.62);
+    r.addColorStop(0, 'rgba(190,20,10,0)');
+    r.addColorStop(1, `rgba(190,20,10,${(0.66 * hurt).toFixed(3)})`);
+    hud.fillStyle = r;
     hud.fillRect(0, 0, W, H);
   }
 
@@ -2019,6 +2045,24 @@ function reachFor(shoulder, forearm, L1, L2, targetWorld, poleHint) {
 // recoil. The arms are IK-solved onto the weapon once at build time, so animating the rig
 // moves the whole grip together and the hands never come off the gun.
 // Materials are built per figure, so dimming one never touches another.
+const HURT = new THREE.Color(0xff2412);
+// A hit is otherwise invisible from in here: the health bar is on the overlay, at the edge of
+// vision, during the one moment you are least able to read it. Flashing the body itself puts
+// the information where you are already looking. Each figure owns its materials, so tinting
+// one never touches another.
+function setFigureHurt(f, amount) {
+  if (f.hurtShown === amount) return;
+  f.hurtShown = amount;
+  f.group.traverse(o => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) {
+      if (!m.emissive) continue;
+      if (m.userData.baseEmissive === undefined) m.userData.baseEmissive = m.emissive.getHex();
+      m.emissive.setHex(m.userData.baseEmissive).lerp(HURT, amount);
+    }
+  });
+}
+
 function setFigureAlpha(f, alpha) {
   if (f.alpha === alpha) return;
   f.alpha = alpha;
