@@ -55,6 +55,8 @@ export const MAPS = {
   // Valorant-style: attackers start at the bottom, two bomb sites at the top.
   tactical: {
     id: 'tactical',
+    label: 'Tactical',
+    blurb: 'Two sites, short rotations',
     width: 80,
     height: 56,
     walls: [
@@ -119,6 +121,8 @@ export const MAPS = {
   // rotation problem. Areas are listed specific-first, because zoneAt takes the first match.
   dust2: carved({
     id: 'dust2',
+    label: 'Dust II',
+    blurb: 'Long sightlines, two ways into each site',
     width: 88,
     height: 88,
     areas: [

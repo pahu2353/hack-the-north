@@ -170,7 +170,21 @@
   /* Shared fixed columns keep both squads and totals aligned. */
   #screenResult { width: min(720px, 100%); gap: 18px; min-width: 0; }
   /* Side and map sit on one row until the screen is too narrow for both. */
-  .pickers { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .pickers { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+  .picker { display: grid; gap: 5px; justify-items: center; }
+  .picker-label {
+    font: 700 10px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  /* A segmented control rather than a dropdown: two or three options each, all visible, one
+     click to change, and it matches the host's side buttons in the lobby. */
+  .segment { display: flex; border: 1px solid var(--border); background: var(--panel); }
+  .segment button {
+    border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px;
+  }
+  .segment button:first-child { border-left: 0; }
+  .segment button[aria-checked="true"] { background: var(--raised); color: var(--accent); }
+  .segment button[aria-checked="true"]:hover:not(:disabled) { color: var(--accent); }
   .result-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
   .match-score { display: grid; grid-template-columns: 1fr 1.2fr 1fr; align-items: center; width: 100%; padding: 18px 12px; border: 1px solid var(--border); background: var(--panel); }
   .match-score > div { display: grid; gap: 8px; }
@@ -516,21 +530,23 @@
       </section>
 
       <section id="screenBots" data-title="Vs Bots" hidden>
-        <p>Hard gives the enemy a smarter commander and tougher bots. Your squad never changes.</p>
+        <p>Your squad is the same either way.</p>
+        <!-- Both groups are filled in by main.js: the maps come from the one map list, so the
+             lobby picker online can never offer a different set. -->
         <div class="pickers">
-          <label class="side-choice" for="botSide">Side
-            <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
-          </label>
-          <label class="side-choice" for="botMap">Map
-            <select id="botMap">
-              <option value="tactical">Tactical — two sites</option>
-              <option value="dust2">Dust II — long sightlines</option>
-            </select>
-          </label>
+          <div class="picker"><span class="picker-label" id="botSideLabel">Side</span>
+            <div class="segment" id="botSide" role="radiogroup" aria-labelledby="botSideLabel"></div>
+          </div>
+          <div class="picker"><span class="picker-label" id="botMapLabel">Map</span>
+            <div class="segment" id="botMap" role="radiogroup" aria-labelledby="botMapLabel"></div>
+          </div>
         </div>
+        <div class="note" id="botsHint"></div>
         <div class="choices">
-          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · 175 HP, sharper aim, led grenades</small></button>
-          <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · predictable</small></button>
+          <button id="botsOpenAI" class="primary big" type="button"
+            title="An OpenAI model commands the other squad. Its bots have 175 HP against your 150, aim more accurately, and throw grenades where you are going rather than where you are.">Hard<small>🤖 OpenAI · ❤️ 175 HP</small></button>
+          <button id="botsScripted" class="big" type="button"
+            title="The other squad follows fixed tactics. Its bots match your squad's health and aim.">Easy<small>📋 Scripted · ❤️ 150 HP</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
         <button id="botsBack" class="link" type="button">← Back</button>

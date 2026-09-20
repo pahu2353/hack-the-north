@@ -226,8 +226,40 @@ $('playBots').onclick = () => {
   setStatus('botsStatus', '');
   showScreen('screenBots');
 };
-$('botsScripted').onclick = () => startBotGame('scripted', $('botSide').value, $('botMap').value);
-$('botsOpenAI').onclick = () => startBotGame('openai', $('botSide').value, $('botMap').value);
+$('botsScripted').onclick = () => startBotGame('scripted', botSide, botMap);
+$('botsOpenAI').onclick = () => startBotGame('openai', botSide, botMap);
+
+// A row of buttons standing in for a dropdown: every option visible, one click to change it.
+// `pick` is called with the chosen value, and re-rendering is just calling this again.
+function segment(id, options, selected, pick) {
+  $(id).replaceChildren(...options.map(o => {
+    const button = el('button', { type: 'button', textContent: o.label, title: o.title ?? '' });
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', String(o.value === selected));
+    button.onclick = () => pick(o.value);
+    return button;
+  }));
+}
+
+const MAP_OPTIONS = Object.values(MAPS).map(m => ({ value: m.id, label: m.label, title: m.blurb }));
+const SIDE_OPTIONS = [
+  { value: 'attack', label: 'Attack', title: 'Plant the spike on one of the two sites' },
+  { value: 'defend', label: 'Defend', title: 'Stop the plant, or defuse it' },
+];
+
+function drawBotPickers() {
+  segment('botSide', SIDE_OPTIONS, botSide, value => {
+    botSide = value;
+    drawBotPickers();
+  });
+  segment('botMap', MAP_OPTIONS, botMap, value => {
+    botMap = value;
+    drawBotPickers();
+  });
+  // One line that follows the choice, instead of a suffix on every option in a closed list.
+  $('botsHint').textContent = MAPS[botMap]?.blurb ?? '';
+}
+drawBotPickers();
 $('botsBack').onclick = () => showScreen('screenMenu');
 $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
@@ -314,9 +346,9 @@ $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }
 for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
   online?.ws.send(JSON.stringify({ type: 'side', team }));
 $('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
-// One list of maps, shown in two places: the lobby picker is built from the Vs Bots one so a
-// map added to the menu can never be missing online.
-$('lobbyMap').replaceChildren(...[...$('botMap').options].map(option => option.cloneNode(true)));
+// One list of maps, shown in two places, both built from the map definitions themselves so a
+// map added to the game can never be missing from either picker.
+$('lobbyMap').replaceChildren(...MAP_OPTIONS.map(o => el('option', { value: o.value, textContent: o.label })));
 $('lobbyMap').onchange = () => online?.ws.send(JSON.stringify({ type: 'map', map: $('lobbyMap').value }));
 
 // ---------- microphone and camera ----------
