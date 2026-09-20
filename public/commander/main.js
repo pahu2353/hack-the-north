@@ -140,9 +140,6 @@ function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('arena').dataset.engine = using3d() ? '3d' : 'classic';
-  $('hint').textContent = is3d
-    ? 'Auto fire. A fist aims (or click for mouse look); four fingers, ←/→ or 1–5 changes agent. G: 2D/3D. Tab: map.'
-    : 'Point up or click to mark a spot, then say what to do there. Orders are spoken or typed. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -278,11 +275,9 @@ $('resume').onclick = () => showScreen(null);
 
 // What each toggle shows, and what it defaults to. Stored per machine.
 const SETTINGS = [
-  ['cards', 'Agent cards', false],
   ['feed', 'Kill feed', true],
   ['minimap', 'Minimap and zone name', true],
   ['stats', 'Jev numbers', true],
-  ['hints', 'Control hints', true],
 ];
 const SETTINGS_KEY = 'commander:settings';
 let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
@@ -603,10 +598,8 @@ function beginMatch() {
   positions.clear();
   recentGesture = null;
   $('log').replaceChildren();
-  $('voiceSummary').textContent = 'Volume: — · Emphasis: —';
   $('feed').replaceChildren();
   updateTeamUi();
-  buildSquadCards();
   watchedId = null; // picked from the first view that has your squad in it
   buildScorebar();
   setView(is3d);
@@ -857,10 +850,6 @@ async function onFinalTranscript(text, voiceContext) {
   clearTimeout(speculateTimer);
   if (!canCommand()) { resetSpeech(); return; }
   const epoch = speechEpoch;
-  $('caption').textContent = text;
-  $('voiceSummary').textContent = voiceContext
-    ? voiceLabels(voiceContext).filter(label => !label.startsWith('Rate:')).join(' · ')
-    : 'Volume: — · Emphasis: —';
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
   u.finalAt = performance.now();
@@ -1170,24 +1159,14 @@ function updateTitle() {
 
 function updateTeamUi() {
   const team = session?.team;
-  // The card keeps its place between matches; only what it says changes.
-  $('teamBadge').className = `badge ${team ?? ''}`;
-  $('teamBadge').textContent = team
-    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ` · ${botOpponent === 'openai' ? 'Hard' : 'Easy'} bots`}`
-    : 'No match';
-  $('textInput').placeholder = team === 'defend'
-    ? 'e.g. “Echo hold A, Golf rotate B”…'
-    : 'e.g. “Alpha and Bravo push B”…';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
   if (!team) {
     $('opponentCard').hidden = true;
-    $('squad').replaceChildren();
+    $('decisions').replaceChildren();
     $('scoreClock').textContent = '–';
     $('ownScore').textContent = '0';
     $('enemyScore').textContent = '0';
-    $('roundLabel').textContent = '';
-    $('jevStats').textContent = '—';
   }
 }
 
@@ -1256,20 +1235,75 @@ function updateScorebar() {
   }
 }
 
-function buildSquadCards() {
-  $('squad').replaceChildren(...TEAMS[session.team].names.map((name, i) => el('div', {
-    className: 'agent', style: `--agent:${OWN_COLORS[i]}`, onclick: () => {
-      const u = ownUnits()[i];
-      if (u?.alive) watchAgent(u);
-    },
-  }, [
-    el('div', { className: 'top' }, [el('span', { className: 'name' }), el('span', { className: 'brain' })]),
-    el('div', { className: 'hp' }, [el('i')]),
-    el('div', { className: 'doing' }),
-    el('div', { className: 'order' }),
-    el('div', { className: 'probs' }),
-  ])));
+// Two readings of the same match. The log answers "what did I say and what came back"; this
+// answers "where is everyone and how sure was Jev", which the log can only tell you by being
+// read backwards. Switching is a click, so neither has to carry the other's job.
+let jevTab = 'log';
+for (const [id, tab] of [['tabLog', 'log'], ['tabAgents', 'agents']]) {
+  $(id).onclick = () => {
+    jevTab = tab;
+    $('tabLog').setAttribute('aria-selected', String(tab === 'log'));
+    $('tabAgents').setAttribute('aria-selected', String(tab === 'agents'));
+    $('log').hidden = tab !== 'log';
+    $('decisions').hidden = tab !== 'agents';
+    if (tab === 'agents') renderDecisions();
+  };
 }
+
+// What Jev weighed, not just what it picked. A 62/24/14 spread and a 96/2/2 spread both read as
+// the same order in words; side by side the bars say which one was nearly something else.
+function renderDecisions() {
+  if (jevTab !== 'agents') return;
+  const units = ownUnits();
+  const cards = TEAMS[session?.team ?? 'attack'].names.map((name, i) => {
+    const u = units.find(unit => unit.name === name);
+    const colour = OWN_COLORS[i % OWN_COLORS.length];
+    if (!u) return el('div', { className: 'decision dead', style: `--agent:${colour}` }, [el('span', { className: 'name', textContent: name })]);
+    const d = u.decision;
+    const source = !u.alive ? 'down'
+      : d?.obeying ? 'your order'
+      : !d ? 'thinking…'
+      : d.local ? 'no contact'
+      : `Jev ${Math.round(d.latency)} ms`;
+    const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]);
+    const [, best] = spread[0] ?? [];
+    const card = el('div', {
+      className: `decision${u.alive ? '' : ' dead'}${u.id === watchedId ? ' watched' : ''}`,
+      style: `--agent:${colour}`,
+      onclick: () => { if (u.alive) watchAgent(u); },
+    }, [
+      el('div', { className: 'top' }, [
+        el('span', { className: 'name', textContent: u.name }),
+        el('span', { className: 'p', textContent: u.alive && best != null ? `${Math.round(best * 100)}%` : '' }),
+      ]),
+      el('div', { className: 'hp' }, [el('i', { style: `width:${(u.hp / u.maxHp) * 100}%` })]),
+      // What they are doing right now, and where the decision behind it came from.
+      el('div', { className: 'doing' }, [
+        actionLabel(u, enemyName(u)),
+        el('span', { className: 'src', textContent: source }),
+      ]),
+      // The standing order is a separate thing from the action: an agent can be taking cover
+      // while still under orders to push, and the card that hid one behind the other made that
+      // look like the order had been dropped.
+      el('div', { className: 'order' }, [
+        u.alive ? `order: ${u.orderLabel ?? '–'}` : '',
+        ...(u.alive && u.grenades ? [el('span', { className: 'nade', title: `${u.grenades} grenade`, textContent: '💣' })] : []),
+      ]),
+      // One bar, one segment per option Jev weighed. The width of the second segment is the
+      // whole point: it says how nearly this was a different order, which the winning
+      // percentage on its own can never show.
+      ...(u.alive && spread.length ? [el('div', { className: 'spread' },
+        spread.map(([option, p], rank) => el('i', {
+          className: rank ? '' : 'pick',
+          style: `flex:${Math.max(p, 0.004)}`,
+          title: `${option} ${Math.round(p * 100)}%`,
+        })))] : []),
+    ]);
+    return card;
+  });
+  $('decisions').replaceChildren(...cards);
+}
+
 
 // The enemy commander's status and current plan. Only in bot games against OpenAI: with
 // scripted bots or another player there is nothing to show.
@@ -1361,9 +1395,6 @@ function updateHud() {
   $('scoreClock').classList.toggle('prep', Boolean(view.status.prep));
   updateSpikeState();
   updateTitle();
-  $('roundLabel').textContent = view.match
-    ? `Round ${view.match.round} · ${view.status.label}`
-    : view.status.label;
   if (view.match) {
     $('ownScore').textContent = String(view.match.score[session.team]);
     $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
@@ -1371,62 +1402,24 @@ function updateHud() {
   updateOpponentHud();
   if (!signTimer) renderGestureFeedback();
 
-  const s = session.kind === 'bots' ? brains.summary() : online?.jev;
-  if (s) {
-    $('jevStats').replaceChildren(
-      'Jev ', el('b', { textContent: `${s.perMinute}/min` }),
-      ' · p50 ', el('b', { textContent: s.p50 ? `${s.p50} ms` : '–' }),
-      ` · ${s.ok} ok · ${s.failed} failed`,
-    );
-    $('jevStats').title = s.lastError;
-  }
 
-  const own = view.units.filter(u => u.team === session.team);
-  own.forEach((u, i) => {
-    const card = $('squad').children[i];
-    if (!card) return;
-    card.classList.toggle('dead', !u.alive);
-    card.classList.toggle('watched', u.id === watchedId);
-    // The snapshot carries each agent's colour, and the map, the 3D view and the top bar all
-    // read it from there. The card took its colour from its position in the footer instead,
-    // which only matched while the squad arrived in slot order.
-    card.style.setProperty('--agent', u.color);
-    card.querySelector('.name').textContent = u.name;
-    card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
-    card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
-    card.querySelector('.order').textContent = u.alive
-      ? `Order: ${u.orderLabel ?? '–'}${u.grenades ? ' · 💣' : ''}`
-      : '';
-    card.querySelector('.brain').textContent = !u.alive ? ''
-      : u.decision?.obeying ? 'following your order'
-      : !u.decision ? 'thinking…'
-      : u.decision.local ? 'no contact: following order' : `Jev ${Math.round(u.decision.latency)} ms`;
-    // Just the chosen action's confidence: the full spread was more noise than signal.
-    const [action, p] = (u.alive ? Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] : null) ?? [];
-    card.querySelector('.probs').replaceChildren(...(action ? [
-      el('div', { className: 'prob top' }, [
-        el('span', { textContent: action }),
-        el('span', { className: 'bar' }, [el('i', { style: `width:${p * 100}%` })]),
-        el('span', { textContent: `${Math.round(p * 100)}%` }),
-      ]),
-    ] : []));
-  });
+
 
   $('feed').replaceChildren(...view.feed.map(f =>
     el('div', { className: f.team === session.team ? 'own' : 'other' }, colorizeNames(f.text))));
+  renderDecisions(); // a no-op unless the squad tab is the one showing
 
   updateScorebar();
   const watching = watched();
   if (watching) {
-    $('povHp').textContent = Math.round(watching.hp);
-    $('povHp').title = `${Math.round(watching.hp)} / ${watching.maxHp} HP`;
-    const bonus = watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy';
-    $('povControl').textContent = aimSource === 'hand' ? `AUTO FIRE · ✊ Fist aim · ${bonus}`
-      : aim ? `AUTO FIRE · ${bonus} · Esc releases cursor`
-      : 'AUTO FIRE · Raise a fist or click to aim · Aim at an enemy for better accuracy';
+    const hp = Math.round(watching.hp);
+    $('povHpNum').textContent = hp;
+    $('povHp').title = `${hp} / ${watching.maxHp} HP`;
+    // Bands rather than a gradient: a colour you can name is read faster than one you compare.
+    const left = watching.hp / watching.maxHp;
+    $('povHud').dataset.hp = left > 0.6 ? 'ok' : left > 0.3 ? 'low' : 'critical';
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
-    $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
     $('povZone').textContent = zoneAt(currentMap(), watching).name.toUpperCase();
   }
 }
@@ -1442,8 +1435,6 @@ const voice = createVoice({
 
 // Hands-free is the multiplayer default; hold-to-talk preserves the previous V-key control.
 let micMuted = false;
-let voiceMode = 'handsfree';
-let pttHeld = false;
 let micEnabling = null;
 async function ensureMic() {
   if (!window.isSecureContext) {
@@ -1458,13 +1449,11 @@ async function ensureMic() {
   return micEnabling;
 }
 
+// The mic is either listening or muted, and the button on the camera says which. There is no
+// mode to choose any more: holding a key to speak meant the interface had a state you could be
+// in without meaning to be, and the only way out was a control you had to go and find.
 function syncListening() {
-  const inMatch = matchActive();
-  const shouldListen = inMatch && !micMuted && (voiceMode === 'handsfree' || pttHeld);
-  if (voiceMode === 'ptt' && shouldListen && !voice.listening) voice.startTalking();
-  else if (voiceMode === 'ptt' && !shouldListen && voice.listening) voice.stopTalking();
-  else if (voiceMode === 'handsfree') voice.setListening(shouldListen);
-  // The mic icon carries the state; the talk bar only appears in hold-to-talk.
+  voice.setListening(matchActive() && !micMuted);
   const state = !voice.enabled ? 'off' : micMuted ? 'muted' : voice.listening ? 'live' : 'on';
   const labels = { off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic' };
   const mic = $('micBtn');
@@ -1474,15 +1463,6 @@ function syncListening() {
     mic.setAttribute('aria-label', labels[state]);
   }
   $('meter').classList.toggle('live', voice.listening);
-  $('listen').hidden = voiceMode !== 'ptt';
-  const label = !voice.enabled ? 'Mic off'
-    : micMuted ? 'Muted'
-    : !inMatch ? 'Waiting for a match'
-      : pttHeld ? 'Listening — release to send' : 'Hold V or this button to talk';
-  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
-  $('listen').classList.toggle('live', voice.listening);
-  $('voiceMode').textContent = voiceMode === 'ptt' ? 'Hold to talk' : 'Hands-free';
-  $('voiceMode').setAttribute('aria-pressed', String(voiceMode === 'ptt'));
 }
 
 async function toggleMic() {
@@ -1497,42 +1477,6 @@ async function toggleMic() {
   syncListening();
 }
 $('micBtn').onclick = toggleMic;
-$('voiceMode').onclick = () => {
-  pttHeld = false;
-  voiceMode = voiceMode === 'handsfree' ? 'ptt' : 'handsfree';
-  syncListening();
-};
-$('listen').onclick = () => { if (voiceMode === 'handsfree') toggleMic(); };
-$('listen').addEventListener('pointerdown', () => {
-  if (voiceMode !== 'ptt') return;
-  pttHeld = true;
-  if (!voice.enabled) ensureMic().then(syncListening);
-  syncListening();
-});
-function releaseToTalk() {
-  if (!pttHeld) return;
-  pttHeld = false;
-  syncListening();
-}
-for (const event of ['pointerup', 'pointercancel', 'pointerleave']) $('listen').addEventListener(event, releaseToTalk);
-document.addEventListener('keydown', e => {
-  if (voiceMode !== 'ptt' || e.code !== 'KeyV' || e.repeat || document.activeElement?.tagName === 'INPUT') return;
-  e.preventDefault();
-  pttHeld = true;
-  if (!voice.enabled) ensureMic().then(syncListening);
-  syncListening();
-});
-document.addEventListener('keyup', e => { if (e.code === 'KeyV') releaseToTalk(); });
-window.addEventListener('blur', releaseToTalk);
-
-$('textForm').onsubmit = e => {
-  e.preventDefault();
-  const text = $('textInput').value;
-  $('textInput').value = '';
-  $('textInput').blur();
-  issueCommand({ source: 'text', text });
-};
-
 canvas.addEventListener('click', e => {
   const p = renderer.toWorld(e.clientX, e.clientY);
   if (p.x < 0 || p.y < 0 || p.x > 80 || p.y > 56) return;
@@ -1772,10 +1716,10 @@ function showSign(text) {
 
 const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  signChip('☝️', 'mark spot', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('☝️', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
   signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
-  signChip('4️⃣', 'next agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
-  signChip('🤏', 'swap view', 'Pinch your thumb and index finger to switch between the map and first-person'),
+  signChip('4️⃣', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('🤏', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
@@ -1784,8 +1728,6 @@ if (!window.isSecureContext) {
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
-  $('listen').disabled = true;
-  $('voiceMode').disabled = true;
   $('camBtn').disabled = true;
 }
 

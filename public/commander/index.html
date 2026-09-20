@@ -25,6 +25,9 @@
     --enemy: #ff4655;
     --gold: #f2c14e;
     --ok: #5bd17a;
+    /* The built-in easings are too gentle to read at these durations: the movement starts so
+       softly that a 140ms fade looks like nothing happened. */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
     /* Layered shadow: ambient plus a directional drop, per the guidelines. */
     --lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 2px 4px rgba(0, 0, 0, 0.4), 0 10px 24px rgba(0, 0, 0, 0.35);
     /* Clipped top-left and bottom-right corners: square, but not a plain rectangle. */
@@ -83,9 +86,6 @@
   .badge.attack { border-color: var(--squad); color: var(--squad); }
   .badge.defend { border-color: var(--gold); color: var(--gold); }
   .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; min-width: 52px; text-align: center; }
-  #roundLabel { color: var(--ink-2); text-transform: none; letter-spacing: 0; font-weight: 600; }
-  #jevStats { font-variant-numeric: tabular-nums; }
-  #jevStats b { color: var(--ink-2); font-weight: 600; }
   .card-head .badge { padding: 2px 6px; }
 
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
@@ -107,10 +107,6 @@
   .feed .own { border-left: 3px solid var(--squad); }
   .feed .other { border-left: 3px solid var(--enemy); }
   .feed b { font-weight: 700; }
-  .hint {
-    position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom));
-    color: var(--muted); font-size: 12px; pointer-events: none;
-  }
 
   .overlay { z-index: 2; }
   /* Centring meant every screen's own height decided where the heading sat, so switching
@@ -253,17 +249,27 @@
   /* A short accent rule marks each section, the way a game HUD labels its panels. It sits
      outside the flow so the heading and its controls keep their usual places. */
   .card-head {
-    position: relative; padding-left: 10px; display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: space-between;
     gap: 8px; color: var(--ink-2); font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.11em;
     text-transform: uppercase;
-  }
-  .card-head::before {
-    content: ""; position: absolute; left: 0; top: 1px; bottom: 1px; width: 3px; background: var(--accent); opacity: 0.85;
   }
   .status { font-size: 12px; color: var(--muted); }
   .status.ok { color: var(--ok); }
   .status.error { color: var(--enemy); }
   .cam { position: relative; aspect-ratio: 4 / 3; background: #07080b; overflow: hidden; border: 1px solid var(--border); }
+  .cam-btn {
+    position: absolute; right: 8px; bottom: 10px; width: 30px; height: 30px; padding: 0;
+    display: grid; place-items: center; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(8, 10, 14, 0.72); color: var(--ink);
+    opacity: 0; transition: opacity 140ms var(--ease-out);
+  }
+  .cam-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+  .cam-btn .slash { display: none; stroke-width: 2.2; }
+  .cam:hover .cam-btn, .cam-btn:focus-visible { opacity: 1; }
+  /* Off or muted is not a state to hide behind a hover: it stays lit, and red. */
+  .cam-btn[data-state="off"], .cam-btn[data-state="muted"] { opacity: 1; color: var(--enemy); border-color: rgba(255, 70, 85, 0.5); }
+  .cam-btn[data-state="off"] .slash, .cam-btn[data-state="muted"] .slash { display: inline; }
+  .cam .meter { position: absolute; left: 0; right: 0; bottom: 0; }
   .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
   .cam .sign {
     position: absolute; left: 8px; bottom: 8px; background: rgba(8, 10, 14, 0.78); border: 1px solid var(--border);
@@ -277,24 +283,19 @@
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head .head-actions { display: flex; gap: 6px; }
   /* Four of them, so they sit two by two rather than three and a lonely one. */
-  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 5px; }
+  /* Four of them, and they belong on one line: one wrapping onto a row of its own reads as a
+     mistake. Equal columns rather than auto-fill, so the row cannot break however narrow it is. */
+  .signs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
   .signs span {
-    display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
-    padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+    display: flex; align-items: center; justify-content: center; gap: 5px; background: var(--panel-2);
+    border: 1px solid var(--border); padding: 5px 4px; font-size: 11px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden;
   }
   .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
   /* The transcript and its voice summary are kept for the code that writes them, but the order
      log says the same thing a moment later, so they stay out of the panel. */
   .caption, .voice-summary { display: none; }
   /* Hold-to-talk bar: only shown in that mode, since hands-free needs no button. */
-  .ptt {
-    display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px;
-    position: relative; overflow: hidden; user-select: none; background: var(--panel-2);
-  }
-  .ptt.live { border-color: rgba(255, 70, 85, 0.55); color: var(--ink); }
-  .ptt .level { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--enemy); width: 0; }
-  .mode-btn { font-size: 10px; padding: 5px 8px; }
-  .mode-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
   .cam[hidden] { display: none; }
 
   /* Device toggles live in their section heading, as icons. */
@@ -310,20 +311,49 @@
   .icon-btn[data-state="live"] { color: var(--enemy); border-color: rgba(255, 70, 85, 0.55); }
   .icon-btn[data-state="muted"] { color: var(--gold); border-color: rgba(242, 193, 78, 0.45); }
   /* Mic level: a hairline that only moves while the mic is live. */
-  .meter { height: 2px; background: var(--panel-2); }
+  .meter { height: 2px; background: rgba(255, 255, 255, 0.08); }
   .meter i { display: block; height: 100%; width: 0; background: var(--muted); transition: width 80ms; }
   .meter.live i { background: var(--enemy); }
   @media (prefers-reduced-motion: reduce) {
     .meter i { transition: none; }
   }
-  form.order { display: flex; gap: 0; }
-  form.order input { flex: 1; min-width: 0; border-right: 0; }
-  form.order button { flex: none; }
 
   /* Scrolls instantly: a smooth animation makes "am I at the bottom?" unanswerable while it runs. */
+  /* Two readings of the same match: the log is what was said and what came back, the squad view
+     is where each agent has got to and how sure Jev was of it. */
+  .tabs { display: flex; gap: 2px; }
+  .tab {
+    font: 700 10px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 4px 8px; min-height: 0; color: var(--muted);
+  }
+  .tab[aria-selected="true"] { color: var(--ink); border-color: var(--border-strong); background: var(--raised); }
+  .decisions { overflow: auto; overscroll-behavior: contain; display: grid; gap: 8px; align-content: start; padding-right: 4px; }
+  .decision { background: var(--panel); border: 1px solid var(--border); padding: 7px 9px; display: grid; gap: 4px; }
+  .decision.dead { opacity: 0.45; }
+  .decision .top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .decision .name { font: 800 12px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
+  .decision .src { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+  .decision { cursor: pointer; }
+  /* The one you are watching, marked the way the footer cards used to mark it. */
+  .decision.watched { border-color: var(--gold); }
+  .decision .hp { height: 3px; background: var(--panel-2); overflow: hidden; }
+  .decision .hp i { display: block; height: 100%; background: var(--agent); }
+  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+  .decision .order { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+  .decision .order:empty { display: none; }
+  .decision .nade { flex: none; }
+  .decision .doing .src { flex: none; }
+  .decision .p { font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
+  /* The whole distribution in one bar: the chosen option lit, the rest of the field behind it.
+     Segments are flex-weighted so they always sum to the width, and a floor keeps a 0.4%
+     option from collapsing into nothing. */
+  .spread { display: flex; gap: 1px; height: 6px; margin-top: 2px; }
+  .spread i { background: #24313d; min-width: 1px; }
+  .spread i.pick { background: var(--agent); }
+  /* One row per option Jev weighed, longest bar first: the gap between the top two is the
+     thing worth seeing, and a number alone never shows it. */
   .log { overflow: auto; overscroll-behavior: contain; padding-right: 4px; display: grid; gap: 7px; align-content: start; }
-  .entry { background: var(--panel); border: 1px solid var(--border); border-left: 2px solid var(--accent); padding: 8px 9px; display: grid; gap: 5px; }
-  .entry.early { border-left-color: var(--gold); }
+  .entry { background: var(--panel); border: 1px solid var(--border); padding: 8px 9px; display: grid; gap: 5px; }
   .entry .said { font-weight: 600; line-height: 1.35; }
   .entry.ignored { opacity: 0.55; }
   /* Acted on before you finished speaking; the finished sentence still corrects it. */
@@ -344,36 +374,10 @@
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  footer.squad {
-    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; padding: 6px 12px;
-    border-top: 1px solid var(--border);
-  }
   /* Optional HUD pieces, switched in Settings. */
-  body:not([data-cards="on"]) footer.squad { display: none; }
   body:not([data-feed="on"]) .feed { display: none; }
-  body:not([data-hints="on"]) .hint { display: none; }
-  body:not([data-stats="on"]) #jevStats, body:not([data-stats="on"]) .agent .probs { display: none; }
+  body:not([data-stats="on"]) .decision .p, body:not([data-stats="on"]) .spread { display: none; }
   body:not([data-minimap="on"]) #minimap, body:not([data-minimap="on"]) .pov-zone { display: none; }
-  .agent {
-    background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--agent);
-    padding: 8px 10px; display: grid; gap: 4px; min-width: 0; cursor: pointer;
-  }
-  .agent.watched { border-color: var(--gold); border-left-color: var(--agent); }
-  .agent .doing { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Only the agent you're watching shows the order and Jev's confidence; the rest stay small. */
-  .agent:not(.watched) .order, .agent:not(.watched) .probs, .agent:not(.watched) .brain { display: none; }
-  .agent.dead { opacity: 0.4; }
-  .agent .top { display: flex; justify-content: space-between; gap: 6px; }
-  .agent .name { font-weight: 800; color: var(--agent); }
-  .agent .hp { height: 4px; background: var(--panel-2); overflow: hidden; }
-  .agent .hp i { display: block; height: 100%; background: var(--agent); }
-  .agent .order { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .agent .probs { display: grid; gap: 2px; }
-  .agent .prob { display: grid; grid-template-columns: 52px 1fr 30px; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
-  .agent .prob.top { color: var(--ink); font-weight: 600; }
-  .agent .bar { height: 6px; background: var(--panel-2); overflow: hidden; }
-  .agent .bar i { display: block; height: 100%; background: var(--agent); }
-  .agent .brain { font-size: 11px; color: var(--muted); }
   .opponent-panel { color: var(--ink-2); font-size: 12px; max-height: 150px; overflow: auto; }
   .opponent-panel summary { cursor: pointer; color: var(--gold); }
   .opponent-panel p { margin: 6px 0; }
@@ -467,11 +471,18 @@
     position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center;
     gap: 14px; padding: 8px 18px 8px 16px; pointer-events: none;
     background: linear-gradient(180deg, rgba(10, 16, 20, 0.5), rgba(6, 9, 12, 0.82));
-    border-top: 2px solid var(--accent); clip-path: var(--cut);
+    /* Your own side's colour, not the interface accent: the bar belongs to the agent under it. */
+    border-top: 2px solid var(--squad); clip-path: var(--cut);
   }
-  .pov-hud .hp { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
-  .pov-hud .who { display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
-  .pov-hud .who b { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
+  /* Health the way a shooter shows it: a mark saying what the number counts, then the number,
+     both changing colour together as it falls. Colour is what gets read mid-fight; the digits
+     are for when you have a moment. */
+  .pov-hud .hp { display: flex; align-items: baseline; gap: 5px; color: var(--ink); }
+  .pov-hud .hp b { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .pov-hud .hp i { font: 700 11px/1 system-ui, sans-serif; letter-spacing: 0.1em; font-style: normal; opacity: 0.7; }
+  .pov-hud[data-hp="low"] .hp { color: var(--gold); }
+  .pov-hud[data-hp="critical"] .hp { color: var(--enemy); }
+  .pov-hud .who { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
   /* The spike, once it's down: a banner under the scoreboard, and a defuse bar that fills. */
   .spike-state {
     position: absolute; top: 62px; left: 50%; transform: translateX(-50%); display: grid; gap: 4px;
@@ -488,13 +499,11 @@
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
   }
   /* Clear of the agent HUD, which sits bottom centre. */
-  .arena[data-view="pov"] .hint { bottom: 84px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
     .arena { height: 60vh; }
     .side { border-left: 0; }
-    footer.squad { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -508,9 +517,9 @@
     <canvas id="pov3dHud" class="pov-only" aria-hidden="true"></canvas>
     <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
     <div class="pov-zone pov-only" id="povZone"></div>
-    <div class="pov-hud pov-only">
-      <span class="hp" id="povHp"></span>
-      <span class="who"><b id="povName"></b><span id="povAction"></span><span id="povControl"></span></span>
+    <div class="pov-hud pov-only" id="povHud">
+      <span class="hp" id="povHp"><b id="povHpNum">–</b><i>HP</i></span>
+      <b class="who" id="povName"></b>
     </div>
     <div class="scorebar" id="scorebar" hidden>
       <div class="team" id="squadBar"></div>
@@ -525,7 +534,6 @@
     </div>
     <div class="toast" id="toast" hidden></div>
     <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Match events"></div>
-    <div class="hint" id="hint"></div>
 
     <div class="overlay" id="overlay">
       <!-- One heading for every screen, in the same place on every screen. Each section names
@@ -642,10 +650,6 @@
   </section>
 
   <aside class="side">
-    <div class="card" id="matchCard">
-      <div class="card-head"><span class="badge" id="teamBadge">No match</span><span id="roundLabel"></span></div>
-      <div class="status" id="jevStats">—</div>
-    </div>
     <div class="card">
       <div class="card-head">Hands
         <span class="head-actions">
@@ -658,25 +662,15 @@
         <canvas id="hand"></canvas>
         <div class="off" id="camOff"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M3 21 21 3"/></svg><span>Camera off</span></div>
         <div class="sign" id="sign" hidden></div>
+        <!-- The mic lives on the picture, the way every call app puts it: it is the control you
+             reach for without looking, and it belongs next to the thing it is recording. It
+             fades up on hover, and stays up whenever it is off or muted, because that is the
+             state you must never have to hunt for. -->
+        <button id="micBtn" class="cam-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
+        <div class="meter" id="meter"><i id="level"></i></div>
       </div>
       <div class="signs" id="signs"></div>
       <div class="status" id="camStatus" role="status"></div>
-    </div>
-    <div class="card">
-      <div class="card-head">Voice
-        <span class="head-actions">
-          <button id="voiceMode" class="mode-btn" type="button" aria-pressed="false" title="Switch between hands-free and hold-to-talk">Hands-free</button>
-          <button id="micBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
-        </span>
-      </div>
-      <div class="meter" id="meter"><i id="level"></i></div>
-      <button id="listen" class="ptt" type="button" hidden title="Hold to talk"><span id="listenLabel">Mic off</span><span class="level"></span></button>
-      <div class="caption" id="caption"></div>
-      <div class="voice-summary" id="voiceSummary"></div>
-      <form class="order" id="textForm">
-        <input id="textInput" autocomplete="off" aria-label="Order" placeholder="Type an order…">
-        <button type="submit" class="primary">Send</button>
-      </form>
       <div class="status" id="micStatus" role="status"></div>
     </div>
     <div class="card" id="opponentCard" hidden>
@@ -695,13 +689,18 @@
       <div class="status" id="permsStatus" role="status">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
-      <div class="card-head">Orders → Jev <span class="voice-summary" id="voiceSummary">Volume: — · Emphasis: —</span></div>
-      <div class="log" id="log"></div>
+      <div class="card-head">Jev
+        <span class="tabs" role="tablist" aria-label="How to read Jev">
+          <button id="tabLog" class="tab" type="button" role="tab" aria-selected="true" aria-controls="log">Log</button>
+          <button id="tabAgents" class="tab" type="button" role="tab" aria-selected="false" aria-controls="decisions">Squad</button>
+        </span>
+      </div>
+      <div class="log" id="log" role="tabpanel" aria-labelledby="tabLog"></div>
+      <div class="decisions" id="decisions" role="tabpanel" aria-labelledby="tabAgents" hidden></div>
     </div>
   </aside>
 </main>
 
-<footer class="squad" id="squad"></footer>
 
 <!-- three.js and its post-processing addons are served from the installed npm package at
      /vendor (see serveStatic in server.ts), so the game still runs with no network and there
