@@ -1167,9 +1167,6 @@ function updateTitle() {
 
 function updateTeamUi() {
   const team = session?.team;
-  $('textInput').placeholder = team === 'defend'
-    ? 'e.g. “Echo hold A, Golf rotate B”…'
-    : 'e.g. “Alpha and Bravo push B”…';
   if (team) voice.setKeyterms(keytermsFor(team));
   $('scorebar').hidden = !team;
   if (!team) {
@@ -1276,18 +1273,26 @@ function renderDecisions() {
       : !d ? 'thinking…'
       : d.local ? 'no contact'
       : `Jev ${Math.round(d.latency)} ms`;
-    const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]);
+    const [, best] = spread[0] ?? [];
     return el('div', { className: `decision${u.alive ? '' : ' dead'}`, style: `--agent:${colour}` }, [
       el('div', { className: 'top' }, [
         el('span', { className: 'name', textContent: u.name }),
+        el('span', { className: 'p', textContent: u.alive && best != null ? `${Math.round(best * 100)}%` : '' }),
+      ]),
+      el('div', { className: 'doing' }, [
+        u.orderLabel ?? actionLabel(u, enemyName(u)),
         el('span', { className: 'src', textContent: source }),
       ]),
-      el('div', { className: 'doing', textContent: u.orderLabel ?? actionLabel(u, enemyName(u)) }),
-      ...(u.alive ? spread.map(([option, p], rank) => el('div', { className: `prob${rank ? '' : ' top'}` }, [
-        el('span', { textContent: option }),
-        el('span', { className: 'bar' }, [el('i', { style: `width:${Math.max(2, p * 100)}%` })]),
-        el('span', { className: 'p', textContent: `${Math.round(p * 100)}%` }),
-      ])) : []),
+      // One bar, one segment per option Jev weighed. The width of the second segment is the
+      // whole point: it says how nearly this was a different order, which the winning
+      // percentage on its own can never show.
+      ...(u.alive && spread.length ? [el('div', { className: 'spread' },
+        spread.map(([option, p], rank) => el('i', {
+          className: rank ? '' : 'pick',
+          style: `flex:${Math.max(p, 0.004)}`,
+          title: `${option} ${Math.round(p * 100)}%`,
+        })))] : []),
     ]);
   });
   $('decisions').replaceChildren(...cards);
@@ -1468,8 +1473,6 @@ const voice = createVoice({
 
 // Hands-free is the multiplayer default; hold-to-talk preserves the previous V-key control.
 let micMuted = false;
-let voiceMode = 'handsfree';
-let pttHeld = false;
 let micEnabling = null;
 async function ensureMic() {
   if (!window.isSecureContext) {
@@ -1484,13 +1487,11 @@ async function ensureMic() {
   return micEnabling;
 }
 
+// The mic is either listening or muted, and the button on the camera says which. There is no
+// mode to choose any more: holding a key to speak meant the interface had a state you could be
+// in without meaning to be, and the only way out was a control you had to go and find.
 function syncListening() {
-  const inMatch = matchActive();
-  const shouldListen = inMatch && !micMuted && (voiceMode === 'handsfree' || pttHeld);
-  if (voiceMode === 'ptt' && shouldListen && !voice.listening) voice.startTalking();
-  else if (voiceMode === 'ptt' && !shouldListen && voice.listening) voice.stopTalking();
-  else if (voiceMode === 'handsfree') voice.setListening(shouldListen);
-  // The mic icon carries the state; the talk bar only appears in hold-to-talk.
+  voice.setListening(matchActive() && !micMuted);
   const state = !voice.enabled ? 'off' : micMuted ? 'muted' : voice.listening ? 'live' : 'on';
   const labels = { off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic' };
   const mic = $('micBtn');
@@ -1500,26 +1501,6 @@ function syncListening() {
     mic.setAttribute('aria-label', labels[state]);
   }
   $('meter').classList.toggle('live', voice.listening);
-  $('listen').hidden = voiceMode !== 'ptt';
-  const label = !voice.enabled ? 'Mic off'
-    : micMuted ? 'Muted'
-    : !inMatch ? 'Waiting for a match'
-      : pttHeld ? 'Listening — release to send' : 'Hold V or this button to talk';
-  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
-  $('listen').classList.toggle('live', voice.listening);
-  // The hand says the mode the way the camera and mic buttons beside it do: lit for on,
-  // struck through for the mode where you have to hold the button down yourself.
-  const handsFree = voiceMode !== 'ptt';
-  const modeLabel = handsFree
-    ? 'Hands-free listening — switch to hold-to-talk'
-    : 'Hold to talk — switch to hands-free';
-  const mode = $('voiceMode');
-  if (mode.dataset.state !== (handsFree ? 'on' : 'off')) {
-    mode.dataset.state = handsFree ? 'on' : 'off';
-    mode.title = modeLabel;
-    mode.setAttribute('aria-label', modeLabel);
-  }
-  mode.setAttribute('aria-pressed', String(!handsFree));
 }
 
 async function toggleMic() {
@@ -1534,42 +1515,6 @@ async function toggleMic() {
   syncListening();
 }
 $('micBtn').onclick = toggleMic;
-$('voiceMode').onclick = () => {
-  pttHeld = false;
-  voiceMode = voiceMode === 'handsfree' ? 'ptt' : 'handsfree';
-  syncListening();
-};
-$('listen').onclick = () => { if (voiceMode === 'handsfree') toggleMic(); };
-$('listen').addEventListener('pointerdown', () => {
-  if (voiceMode !== 'ptt') return;
-  pttHeld = true;
-  if (!voice.enabled) ensureMic().then(syncListening);
-  syncListening();
-});
-function releaseToTalk() {
-  if (!pttHeld) return;
-  pttHeld = false;
-  syncListening();
-}
-for (const event of ['pointerup', 'pointercancel', 'pointerleave']) $('listen').addEventListener(event, releaseToTalk);
-document.addEventListener('keydown', e => {
-  if (voiceMode !== 'ptt' || e.code !== 'KeyV' || e.repeat || document.activeElement?.tagName === 'INPUT') return;
-  e.preventDefault();
-  pttHeld = true;
-  if (!voice.enabled) ensureMic().then(syncListening);
-  syncListening();
-});
-document.addEventListener('keyup', e => { if (e.code === 'KeyV') releaseToTalk(); });
-window.addEventListener('blur', releaseToTalk);
-
-$('textForm').onsubmit = e => {
-  e.preventDefault();
-  const text = $('textInput').value;
-  $('textInput').value = '';
-  $('textInput').blur();
-  issueCommand({ source: 'text', text });
-};
-
 canvas.addEventListener('click', e => {
   const p = renderer.toWorld(e.clientX, e.clientY);
   if (p.x < 0 || p.y < 0 || p.x > 80 || p.y > 56) return;
@@ -1807,12 +1752,22 @@ function showSign(text) {
   signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
-const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
+const HAND_ICONS = {
+  mark: '<path d="M12 3.5v8"/><path d="M7.5 11.5v3a4.5 4.5 0 0 0 9 0v-2.5"/>',
+  fist: '<rect x="6.5" y="8.5" width="11" height="10" rx="3.5"/><path d="M9 12.5h6"/>',
+  four: '<path d="M8 11V6M10.7 11V4.8M13.3 11V4.8M16 11V6"/><path d="M8 11v3.5a4 4 0 0 0 8 0V11"/>',
+  pinch: '<path d="M8.5 5.5c-1.2 3.2-.3 6 2 7.6"/><path d="M16 8c-.9 2.4-2.3 4-3.9 5.2"/><path d="M7.5 16.5a5 5 0 0 0 9 0"/>',
+};
+const signChip = (shape, word, title) => {
+  const glyph = el('b');
+  glyph.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${HAND_ICONS[shape]}</svg>`;
+  return el('span', { title }, [glyph, word]);
+};
 $('signs').replaceChildren(
-  signChip('☝️', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
-  signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
-  signChip('4️⃣', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
-  signChip('🤏', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
+  signChip('mark', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('fist', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
+  signChip('four', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('pinch', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
@@ -1821,8 +1776,6 @@ if (!window.isSecureContext) {
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
-  $('listen').disabled = true;
-  $('voiceMode').disabled = true;
   $('camBtn').disabled = true;
 }
 

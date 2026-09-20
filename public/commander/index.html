@@ -25,6 +25,9 @@
     --enemy: #ff4655;
     --gold: #f2c14e;
     --ok: #5bd17a;
+    /* The built-in easings are too gentle to read at these durations: the movement starts so
+       softly that a 140ms fade looks like nothing happened. */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
     /* Layered shadow: ambient plus a directional drop, per the guidelines. */
     --lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 2px 4px rgba(0, 0, 0, 0.4), 0 10px 24px rgba(0, 0, 0, 0.35);
     /* Clipped top-left and bottom-right corners: square, but not a plain rectangle. */
@@ -254,6 +257,19 @@
   .status.ok { color: var(--ok); }
   .status.error { color: var(--enemy); }
   .cam { position: relative; aspect-ratio: 4 / 3; background: #07080b; overflow: hidden; border: 1px solid var(--border); }
+  .cam-btn {
+    position: absolute; right: 8px; bottom: 10px; width: 30px; height: 30px; padding: 0;
+    display: grid; place-items: center; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(8, 10, 14, 0.72); color: var(--ink);
+    opacity: 0; transition: opacity 140ms var(--ease-out);
+  }
+  .cam-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+  .cam-btn .slash { display: none; stroke-width: 2.2; }
+  .cam:hover .cam-btn, .cam-btn:focus-visible { opacity: 1; }
+  /* Off or muted is not a state to hide behind a hover: it stays lit, and red. */
+  .cam-btn[data-state="off"], .cam-btn[data-state="muted"] { opacity: 1; color: var(--enemy); border-color: rgba(255, 70, 85, 0.5); }
+  .cam-btn[data-state="off"] .slash, .cam-btn[data-state="muted"] .slash { display: inline; }
+  .cam .meter { position: absolute; left: 0; right: 0; bottom: 0; }
   .cam video, .cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
   .cam .sign {
     position: absolute; left: 8px; bottom: 8px; background: rgba(8, 10, 14, 0.78); border: 1px solid var(--border);
@@ -275,17 +291,15 @@
     border: 1px solid var(--border); padding: 5px 4px; font-size: 11px; color: var(--ink-2);
     white-space: nowrap; overflow: hidden;
   }
-  .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
+  .signs b { display: grid; place-items: center; }
+  .signs svg {
+    width: 16px; height: 16px; fill: none; stroke: currentColor;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+  }
   /* The transcript and its voice summary are kept for the code that writes them, but the order
      log says the same thing a moment later, so they stay out of the panel. */
   .caption, .voice-summary { display: none; }
   /* Hold-to-talk bar: only shown in that mode, since hands-free needs no button. */
-  .ptt {
-    display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px;
-    position: relative; overflow: hidden; user-select: none; background: var(--panel-2);
-  }
-  .ptt.live { border-color: rgba(255, 70, 85, 0.55); color: var(--ink); }
-  .ptt .level { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--enemy); width: 0; }
   .cam[hidden] { display: none; }
 
   /* Device toggles live in their section heading, as icons. */
@@ -301,15 +315,12 @@
   .icon-btn[data-state="live"] { color: var(--enemy); border-color: rgba(255, 70, 85, 0.55); }
   .icon-btn[data-state="muted"] { color: var(--gold); border-color: rgba(242, 193, 78, 0.45); }
   /* Mic level: a hairline that only moves while the mic is live. */
-  .meter { height: 2px; background: var(--panel-2); }
+  .meter { height: 2px; background: rgba(255, 255, 255, 0.08); }
   .meter i { display: block; height: 100%; width: 0; background: var(--muted); transition: width 80ms; }
   .meter.live i { background: var(--enemy); }
   @media (prefers-reduced-motion: reduce) {
     .meter i { transition: none; }
   }
-  form.order { display: flex; gap: 0; }
-  form.order input { flex: 1; min-width: 0; border-right: 0; }
-  form.order button { flex: none; }
 
   /* Scrolls instantly: a smooth animation makes "am I at the bottom?" unanswerable while it runs. */
   /* Two readings of the same match: the log is what was said and what came back, the squad view
@@ -326,15 +337,17 @@
   .decision .top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
   .decision .name { font: 800 12px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
   .decision .src { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
-  .decision .doing { font-size: 12px; color: var(--ink-2); }
+  .decision .doing { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+  .decision .doing .src { flex: none; }
+  .decision .p { font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
+  /* The whole distribution in one bar: the chosen option lit, the rest of the field behind it.
+     Segments are flex-weighted so they always sum to the width, and a floor keeps a 0.4%
+     option from collapsing into nothing. */
+  .spread { display: flex; gap: 1px; height: 6px; margin-top: 2px; }
+  .spread i { background: #24313d; min-width: 1px; }
+  .spread i.pick { background: var(--agent); }
   /* One row per option Jev weighed, longest bar first: the gap between the top two is the
      thing worth seeing, and a number alone never shows it. */
-  .decision .prob { display: grid; grid-template-columns: 62px 1fr 32px; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
-  .decision .prob.top { color: var(--ink); font-weight: 600; }
-  .decision .bar { height: 5px; background: var(--panel-2); overflow: hidden; }
-  .decision .bar i { display: block; height: 100%; background: #2b5c8f; }
-  .decision .prob.top .bar i { background: var(--agent); }
-  .decision .p { text-align: right; font-variant-numeric: tabular-nums; }
   .log { overflow: auto; overscroll-behavior: contain; padding-right: 4px; display: grid; gap: 7px; align-content: start; }
   .entry { background: var(--panel); border: 1px solid var(--border); padding: 8px 9px; display: grid; gap: 5px; }
   .entry .said { font-weight: 600; line-height: 1.35; }
@@ -671,25 +684,15 @@
         <canvas id="hand"></canvas>
         <div class="off" id="camOff"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M3 21 21 3"/></svg><span>Camera off</span></div>
         <div class="sign" id="sign" hidden></div>
+        <!-- The mic lives on the picture, the way every call app puts it: it is the control you
+             reach for without looking, and it belongs next to the thing it is recording. It
+             fades up on hover, and stays up whenever it is off or muted, because that is the
+             state you must never have to hunt for. -->
+        <button id="micBtn" class="cam-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
+        <div class="meter" id="meter"><i id="level"></i></div>
       </div>
       <div class="signs" id="signs"></div>
       <div class="status" id="camStatus" role="status"></div>
-    </div>
-    <div class="card">
-      <div class="card-head">Voice
-        <span class="head-actions">
-          <button id="voiceMode" class="icon-btn" type="button" data-state="on" aria-pressed="false" aria-label="Hands-free listening. Switch to hold-to-talk" title="Hands-free listening — switch to hold-to-talk"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12V6a1.5 1.5 0 0 1 3 0v5"/><path d="M11.5 11V4.5a1.5 1.5 0 0 1 3 0V11"/><path d="M14.5 11.5V6.5a1.5 1.5 0 0 1 3 0V15"/><path d="M8.5 12v-1a1.5 1.5 0 0 0-3 0v3.5A6.5 6.5 0 0 0 12 21a5.5 5.5 0 0 0 5.5-5.5"/><path class="slash" d="M4 20 20 4"/></svg></button>
-          <button id="micBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
-        </span>
-      </div>
-      <div class="meter" id="meter"><i id="level"></i></div>
-      <button id="listen" class="ptt" type="button" hidden title="Hold to talk"><span id="listenLabel">Mic off</span><span class="level"></span></button>
-      <div class="caption" id="caption"></div>
-      <div class="voice-summary" id="voiceSummary"></div>
-      <form class="order" id="textForm">
-        <input id="textInput" autocomplete="off" aria-label="Order" placeholder="Type an order…">
-        <button type="submit" class="primary">Send</button>
-      </form>
       <div class="status" id="micStatus" role="status"></div>
     </div>
     <div class="card" id="opponentCard" hidden>
