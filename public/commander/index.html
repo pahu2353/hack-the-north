@@ -191,14 +191,23 @@
   }
   .cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; padding: 12px; }
   .card-head span { display: flex; gap: 6px; }
-  .signs { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; color: var(--muted); }
-  .signs span { background: var(--panel-2); padding: 2px 6px; white-space: nowrap; }
+  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
+  .signs span {
+    display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
+    padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+  }
+  .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
   .cam[hidden] { display: none; }
 
   /* Device toggles live in their section heading, as icons. */
   .head-actions { display: flex; gap: 4px; }
   .icon-btn { padding: 0; width: 28px; height: 24px; min-height: 24px; display: grid; place-items: center; }
-  .icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
+  .icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
+  .icon-btn:hover:not(:disabled) { background: var(--raised); }
+  .icon-btn .slash { display: none; stroke-width: 2; }
+  .icon-btn[data-state="off"] .slash, .icon-btn[data-state="muted"] .slash, .icon-btn:not([data-state]) .slash {
+    display: inline;
+  }
   .icon-btn[data-state="on"] { color: var(--ink); border-color: var(--border-strong); }
   .icon-btn[data-state="live"] { color: var(--enemy); border-color: rgba(255, 70, 85, 0.55); }
   .icon-btn[data-state="muted"] { color: var(--gold); border-color: rgba(242, 193, 78, 0.45); }
@@ -467,8 +476,8 @@
     <div class="card">
       <div class="card-head">Signals
         <span class="head-actions">
-          <button id="previewBtn" class="icon-btn" type="button" hidden aria-label="Hide preview" title="Hide preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/></svg></button>
-          <button id="camBtn" class="icon-btn" type="button" aria-label="Turn on camera" title="Turn on camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/></svg></button>
+          <button id="previewBtn" class="icon-btn" type="button" hidden data-state="on" aria-label="Hide preview" title="Hide preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/><path class="slash" d="M4 20 20 4"/></svg></button>
+          <button id="camBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on camera" title="Turn on camera"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v10H3zM14 11l7-3v8l-7-3z"/><path class="slash" d="M4 20 20 4"/></svg></button>
         </span>
       </div>
       <div class="cam" id="cam" hidden>
@@ -482,7 +491,7 @@
     </div>
     <div class="card">
       <div class="card-head">Voice
-        <button id="micBtn" class="icon-btn" type="button" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+        <button id="micBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
       </div>
       <div class="meter" id="meter"><i id="level"></i></div>
       <form class="order" id="textForm">

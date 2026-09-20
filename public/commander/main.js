@@ -1033,10 +1033,7 @@ let gestures = null;
 $('previewBtn').onclick = () => {
   const showing = $('cam').hidden;
   $('cam').hidden = !showing;
-  $('previewBtn').dataset.state = showing ? 'on' : '';
-  const label = showing ? 'Hide preview' : 'Show preview';
-  $('previewBtn').title = label;
-  $('previewBtn').setAttribute('aria-label', label);
+  setIconState('previewBtn', showing ? 'on' : 'off', showing ? 'Hide preview' : 'Show preview');
 };
 $('camBtn').onclick = async () => {
   const wanted = !gestures;
@@ -1050,7 +1047,7 @@ function stopCamera() {
   {
     gestures.stop();
     gestures = null;
-    setIconState('camBtn', '', 'Turn on camera');
+    setIconState('camBtn', 'off', 'Turn on camera');
     $('camOff').hidden = false;
     $('cam').hidden = true;
     $('previewBtn').hidden = true;
@@ -1117,13 +1114,13 @@ function showSign(text) {
   signTimer = setTimeout(() => { signTimer = null; }, 1200);
 }
 
+const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
-  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right to keep stepping through the squad' }),
-  el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
-  ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
-    textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,
-  })),
+  signChip('☝️', 'aim', 'Point straight up to mark a spot on the map'),
+  signChip('🫱', 'agent', 'Hold your thumb out left or right to keep stepping through the squad'),
+  signChip('🤏', 'view', 'Pinch to switch between the map and first-person'),
+  ...Object.entries(SIGNALS).map(([name, s]) =>
+    signChip(s.emoji, name === 'ILoveYou' ? 'special' : s.label.toLowerCase(), s.meaning)),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.

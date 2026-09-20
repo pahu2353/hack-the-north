@@ -105,7 +105,7 @@ export async function createGestures({
   overlay.width = video.videoWidth;
   overlay.height = video.videoHeight;
   const draw = new DrawingUtils(overlay.getContext('2d'));
-  onStatus('Camera on: point to aim, hold a sign to order', 'ok');
+  onStatus(''); // the camera icon says it's on; the legend below says what the signs are
 
   let current = 'None';
   let since = 0;
