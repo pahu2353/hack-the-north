@@ -349,7 +349,9 @@
 
   /* First-person view: scoreboard on top, minimap top-left, HUD at the bottom. */
   .arena[data-view="map"] #map { height: calc(100% - 62px); margin-top: 62px; }
-  .arena[data-view="map"] .pov-only, .arena[data-view="map"] #pov, .arena[data-view="pov"] #map { display: none; }
+  /* Match both canvas IDs so their display rule cannot override map-view hiding. */
+  .arena[data-view="map"] .pov-only, .arena[data-view="map"] #pov,
+  .arena[data-view="map"] #pov3d, .arena[data-view="pov"] #map { display: none; }
   #pov, #pov3d { width: 100%; height: 100%; display: block; cursor: crosshair; }
   /* Only one first-person engine draws at a time: 3d is WebGL, classic is the raycaster. */
   .arena[data-engine="3d"] #pov { display: none; }
