@@ -29,6 +29,10 @@ const WALL_H = 3;
 const EYE = 1.6;
 const FAR = 70;
 const LINGER = 0.4; // seconds an enemy stays drawn after slipping out of sight
+// Overlay heights, in metres up the figure: the head sits at 1.62, so a name at shoulder height
+// lands on the body and a bar at 1.95 clears it.
+const NAME_H = 1.45;
+const BAR_H = 1.95;
 // Ambient occlusion works from a depth/normal prepass of the whole scene, and it cannot tell a
 // transparent quad from a wall: a muzzle flash or a blast sprite writes depth, AO decides the
 // pixels behind it are fully occluded, and the result is a hard black rectangle floating in the
@@ -788,9 +792,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       if (!f.group.visible) continue;
       const u = view.units.find(x => x.id === id);
       if (!u) continue;
-      const p = project(f.group.position.x, 1.95, f.group.position.z);
-      if (!p) continue;
       const own = u.team === view.team;
+      // A teammate's name sits on their shoulders rather than floating over their head, so it
+      // reads as belonging to that figure in a crowd. The enemy health bar stays up top, clear
+      // of the body it describes.
+      const p = project(f.group.position.x, own ? NAME_H : BAR_H, f.group.position.z);
+      if (!p) continue;
       hud.textAlign = 'center';
       if (own) {
         const label = u.name.toUpperCase();

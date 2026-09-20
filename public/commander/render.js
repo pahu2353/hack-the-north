@@ -39,13 +39,28 @@ export function createRenderer(canvas) {
   let flip = false; // whose way up the last frame was drawn, so clicks land on the right spot
   let radar = null; // { id, x, y, span, at }: where the round minimap is looking, eased
 
+  // The css size this canvas was last fitted to. Anything that changes the box without a window
+  // resize — turning agent cards on, a match filling the empty card strip, switching views —
+  // has to be noticed here, or the canvas keeps its old backing store and the map is drawn
+  // stretched at the wrong scale, which also puts clicks in the wrong place.
+  let fitted = { width: 0, height: 0, dpr: 0 };
+
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     const { width, height } = canvas.getBoundingClientRect();
+    // A hidden canvas measures zero. Keep the last good fit rather than dividing by it.
+    if (!width || !height) return;
+    fitted = { width, height, dpr };
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     const scale = Math.min(width / map.width, height / map.height);
     view = { scale, ox: (width - map.width * scale) / 2, oy: (height - map.height * scale) / 2, dpr };
+  }
+
+  function refit() {
+    const dpr = window.devicePixelRatio || 1;
+    const { width, height } = canvas.getBoundingClientRect();
+    if (width !== fitted.width || height !== fitted.height || dpr !== fitted.dpr) resize();
   }
 
   function toWorld(clientX, clientY) {
@@ -70,8 +85,9 @@ export function createRenderer(canvas) {
     const next = MAPS[teamView?.mapId] ?? map;
     if (next !== map) {
       map = next;
-      resize();
+      fitted = { width: 0, height: 0, dpr: 0 }; // a new layout needs a new scale at the same size
     }
+    refit();
     const { dpr } = view;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);

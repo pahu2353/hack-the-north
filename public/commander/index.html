@@ -113,20 +113,26 @@
   }
 
   .overlay { z-index: 2; }
+  /* Centring meant every screen's own height decided where the heading sat, so switching
+     screens slid the title up and down the page. Instead the first grid row is a spacer sized
+     as a fraction of the arena: the block still starts around the middle, but where it starts
+     no longer depends on what is in it. */
   .overlay {
-    position: absolute; inset: 0; display: grid; place-items: safe center; overflow: auto; padding: 16px;
+    position: absolute; inset: 0; display: grid; grid-template-rows: minmax(24px, 30%) auto auto;
+    align-content: start; justify-items: center; overflow: auto; padding: 0 16px 24px; gap: 18px;
     background: radial-gradient(circle at 50% 38%, rgba(18, 30, 38, 0.86), rgba(6, 9, 12, 0.96) 70%);
   }
+  .overlay::before { content: ""; }
   .overlay[hidden], .overlay section[hidden] { display: none; }
   .overlay section {
     width: min(520px, 100%); text-align: center; display: grid; gap: 14px; justify-items: center;
-    align-content: start; padding-top: 40px; min-height: 300px;
+    align-content: start;
   }
   /* Reserved, so screens with no line under the heading don't shift everything up. */
   .overlay p { min-height: 18px; }
   .overlay h2 {
     margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
-    padding-bottom: 12px; position: relative;
+    padding-bottom: 12px; position: relative; text-align: center;
   }
   .overlay h2::after {
     content: ""; position: absolute; left: 50%; bottom: 0; width: 34px; height: 2px; margin-left: -17px;
@@ -162,7 +168,9 @@
   .toggle-row > span { color: var(--ink-2); }
   .toggle-row button { min-width: 54px; }
   /* Shared fixed columns keep both squads and totals aligned. */
-  #screenResult { width: min(720px, 100%); padding: 48px 0 24px; gap: 18px; min-width: 0; }
+  #screenResult { width: min(720px, 100%); gap: 18px; min-width: 0; }
+  /* Side and map sit on one row until the screen is too narrow for both. */
+  .pickers { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   .result-actions { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
   .match-score { display: grid; grid-template-columns: 1fr 1.2fr 1fr; align-items: center; width: 100%; padding: 18px 12px; border: 1px solid var(--border); background: var(--panel); }
   .match-score > div { display: grid; gap: 8px; }
@@ -338,8 +346,7 @@
   .agent .prob { display: grid; grid-template-columns: 52px 1fr 30px; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
   .agent .prob.top { color: var(--ink); font-weight: 600; }
   .agent .bar { height: 6px; background: var(--panel-2); overflow: hidden; }
-  .agent .bar i { display: block; height: 100%; background: #2b5c8f; }
-  .agent .prob.top .bar i { background: var(--agent); }
+  .agent .bar i { display: block; height: 100%; background: var(--agent); }
   .agent .brain { font-size: 11px; color: var(--muted); }
   .opponent-panel { color: var(--ink-2); font-size: 12px; max-height: 150px; overflow: auto; }
   .opponent-panel summary { cursor: pointer; color: var(--gold); }
@@ -495,9 +502,12 @@
     <div class="hint" id="hint"></div>
 
     <div class="overlay" id="overlay">
-      <section id="screenMenu">
-        <h2>Choose game mode</h2>
-        <p id="menuNote"></p>
+      <!-- One heading for every screen, in the same place on every screen. Each section names
+           its own title; the result screen sets one that changes with the outcome. -->
+      <h2 id="screenTitle"></h2>
+
+      <section id="screenMenu" data-title="Commander">
+        <p id="menuNote">Command five agents by voice and hand signal.</p>
         <div class="choices">
           <button id="playBots" class="primary big" type="button">Vs bots<small>Attack or defend against an AI squad</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
@@ -505,28 +515,28 @@
         <button id="menuSettings" class="link" type="button">Settings</button>
       </section>
 
-      <section id="screenBots" hidden>
-        <h2>Vs Bots</h2>
-        <p>Choose your side, map and difficulty. Both sides use the same health and weapons.</p>
-        <label class="side-choice" for="botSide">Your side
-          <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
-        </label>
-        <label class="side-choice" for="botMap">Map
-          <select id="botMap">
-            <option value="tactical">Tactical — the default two-site map</option>
-            <option value="dust2">Dust II — long sightlines, two ways into each site</option>
-          </select>
-        </label>
+      <section id="screenBots" data-title="Vs Bots" hidden>
+        <p>Hard gives the enemy a smarter commander and tougher bots. Your squad never changes.</p>
+        <div class="pickers">
+          <label class="side-choice" for="botSide">Side
+            <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
+          </label>
+          <label class="side-choice" for="botMap">Map
+            <select id="botMap">
+              <option value="tactical">Tactical — two sites</option>
+              <option value="dust2">Dust II — long sightlines</option>
+            </select>
+          </label>
+        </div>
         <div class="choices">
-          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · 175 HP bots, sharper aim and leading grenades</small></button>
-          <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · Predictable tactics for practice</small></button>
+          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · 175 HP, sharper aim, led grenades</small></button>
+          <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · predictable</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
         <button id="botsBack" class="link" type="button">← Back</button>
       </section>
 
-      <section id="screenOnline" hidden>
-        <h2>Choose game mode</h2>
+      <section id="screenOnline" data-title="Multiplayer" hidden>
         <p>One commander attacks, the other defends.</p>
         <button id="createRoom" class="primary big" type="button">Create game</button>
         <form class="join" id="joinForm">
@@ -537,7 +547,7 @@
         <button id="onlineBack" class="link" type="button">← Back</button>
       </section>
 
-      <section id="screenLobby" hidden>
+      <section id="screenLobby" data-title="Lobby" hidden>
         <p id="lobbyIntro">Share this code with your opponent.</p>
         <div class="code" id="lobbyCode" translate="no">·····</div>
         <div class="invite">
@@ -564,8 +574,7 @@
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
       </section>
 
-      <section id="screenPause" hidden>
-        <h2>Paused</h2>
+      <section id="screenPause" data-title="Paused" hidden>
         <p></p>
         <div class="choices">
           <button id="resume" class="primary big" type="button">Resume</button>
@@ -575,15 +584,13 @@
         <div class="note">Esc closes this.</div>
       </section>
 
-      <section id="screenSettings" hidden>
-        <h2>Settings</h2>
+      <section id="screenSettings" data-title="Settings" hidden>
         <p>What to show on screen.</p>
         <div class="toggles" id="toggles"></div>
         <button id="settingsBack" class="link" type="button">← Back</button>
       </section>
 
       <section id="screenResult" hidden>
-        <h2 id="resultTitle">Victory</h2>
         <p id="resultText"></p>
         <div class="result-actions">
           <button id="again" class="primary big" type="button">Play again</button>

@@ -182,6 +182,8 @@ const activePointer = () => (pointer && performance.now() - pointer.at < POINTER
 
 // ---------- screens ----------
 
+const MENU_NOTE = 'Command five agents by voice and hand signal.';
+
 function showScreen(name) {
   if (name) stopAiming();
   $('overlay').hidden = !name;
@@ -191,6 +193,12 @@ function showScreen(name) {
   // Keyboard users land on the thing they most likely want: the primary action if it's
   // available, else the first thing they can use. Closing hands focus back to the page.
   const screen = name && $(name);
+  // One heading, always in the same place. The result screen writes its own, because it says
+  // what happened rather than which screen this is.
+  if (screen && screen.dataset.title) {
+    $('screenTitle').textContent = screen.dataset.title;
+    $('screenTitle').className = '';
+  }
   const focus = screen && (screen.querySelector('.primary:not(:disabled)')
     ?? screen.querySelector('button:not(:disabled), input:not(:disabled)'));
   if (focus) focus.focus();
@@ -354,7 +362,8 @@ function syncPerms() {
   for (const id of ['playBots', 'playOnline', 'botsScripted', 'botsOpenAI', 'createRoom']) $(id).disabled = blocked;
   $('joinCode').disabled = blocked;
   $('joinForm').querySelector('button').disabled = blocked;
-  $('menuNote').textContent = blocked ? 'Allow the mic and camera to play.' : '';
+  // Falls back to what the game is, rather than to an empty reserved line.
+  $('menuNote').textContent = blocked ? 'Allow the mic and camera to play.' : MENU_NOTE;
 }
 
 // Without a secure page the browser won't give us either, so don't lock someone out entirely.
@@ -572,8 +581,8 @@ function showResult() {
   const match = view.match;
   const won = (match?.over ? match.winner : view.result.winner) === session.team;
   const decided = match?.over ?? true;
-  $('resultTitle').textContent = decided ? (won ? 'Victory' : 'Defeat') : won ? 'Round won' : 'Round lost';
-  $('resultTitle').className = won ? 'win' : 'lose';
+  $('screenTitle').textContent = decided ? (won ? 'Victory' : 'Defeat') : won ? 'Round won' : 'Round lost';
+  $('screenTitle').className = won ? 'win' : 'lose';
   $('resultText').textContent = match?.reason ?? view.result.reason;
   renderMatchScore(match);
   renderScoreboard(match);
@@ -1340,10 +1349,16 @@ function updateHud() {
     if (!card) return;
     card.classList.toggle('dead', !u.alive);
     card.classList.toggle('watched', u.id === watchedId);
+    // The snapshot carries each agent's colour, and the map, the 3D view and the top bar all
+    // read it from there. The card took its colour from its position in the footer instead,
+    // which only matched while the squad arrived in slot order.
+    card.style.setProperty('--agent', u.color);
     card.querySelector('.name').textContent = u.name;
     card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
     card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
-    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}${u.grenades ? ' · 💣' : ''}` : '';
+    card.querySelector('.order').textContent = u.alive
+      ? `Order: ${u.orderLabel ?? '–'}${u.grenades ? ' · 💣' : ''}`
+      : '';
     card.querySelector('.brain').textContent = !u.alive ? ''
       : u.decision?.obeying ? 'following your order'
       : !u.decision ? 'thinking…'
