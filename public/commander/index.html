@@ -388,7 +388,8 @@
   /* Dimmed while nobody on your team can see them: their health is unknown. */
   .portrait.unseen { opacity: 0.5; }
   .portrait.unseen .bar i { background: rgba(255, 255, 255, 0.25); }
-  /* A round radar under the scoreboard, like the CS scope it's modelled on. */
+  /* A round radar under the scoreboard, like the CS scope it's modelled on. It follows the
+     agent you're watching, and slides to keep whatever you point at inside the rim. */
   #minimap {
     position: absolute; top: 70px; left: max(26px, env(safe-area-inset-left));
     width: clamp(150px, 19vw, 230px); aspect-ratio: 1; border-radius: 50%;
