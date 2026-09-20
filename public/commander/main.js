@@ -297,12 +297,27 @@ const SETTINGS = [
   ['feed', 'Kill feed', true],
   ['minimap', 'Minimap and zone name', true],
   ['stats', 'Jev numbers', true],
-  // Off by default: a match plays exactly as it always has until you ask for the rest of
-  // the kit. It is read when a round is created, so turning it on starts at the next match.
-  ['utility', 'Flashes & smokes', false],
+  // On by default: the full kit is the game now, and a flash or a smoke is most of what
+  // there is to say to a squad. Read when a round is created, so a change starts at the
+  // next match rather than mid-round.
+  ['utility', 'Flashes & smokes', true],
 ];
 const SETTINGS_KEY = 'commander:settings';
-let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
+// This toggle used to default off, and every setting is written back to storage together,
+// so anyone who has opened the game before is carrying a stored `false` they never chose.
+// Drop that one key once so the new default reaches them, and leave their other choices be.
+const UTILITY_DEFAULT_KEY = 'commander:utility-on';
+function clearStaleUtility(stored) {
+  try {
+    if (localStorage.getItem(UTILITY_DEFAULT_KEY)) return stored;
+    localStorage.setItem(UTILITY_DEFAULT_KEY, '1');
+    const { utility, ...rest } = stored;
+    return rest;
+  } catch {
+    return stored; // private windows and blocked storage: the default stands on its own
+  }
+}
+let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...clearStaleUtility(readJson(SETTINGS_KEY)) };
 
 function readJson(key) {
   try {

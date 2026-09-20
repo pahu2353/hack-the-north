@@ -52,7 +52,7 @@ export function createRooms(evaluate: Evaluate) {
     do code = randomCode();
     while (rooms.has(code));
     const room: Room = {
-      code, host: ws, players: {}, game: null, match: null, loop: null, next: null, map: 'tactical', utility: false,
+      code, host: ws, players: {}, game: null, match: null, loop: null, next: null, map: 'tactical', utility: true,
       brains: { attack: newBrains(), defend: newBrains() },
     };
     rooms.set(code, room);

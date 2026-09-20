@@ -62,8 +62,15 @@
   button.big:hover:not(:disabled) { background: #253440; color: var(--ink); }
   button.big.primary { background: var(--accent); }
   button.big.primary:hover:not(:disabled) { background: #55e6da; color: var(--accent-ink); }
-  button.link { background: none; border: 0; color: var(--muted); padding: 6px 8px; letter-spacing: 0.05em; }
-  button.link:hover { color: var(--ink); }
+  button.link, a.link { background: none; border: 0; color: var(--muted); padding: 6px 8px; letter-spacing: 0.05em; }
+  button.link:hover, a.link:hover { color: var(--ink); }
+  /* The docs link is an anchor, not a button: it leaves the app rather than changing screen. */
+  a.link {
+    display: inline-block; text-decoration: none;
+    font: 700 11px/1.2 system-ui, sans-serif; text-transform: uppercase; min-height: 26px;
+  }
+  /* Settings and Docs sit together under the menu choices. */
+  .menu-links { display: flex; justify-content: center; align-items: center; gap: 4px; }
   button:focus-visible, input:focus-visible { outline: 1px solid var(--squad); outline-offset: 1px; }
   input {
     background: var(--panel-2); border: 1px solid var(--border); padding: 7px 9px; color: var(--ink);
@@ -568,7 +575,10 @@
           <button id="playBots" class="primary big" type="button">Vs bots<small>Attack or defend against an AI squad</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
         </div>
-        <button id="menuSettings" class="link" type="button">Settings</button>
+        <div class="menu-links">
+          <button id="menuSettings" class="link" type="button">Settings</button>
+          <a class="link" href="docs.html">Docs</a>
+        </div>
       </section>
 
       <section id="screenBots" data-title="Vs Bots" hidden>
