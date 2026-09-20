@@ -629,8 +629,10 @@
 
 <footer class="squad" id="squad"></footer>
 
-<!-- three.js and its post-processing addons are vendored under /vendor, so the game still runs
-     with no network. The addons import three by bare specifier, which needs this map. -->
+<!-- three.js and its post-processing addons are served from the installed npm package at
+     /vendor (see serveStatic in server.ts), so the game still runs with no network and there
+     is no second copy of the library to drift from the version package.json asks for. The
+     addons import three by bare specifier, which needs this map. -->
 <script type="importmap">
 { "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }
 </script>

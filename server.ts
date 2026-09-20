@@ -20,6 +20,14 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 const PUBLIC_URL = process.env.PUBLIC_URL?.replace(/\/+$/, '') || null;
 const MOCK = process.env.JEV_MOCK === '1';
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
+// three.js is an npm dependency, not part of this repo, but the browser can only fetch what
+// this server hands it and node_modules is outside public/. So /vendor/ is served straight out
+// of the installed package: no build step, no CDN, and no copy of the library to drift from the
+// version package.json asks for. The two roots are the package's own layout.
+const THREE_DIRS: Record<string, string> = {
+  'addons/': fileURLToPath(new URL('./node_modules/three/examples/jsm/', import.meta.url)),
+  '': fileURLToPath(new URL('./node_modules/three/build/', import.meta.url)),
+};
 const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -145,11 +153,26 @@ function lanUrls() {
     .map(net => `http://${net!.address}:${PORT}`);
 }
 
+// Where a request is allowed to read from: public/, or the installed three.js under /vendor/.
+// Each root is checked against the resolved path, so no request can climb out of the one it
+// was routed to.
+function resolveStatic(route: string) {
+  if (route.startsWith('/vendor/')) {
+    const rest = route.slice('/vendor/'.length);
+    const prefix = rest.startsWith('addons/') ? 'addons/' : '';
+    const root = THREE_DIRS[prefix];
+    const file = normalize(join(root, rest.slice(prefix.length)));
+    return file.startsWith(root) ? file : null;
+  }
+  const file = normalize(join(PUBLIC_DIR, route));
+  return file.startsWith(PUBLIC_DIR) ? file : null;
+}
+
 // Serves files under public/, reading on every request so edits show up without a restart.
 async function serveStatic(pathname: string, res: ServerResponse) {
   const route = pathname.endsWith('/') ? `${pathname}index.html` : pathname;
-  const file = normalize(join(PUBLIC_DIR, route));
-  if (!file.startsWith(PUBLIC_DIR)) return false;
+  const file = resolveStatic(route);
+  if (!file) return false;
   try {
     const body = await readFile(file);
     res.writeHead(200, { 'content-type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream' });
