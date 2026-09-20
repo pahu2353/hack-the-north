@@ -205,7 +205,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     tracers.length = 0;
     for (const n of nades.values()) scene.remove(n);
     nades.clear();
-    for (const b of blasts) scene.remove(b.group);
+    for (const b of blasts) disposeBlast(b);
     blasts.length = 0;
   }
 
@@ -442,6 +442,60 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     }
   }
 
+  // The pieces of one explosion. The update loop below drives them all; this only builds what
+  // that loop expects to find, so the two have to stay in step: core, ring, light, puffs, sparks.
+  function spawnBlast(x, y, r, slow = 1) {
+    const group = new THREE.Group();
+    group.position.set(x, 0, y);
+    // Gone in a tenth of a second. It is the shortest-lived part and the one that sells the hit.
+    const core = sprite(SPRITES.flash, 1);
+    core.position.y = 0.9;
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.92, 1, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffca8a, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    ring.rotation.x = -Math.PI / 2; // rings are built in the XY plane; lay it on the floor
+    ring.position.y = 0.06;
+    const light = new THREE.PointLight(0xffb066, 0, r * 5);
+    light.position.y = 1.1;
+    group.add(core, ring, light);
+
+    const puffs = [];
+    for (let i = 0; i < 9; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const speed = 1.2 + Math.random() * 2.4;
+      const s = sprite(SPRITES.smoke, 1, 0.7);
+      // Smoke hides what is behind it rather than glowing, unlike every other sprite here.
+      s.material.blending = THREE.NormalBlending;
+      s.position.set(Math.cos(a) * 0.3, 0.5 + Math.random() * 0.6, Math.sin(a) * 0.3);
+      group.add(s);
+      puffs.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 0.9 + Math.random() * 0.8 });
+    }
+    const sparks = [];
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const speed = 5 + Math.random() * 7;
+      const s = sprite(SPRITES.glow, 0.22);
+      s.position.set(0, 0.5, 0);
+      group.add(s);
+      sparks.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 3 + Math.random() * 4 });
+    }
+    scene.add(markFx(group));
+    // markFx put everything on the effects layer, which a light must not be confined to: a light
+    // only reaches objects sharing one of its layers, and the map is on the default one.
+    light.layers.enableAll();
+    blasts.push({ group, core, ring, light, puffs, sparks, t: 0, r, slow });
+  }
+
+  // A blast builds its own geometry and materials, so they go back when it ends.
+  function disposeBlast(b) {
+    scene.remove(b.group);
+    b.group.traverse(o => {
+      o.geometry?.dispose?.();
+      o.material?.dispose?.();
+    });
+  }
+
   function syncGrenades(view, dt) {
     const live = new Set();
     for (const g of view.grenades ?? []) {
@@ -504,7 +558,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
         p.s.material.opacity = Math.max(0, 1 - b.t / (0.55 * (b.slow ?? 1)));
       }
       if (b.t >= LIFE) {
-        scene.remove(b.group);
+        disposeBlast(b);
         blasts.splice(i, 1);
       }
     }
