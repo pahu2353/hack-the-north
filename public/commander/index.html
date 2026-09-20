@@ -405,6 +405,17 @@
   .pov-hud .hp { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   .pov-hud .who { display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
   .pov-hud .who b { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
+  /* The spike, once it's down: a banner under the scoreboard, and a defuse bar that fills. */
+  .spike-state {
+    position: absolute; top: 62px; left: 50%; transform: translateX(-50%); display: grid; gap: 4px;
+    justify-items: center; min-width: 170px; padding: 5px 12px; pointer-events: none; z-index: 1;
+    background: rgba(8, 10, 14, 0.9); border: 1px solid rgba(255, 70, 85, 0.45);
+    font: 700 11px/1 system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase; color: var(--enemy);
+  }
+  .spike-state.defusing { border-color: rgba(46, 211, 198, 0.5); color: var(--accent); }
+  .spike-state .bar { width: 100%; height: 3px; background: rgba(255, 255, 255, 0.14); }
+  .spike-state .bar i { display: block; height: 100%; width: 0; background: currentColor; }
+  .scorebar .score-clock.spike { color: var(--enemy); }
   .toast {
     position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); font: 800 28px system-ui, sans-serif;
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
@@ -438,6 +449,10 @@
       <div class="score-clock" id="scoreClock">–</div>
       <div class="round-score enemy" id="enemyScore">0</div>
       <div class="team enemy" id="enemyBar"></div>
+    </div>
+    <div class="spike-state" id="spikeState" hidden>
+      <span class="what" id="spikeWhat">Spike planted</span>
+      <span class="bar"><i id="spikeBar"></i></span>
     </div>
     <div class="toast" id="toast" hidden></div>
     <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Match events"></div>

@@ -539,6 +539,7 @@ function moveToward(game, u, dest, dt) {
 }
 
 function step(game, u, dest, dt) {
+  dest = clampToPrep(game, u, dest);
   if (!dest) {
     u.moving = false;
     return;
@@ -564,15 +565,27 @@ function step(game, u, dest, dt) {
 }
 
 // During prep a squad may walk around its own third of the map, and no further.
+// During prep an agent's destination is pulled back to its own side, so it walks up to the line
+// and stops. Without this it paths across, gets snapped back every frame, repaths, and vibrates.
+function clampToPrep(game, u, dest) {
+  if (!dest || !preparing(game)) return dest;
+  const line = prepLine(game.map, u.team);
+  const limit = u.team === 'attack' ? line + u.r + 0.2 : line - u.r - 0.2;
+  const beyond = u.team === 'attack' ? dest.y < limit : dest.y > limit;
+  if (!beyond) return dest;
+  // The goal is across the line: walk up to it, then hold. Without the hold, the whole squad
+  // presses on the same point and shoves each other sideways for the rest of the phase.
+  const atLine = u.team === 'attack' ? u.y <= limit + 1.2 : u.y >= limit - 1.2;
+  return atLine ? null : { x: dest.x, y: limit };
+}
+
+// A backstop for anything that still ends up over the line (a shove, a spawn). It no longer
+// clears the path: that was the other half of the vibration.
 function holdBehindPrepLine(game) {
   for (const u of game.units) {
     if (!u.alive) continue;
     const line = prepLine(game.map, u.team);
-    if (u.team === 'attack' ? u.y < line : u.y > line) {
-      u.y = line + (u.team === 'attack' ? u.r : -u.r);
-      u.path = [];
-      u.pathGoal = null;
-    }
+    if (u.team === 'attack' ? u.y < line : u.y > line) u.y = line + (u.team === 'attack' ? u.r : -u.r);
   }
 }
 
