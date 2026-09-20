@@ -63,6 +63,31 @@ const TRACK_MAX_SPEED = 8; // reject teleports/collision spikes in observed move
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
 const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 1.1, y: 2.4 }, { x: -1.1, y: 2.4 }];
 
+// How fast a body moves, as a fraction of its own speed. Walking is the tactical pace: slow
+// enough to stay accurate and to clear an angle properly, which is what a commander means by
+// "carefully" even when they never say the word.
+export const PACE = { still: 0, walk: 0.45, run: 1 };
+// How far apart a squad sent to one zone stands. One grenade reaches everyone in a clump, so
+// spreading is the answer to being punished for arriving together; stacking is for going
+// through a door fast and is worth the risk when the order was urgent.
+export const FORMATION = { stacked: 0.55, normal: 1, spread: 2.1 };
+// Where an agent points its weapon, which until now was wherever it last walked. Travel is the
+// old behaviour; the rest are what a player does with the mouse while their feet do something
+// else, and they are the difference between a squad standing around and a squad holding a site.
+export const GAZE = ['travel', 'hold_angle', 'on_threat', 'scan', 'watch_back'];
+// A scan sweeps this far either side of the angle being held, slowly, like checking a corner.
+const SCAN_ARC = 0.85;
+const SCAN_RATE = 0.9;
+// Roles inside a group given one order. Two agents sent to the same place should not behave
+// identically: someone goes through the door and someone covers them going through it.
+export const ROLES = ['entry', 'trade', 'anchor', 'lurk'];
+// An order lands visibly before anyone has walked anywhere: the agent looks where it was sent.
+// Almost all of the felt responsiveness of an order is in this half second.
+const ACK_SECONDS = 0.45;
+// How long an agent that has arrived stays put before looking for a better spot in the same
+// zone. Occupying ground is a job, not the absence of one.
+const OCCUPY_SETTLE = 2.5;
+
 // defenders selects bot mode or multiplayer; playerTeam chooses the human's side in bot mode.
 // A match is a best of three. It keeps the score and every agent's totals, so a round can
 // end and the next one starts with fresh bodies but the same scorecard.
@@ -163,6 +188,10 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
     grenades: [],
     knownDown: { attack: new Set(), defend: new Set() },
     manualAim: { attack: null, defend: null },
+    // What the commander said about the enemy without giving an order. "Two on B" is not a
+    // command and correctly does not move anyone, but a squad that hears it and changes
+    // nothing at all is a squad that is not listening.
+    callouts: { attack: null, defend: null },
   };
   for (const team of ['attack', 'defend']) map.spawns[team].forEach((post, i) => {
     if (team === game.botTeam) {
@@ -207,6 +236,16 @@ function makeUnit(game, props) {
     lastShotAt: -Infinity,
     lastAimHitAt: -Infinity,
     stillSince: 0,
+    pace: 'run',
+    gaze: 'travel',
+    holdBearing: null,
+    scanPhase: Math.random() * Math.PI * 2,
+    holdFire: false,
+    role: null,
+    occupying: false,
+    ackUntil: 0,
+    repositionPoint: null,
+    settleAt: 0,
     stats: { kills: 0, deaths: 0, damage: 0 },
     grenades: GRENADE.carried,
     throwReadyAt: 0,
@@ -230,13 +269,28 @@ export const unitById = (game, id) => game.units.find(u => u.id === id);
 // Where the enemy is, as far as this team knows: the freshest sighting any of them has. It is
 // what "go at them" means, and it stays inside the fog of war — an unseen enemy is not here.
 // With nothing seen all round, the enemy's own spawn is the honest direction to head.
+export const CALLOUT_SECONDS = 20; // how long "they're on B" keeps steering the squad
+
+// Where the enemy is, as far as this team knows. A commander's callout counts as knowing:
+// it is worth exactly as much as a sighting of the same age, and no more, so a live sighting
+// of somewhere else still wins.
+export function noteCallout(game, team, point) {
+  if (!point || !Object.hasOwn(game.callouts, team)) return false;
+  game.callouts[team] = { x: point.x, y: point.y, t: game.time };
+  return true;
+}
+
 export function enemyContact(game, team) {
   let best = null;
   for (const [id, seen] of game.intel[team]) {
     if (!unitById(game, id)?.alive) continue;
     if (!best || seen.t > best.t) best = seen;
   }
+  const called = game.callouts?.[team];
+  if (called && game.time - called.t < CALLOUT_SECONDS && (!best || called.t > best.t)) best = called;
   if (best) return { x: best.x, y: best.y, seenAgo: game.time - best.t };
+  // Every map names its own spawns — Dust II calls them T and CT — so ask the map rather
+  // than assuming the default layout's wording.
   const spawn = zoneByName(game.map, game.map.home[otherTeam(team)]);
   return { x: spawn.center.x, y: spawn.center.y, seenAgo: null };
 }
@@ -250,10 +304,14 @@ function gridFor(game) {
 
 export function setOrder(game, u, order) {
   const o = { ...order, via: null, viaReached: false };
+  o.spread ??= 'normal';
   const zoneCenter = zoneByName(game.map, o.zone)?.center;
+  // Slots only apply to a whole zone. A point the commander actually picked — by clicking or
+  // by pointing at it — is where they want the agent, so it is left exactly where it is.
   if (zoneCenter && dist(zoneCenter, o.point) < 0.01) {
     const slot = SLOTS[TEAMS[u.team].names.indexOf(u.name)] ?? SLOTS[0];
-    o.point = nearestOpenPoint(gridFor(game), { x: o.point.x + slot.x, y: o.point.y + slot.y });
+    const apart = FORMATION[o.spread] ?? 1;
+    o.point = nearestOpenPoint(gridFor(game), { x: o.point.x + slot.x * apart, y: o.point.y + slot.y * apart });
   }
   const route = game.map.routes[o.zone];
   let viaZone = null;
@@ -280,6 +338,25 @@ export function setOrder(game, u, order) {
   u.coverPoint = null;
   u.settledAt = null; // a new order is worth walking for, even onto a crowded spot
   u.approach = null;
+  // A new order is a new job: whatever angle was being held belongs to the last one.
+  u.occupying = false;
+  u.holdBearing = null;
+  u.repositionPoint = null;
+  u.settleAt = 0;
+  u.pace = o.pace ?? 'run';
+  if (o.role !== undefined) u.role = o.role;
+  u.holdFire = u.role === 'lurk';
+  // Look where you were sent, now, before a single step is taken. The order has visibly
+  // landed even though the walk has not started.
+  u.gaze = 'travel';
+  u.ackUntil = game.time + ACK_SECONDS;
+}
+
+// The direction an order points an agent in, used for the acknowledging turn and as the
+// angle they end up holding once they arrive.
+function orderBearing(game, u) {
+  const dest = orderDestination(game, u);
+  return dist(u, dest) > 0.5 ? angleTo(u, dest) : u.facing;
 }
 
 // What carrying out the current order looks like, as an action.
@@ -430,6 +507,14 @@ function controlAgent(game, u, dt) {
       dest = bomb ? evadePoint(game, u, bomb) : objective;
       break;
     }
+    case 'reposition': {
+      // Same ground, better spot. The relation is chosen here rather than asked for as a
+      // coordinate, because a model naming "off the angle they are watching" is reliable and
+      // a model naming a pair of metres is not.
+      if (!u.repositionPoint || dist(u, u.repositionPoint) < 1) u.repositionPoint = betterSpot(game, u, focus);
+      dest = u.repositionPoint;
+      break;
+    }
     default: // hold, fight
       dest = null;
   }
@@ -453,8 +538,42 @@ function controlAgent(game, u, dt) {
     if (nearest === u) dest = { x: spike.x, y: spike.y };
   }
   if (dest && dist(u, dest) < 0.8) dest = null;
+  // Somewhere to be and told to stand still is a contradiction: the order wins, at the
+  // careful pace. Code resolves it rather than letting a stuck agent look like a bug.
+  if (dest && u.pace === 'still') u.pace = 'walk';
+  // Arrived, with nothing to fight: occupying ground is a job of its own, and it is the one
+  // the squad spends most of a round doing.
+  if (!dest && !focus) occupy(game, u, focus);
+  else if (dest) u.occupying = false;
   moveToward(game, u, dest, dt);
+  aimAgent(game, u, focus, dt);
   if (focus) shoot(game, u, focus);
+}
+
+// A better place to stand than this one, expressed as a relation rather than a coordinate.
+// Off the angle a visible enemy is watching if there is one; otherwise a spot in the same
+// zone that is not on top of a teammate, which is what stops a squad bunching into one grenade.
+function betterSpot(game, u, focus) {
+  const g = gridFor(game);
+  const zone = zoneAt(game.map, u);
+  const mates = aliveTeam(game, u.team).filter(m => m !== u);
+  const away = focus ? angleTo(focus, u) : null;
+  let best = null;
+  let bestScore = -Infinity;
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    const radius = 2.5 + (k % 3) * 1.6;
+    const p = { x: u.x + Math.cos(a) * radius, y: u.y + Math.sin(a) * radius };
+    if (p.x < 1 || p.y < 1 || p.x > game.map.width - 1 || p.y > game.map.height - 1) continue;
+    if (!walkableLine(g, u, p)) continue;
+    if (zoneAt(game.map, p) !== zone) continue; // repositioning is within the ground you hold
+    // Spacing from the squad first: one grenade should not be able to reach two of you.
+    let score = mates.length ? Math.min(...mates.map(m => dist(m, p))) : 6;
+    // Off the angle, not straight back from it: sidestepping beats retreating in a straight line.
+    if (away !== null) score += Math.abs(Math.sin(a - away)) * 4 - (hasLineOfSight(game.map, focus, p) ? 3 : 0);
+    if (score > bestScore) { bestScore = score; best = p; }
+  }
+  return best ?? { x: u.x, y: u.y };
 }
 
 // Somewhere clear of a blast, in the walkable direction away from it. A grenade landing right
@@ -544,7 +663,9 @@ export function rifleAccuracy(game, u, target) {
     p = u.moving ? MANUAL_AIM.movingAccuracy : MANUAL_AIM.accuracy;
   } else {
     p = u.kind === 'bot' && game.opponent === 'openai' ? HARD_BOT.accuracy : RIFLE.accuracy;
-    if (u.moving) p *= 0.3;
+    // Running spoils your aim; walking barely does. That gap is what makes "take it slow"
+    // a real instruction rather than a slower way to arrive.
+    if (u.moving) p *= u.pace === 'walk' ? 0.65 : 0.3;
     else if (game.time - u.stillSince > 1) p *= 1.25;
   }
   p *= clamp(1 - dist(u, target) / 55, 0.15, 1);
@@ -554,6 +675,10 @@ export function rifleAccuracy(game, u, target) {
 
 function shoot(game, u, target) {
   if (u.cooldown > 0 || !target.alive || preparing(game)) return;
+  // Holding fire is what makes an ambush, a lurk and letting someone walk past possible at
+  // all. It is never suicide: an agent already being shot at, or about to be walked into,
+  // defends itself and gives its position away.
+  if (u.holdFire && !(target.targetId === u.id && game.time - target.lastShotAt < 1) && dist(u, target) > 6) return;
   if (game.time - (u.seen.get(target.id) ?? game.time) < u.reaction) return;
   const d = dist(u, target);
   if (d > RIFLE.range) return;
@@ -639,8 +764,13 @@ function step(game, u, dest, dt) {
     return;
   }
   const heading = angleTo(u, waypoint);
-  if (game.time - u.lastShotAt > 0.4) u.facing = turnToward(u.facing, heading, dt);
-  const distance = Math.min(u.speed * dt, dist(u, waypoint));
+  u.travelHeading = heading;
+  // Facing follows the feet only while the agent is travelling with its eyes forward. Any
+  // other gaze means the two have deliberately come apart, and aimAgent owns the angle.
+  if (game.time - u.lastShotAt > 0.4 && u.gaze === 'travel' && game.time >= (u.ackUntil ?? 0)) {
+    u.facing = turnToward(u.facing, heading, dt);
+  }
+  const distance = Math.min(paceSpeed(u) * dt, dist(u, waypoint));
   const moved = advance(game, u, heading, distance);
   u.moving = moved > 0.001;
   noteProgress(game, u, dest);
@@ -701,6 +831,74 @@ function advance(game, u, heading, distance) {
 // walking agent can turn keeps one frame's shove — from a wall, or from a teammate squeezing
 // past — from spinning it on the spot.
 const TURN_RATE = 10; // radians per second
+// ---------- where the weapon points ----------
+
+// Until now facing was wherever the agent last walked, so a squad that arrived somewhere stood
+// staring at the wall it had approached. Facing is now its own decision, and the gaze channel
+// is what decides it: the feet carry out the order while the eyes hold an angle, sweep a
+// corner, or watch the way the squad came in.
+function aimAgent(game, u, focus, dt) {
+  // A shot just snapped the weapon onto its target; nothing overrides that.
+  if (game.time - u.lastShotAt <= 0.4) return;
+  // An order has landed. Look at it before a step is taken — including while standing still,
+  // where nothing used to move the angle at all. This is most of what makes an order feel
+  // like it was heard. The turn stays at the normal bounded rate: 10 rad/s is already a
+  // snap, and exceeding it is what lets a shove spin an agent.
+  if (game.time < (u.ackUntil ?? 0)) {
+    u.facing = turnToward(u.facing, orderBearing(game, u), dt);
+    return;
+  }
+  const want = gazeBearing(game, u, focus, dt);
+  if (want !== null) u.facing = turnToward(u.facing, want, dt);
+}
+
+function gazeBearing(game, u, focus, dt) {
+  const fallback = u.holdBearing ?? null;
+  switch (u.gaze) {
+    case 'on_threat': {
+      const at = focus ?? (game.intel[u.team].size ? enemyContact(game, u.team) : null);
+      return at ? angleTo(u, at) : fallback;
+    }
+    case 'hold_angle':
+      return fallback;
+    case 'scan': {
+      // A slow sweep either side of the angle being held, the way you check a corner you are
+      // not committed to. Never a spin: the held angle stays the centre of attention.
+      u.scanPhase += dt * SCAN_RATE;
+      const base = u.holdBearing ?? u.facing;
+      return base + Math.sin(u.scanPhase) * SCAN_ARC;
+    }
+    case 'watch_back':
+      // Looking back down the way the squad came, which is where a flank arrives from.
+      return angleTo(orderDestination(game, u), u);
+    default:
+      // Travelling: the feet own the angle while moving, the last held angle when stopped.
+      return u.moving ? null : fallback;
+  }
+}
+
+// An agent that has arrived is occupying ground, which is a job. It picks an angle worth
+// holding — the way the enemy is known or expected to come — and keeps it.
+function occupy(game, u, focus) {
+  if (!u.occupying) {
+    u.occupying = true;
+    u.settleAt = game.time + OCCUPY_SETTLE;
+    const threat = enemyContact(game, u.team);
+    u.holdBearing = angleTo(u, threat);
+    u.scanPhase = Math.random() * Math.PI * 2;
+  }
+  if (focus) return;
+  // Nobody in sight and nothing to do: hold the angle, and sweep it when the order was to
+  // hold rather than to take ground. A lurker keeps watching the way in behind them.
+  if (u.role === 'lurk') u.gaze = 'watch_back';
+  else if (u.gaze === 'travel') u.gaze = u.order.type === 'hold' ? 'scan' : 'hold_angle';
+}
+
+// Walking is a real tactical choice, not a slower run: it keeps the agent accurate and is
+// what clearing an angle looks like. A pace of 'still' with somewhere to be is a contradiction
+// the caller resolves before we get here, so it never freezes anyone mid-order.
+export const paceSpeed = u => u.speed * (PACE[u.pace] ?? 1);
+
 function turnToward(from, to, dt) {
   const step = TURN_RATE * dt;
   if (angleDiff(from, to) <= step) return to;
@@ -1097,6 +1295,9 @@ export function teamView(game, team) {
       units.push({
         id: u.id, team: u.team, name: u.name, x: u.x, y: u.y, facing: u.facing, hp: u.hp, maxHp: u.maxHp, r: u.r,
         alive: true, color: ENEMY_COLORS[(u.slot ?? 0) % ENEMY_COLORS.length], firing: game.time - u.lastShotAt < 0.08,
+        // Whether someone is walking or sprinting is visible from across a site, so sending
+        // it leaks nothing the agent watching them cannot already see.
+        moving: u.moving, pace: u.pace,
         // Which of your agents can see them right now: the first-person view shows only what
         // the agent you're watching sees, and the team map shows everything anyone sees.
         seenBy: watchers.filter(w => w.visible.includes(u)).map(w => w.id),
@@ -1157,6 +1358,7 @@ function ownUnit(game, u) {
     id: u.id, team: u.team, name: u.name, kind: u.kind, x: u.x, y: u.y, facing: u.facing,
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
     hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
+    pace: u.pace, gaze: u.gaze, role: u.role, holdFire: u.holdFire, occupying: u.occupying,
     obeying: obeying(game, u),
     manualAim: Boolean(manualAimFor(game, u)),
     aimTargetId: crosshairTarget(game, u)?.id ?? null,

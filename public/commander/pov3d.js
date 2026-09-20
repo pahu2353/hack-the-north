@@ -406,7 +406,9 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       const moved = f.lastPos ? Math.hypot(p.x - f.lastPos.x, p.y - f.lastPos.y) : 0;
       f.lastPos = { x: p.x, y: p.y };
       const walking = u.moving ?? moved / Math.max(dt, 1e-3) > 0.6;
-      stepGait(f, walking, Boolean(u.firing), dt);
+      // A walking agent is doing something deliberate — clearing an angle, holding fire —
+      // and it has to read differently from a sprint or the pace channel is invisible.
+      stepGait(f, walking, Boolean(u.firing), dt, u.pace === 'walk' ? 0.5 : 1);
       // A squadmate who walks into the camera fills the whole screen and blinds the view.
       // Shooters fade teammates out as they close on the lens; without it, standing in a
       // stack makes first person unusable. Fully gone under 0.9 m, clear again past 2.0 m.
@@ -2191,11 +2193,11 @@ function setFigureAlpha(f, alpha) {
   });
 }
 
-function stepGait(f, walking, firing, dt) {
+function stepGait(f, walking, firing, dt, effort = 1) {
   const p = f.parts;
-  f.phase += dt * (walking ? 8.5 : 1.6);
+  f.phase += dt * (walking ? 8.5 * effort : 1.6);
   const s = Math.sin(f.phase);
-  const swing = walking ? 0.46 : 0.03;
+  const swing = walking ? 0.46 * effort : 0.03;
   p.hipL.rotation.x = s * swing;
   p.hipR.rotation.x = -s * swing;
   // Knees only bend one way, and mostly as the leg trails behind.
@@ -2209,7 +2211,9 @@ function stepGait(f, walking, firing, dt) {
   f.kick = Math.max(0, (f.kick ?? 0) - dt * 9);
   if (firing && f.kick < 0.35) f.kick = 1;
   // Running drops the muzzle; firing snaps it up and rocks the shoulders back.
-  const target = firing ? 0.02 : walking ? -0.4 : -0.06;
+  // A careful walk keeps the weapon up; a sprint drops it. That is the whole visual tell
+  // that an agent is clearing ground rather than crossing it.
+  const target = firing ? 0.02 : walking ? -0.4 * effort : -0.06;
   f.aim = (f.aim ?? target) + (target - (f.aim ?? target)) * Math.min(1, dt * 9);
   p.rig.rotation.x = f.aim - f.kick * 0.13;
   p.rig.rotation.z = (walking && !firing ? 0.12 : 0) + f.kick * 0.04;

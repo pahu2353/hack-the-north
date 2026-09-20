@@ -4,11 +4,23 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, directionPoint, enemyContact, grenadeSpot, incomingGrenade, isDirection, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
+import { aliveTeam, directionPoint, enemyContact, grenadeSpot, incomingGrenade, isDirection, noteCallout, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
 const VOICE_PACE = { mild: 1.08, strong: 1.18 };
+// Nobody says "walk there spread out". They say it by how they say it. Urgency already comes
+// back from Jev on every spoken order and until now only printed two words in the log, so the
+// unspoken half of an order — how fast, how close together — is read from it here.
+const TEMPO = {
+  critical: { pace: 'run', spread: 'stacked' },
+  high: { pace: 'run', spread: 'stacked' },
+  normal: { pace: 'run', spread: 'normal' },
+  low: { pace: 'walk', spread: 'spread' },
+};
+// How long the agent carries out an order before Jev is allowed to argue with it. A commander
+// who corrected themselves mid-sentence should be re-checked sooner than one who did not.
+const COMMITMENT = { uncertain: 1.5, normal: 3, confident: 4.5 };
 
 // Words that start an instruction. A lone letter counts as an agent's initial only when one of
 // these follows it, which is what keeps "a" the article out of it: "throw a nade", "make a
@@ -218,6 +230,18 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
+    // Most of what a hands-free mic hears is not an order, and until now all of it was
+    // thrown away. Plenty of it is information: "two on B", "they're pushing mid", "one
+    // down long". That moves nobody, but it is what the squad should be watching.
+    questions.is_callout = {
+      type: 'boolean',
+      instructions: 'Is the commander saying where the enemy is or what the enemy is doing — a sighting, a count, a direction they are coming from? Yes for "two on B", "they\'re pushing mid", "one long". No for an order, a reaction, or a question.',
+    };
+    questions.callout_place = {
+      type: 'choice',
+      instructions: 'If the commander just said where the enemy is, which place did they mean? Pick the place the enemy is being reported at, not where the squad is.',
+      criteria: locations,
+    };
     if (voiceContext) {
       questions.command_urgency = {
         type: 'choice',
@@ -276,12 +300,16 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       urgency: result.answers.command_urgency?.choice ?? 'normal',
       certainty: result.answers.commander_certainty?.choice ?? 'normal',
     } : null;
+    // A callout is applied even when the utterance is also an order ("they're on B, everyone
+    // rotate"), because both halves are true.
+    const callout = applyCallout(game, team, result.answers, { pointer, pointerZone, contact });
     if (isOrder < 0.5) {
-      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens, ux };
+      return { ignored: true, isOrder, plan: [], callout, latency: result.latency, tokens: result.usage?.inputTokens, ux };
     }
     // A small speed boost once Jev accepts a shouted order. The next order resets speed from
     // each unit's original value, so cues never stack.
     const pace = source === 'voice' ? voicePaceMultiplier(voiceContext) : 1;
+    const tempo = TEMPO[ux?.urgency ?? 'normal'] ?? TEMPO.normal;
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
@@ -315,7 +343,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         } else {
           point = zoneByName(game.map, target.choice).center;
         }
-        setOrder(game, unit, { type: order.choice, zone, point });
+        setOrder(game, unit, { type: order.choice, zone, point, pace: tempo.pace, spread: tempo.spread });
+        unit.obeyUntil = game.time + (COMMITMENT[ux?.certainty ?? 'normal'] ?? COMMITMENT.normal);
         lastAppliedCommand.set(unit, commandId);
         unit.action = orderAction(game, unit);
       }
@@ -330,6 +359,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
+    assignRoles(game, squad.filter((unit, i) => plan[i].applied));
+    // Roles are settled after the whole plan is known, so the log reports what was actually
+    // decided rather than what each agent looked like on its own.
+    plan.forEach((p, i) => {
+      if (!p.applied) return;
+      Object.assign(p, { role: squad[i].role, pace: squad[i].pace, spread: squad[i].order.spread });
+    });
     if (plan.some(p => p.applied)) {
       // Read the latest history after awaiting Jev: requests may complete out of order.
       // Remember accepted commands in submission order, separately for each side and round.
@@ -339,7 +375,55 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       commandHistory.set(game, history);
     }
     const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
-    return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
+    return { plan, isOrder, stale, callout, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
+  }
+
+  // Two agents sent to the same place should not be two copies of one agent. Whoever is
+  // closest goes in; the next one covers them going in and arrives a beat later, watching the
+  // angle rather than the floor; anyone told to hold anchors. A flank is a lurk by definition,
+  // and a lurker holds fire, because a lurk that shoots the first thing it sees is just a
+  // second entry. Positions decide this, not Jev: it is arithmetic, and it has to be stable.
+  function assignRoles(game, units) {
+    if (!units.length) return;
+    const groups = new Map();
+    for (const u of units) {
+      if (u.order.type === 'flank') { u.role = 'lurk'; u.holdFire = true; continue; }
+      const key = `${u.order.type}:${u.order.zone}`;
+      groups.set(key, [...(groups.get(key) ?? []), u]);
+    }
+    for (const group of groups.values()) {
+      if (group.length === 1) {
+        group[0].role = group[0].order.type === 'hold' ? 'anchor' : 'entry';
+        group[0].holdFire = false;
+        continue;
+      }
+      const ordered = [...group].sort((a, b) => dist(a, orderDestination(game, a)) - dist(b, orderDestination(game, b)));
+      ordered.forEach((u, i) => {
+        u.role = u.order.type === 'hold' ? 'anchor' : i === 0 ? 'entry' : i === 1 ? 'trade' : 'anchor';
+        u.holdFire = false;
+        // The trade walks in behind the entry, watching, rather than racing them through
+        // the door. Two bodies arriving at a corner at once is how squads lose both.
+        if (u.role === 'trade') { u.pace = 'walk'; u.gaze = 'on_threat'; }
+      });
+    }
+  }
+
+  // Turn a sighting into something the squad acts on. Nobody is given an order and nobody
+  // moves: what changes is the angle an agent holds when it has arrived somewhere and has
+  // nothing else to do, which is most of a round. Saying "they're on B" and watching the
+  // squad's heads turn is the whole point.
+  function applyCallout(game, team, answers, { pointer, pointerZone, contact }) {
+    if ((answers.is_callout?.probability ?? 0) < 0.6) return null;
+    const place = answers.callout_place?.choice;
+    if (!place || place === 'current') return null;
+    let point;
+    let zone = place;
+    if (place === 'pointed' && pointer) { point = { x: pointer.x, y: pointer.y }; zone = pointerZone; }
+    else if (place === 'enemy') { point = { x: contact.x, y: contact.y }; zone = zoneAt(game.map, contact).name; }
+    else point = zoneByName(game.map, place)?.center;
+    if (!point) return null;
+    noteCallout(game, team, point);
+    return { zone, confidence: answers.is_callout.probability };
   }
 
   // ---------- 2. per-agent decision loops ----------
@@ -359,8 +443,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       }
       const tick = agentTick(game, u);
       // Nothing to decide (no contact): follow the commander's order without a Jev call.
+      // This is where a squad spends most of a round, so it is also where standing frozen
+      // used to come from. The order still runs; the simulation gives an agent that has
+      // arrived an angle to hold, and a fresh order takes the eyes off it again.
       if (!tick) {
         u.action = orderAction(game, u);
+        if (u.action !== 'hold') u.holdFire = u.role === 'lurk';
         if (!u.decision?.local || u.decision.action !== u.action) {
           u.decision = { action: u.action, probabilities: { [u.action]: 1 }, local: true };
         }
@@ -380,15 +468,26 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       ask(state, questions)
         .then(({ answers, latency }) => {
           if (!u.alive || game.result || u.order !== order) return;
-          const { action, target } = answers;
+          const { action, target, gaze, hold_fire: holdFire, order_complete: done } = answers;
           if (action.choice !== u.action) u.coverPoint = null;
           u.action = action.choice;
+          if (action.choice !== 'reposition') u.repositionPoint = null;
           if (target) u.focusId = targets[target.choice] ?? null;
           else if (Object.keys(targets).length === 1) u.focusId = Object.values(targets)[0];
+          // The channels are proposals, not commands: the simulation vetoes a frame that
+          // contradicts itself, the same way a reflex outranks a judgement.
+          if (gaze) u.gaze = gaze.choice;
+          u.holdFire = (holdFire?.probability ?? 0) > 0.6;
+          // Finished means the job changes from taking ground to holding it. The order is
+          // not cleared — the agent stays where it was sent — but it stops walking at it.
+          if ((done?.probability ?? 0) > 0.6 && u.action === 'advance') u.action = 'hold';
           u.decision = {
-            action: action.choice,
+            action: u.action,
             probabilities: action.probabilities ?? { [action.choice]: 1 },
             target: target?.choice ?? null,
+            gaze: gaze?.choice ?? null,
+            holdFire: u.holdFire,
+            complete: (done?.probability ?? 0) > 0.6,
             latency,
           };
         })
@@ -451,11 +550,39 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     if (clump?.caught >= 2 && !bomb) actions.nade = `${carriesOut('nade')}throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
     if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
+    if (toObjective <= 3) actions.reposition = 'you are already where you were sent: move to a better spot on this same ground, off the angle you are being watched from and away from your teammates, without leaving';
     const questions = {
       action: {
         type: 'choice',
         instructions: `You are ${u.name}. Your commander ordered you to ${orderLabel(u)}, and that order outranks your own judgement: carry it out unless doing so right now would get you killed or you cannot carry it out from here. What should you do?`,
         criteria: actions,
+      },
+      // Where the weapon points, which used to be wherever the feet last went. It is a
+      // separate question because it is a separate decision: you can fall back while still
+      // watching the doorway you are falling back from, and a squad that cannot do that
+      // reads as a line of people staring at walls.
+      gaze: {
+        type: 'choice',
+        instructions: `Where should ${u.name} be looking right now? This is only about where the weapon points; the feet are already doing what the action says.`,
+        criteria: {
+          travel: 'straight ahead, the way you are moving: when nothing in particular is worth watching',
+          on_threat: 'at the enemy you can see, or where one was last seen',
+          hold_angle: 'locked on the one angle an enemy would come from: when you are holding ground',
+          scan: 'sweeping slowly across the angles around you: when you are holding and nothing has happened yet',
+          watch_back: 'behind you, the way your squad came in: when the danger is being flanked',
+        },
+      },
+      // Whether to give your position away. Automatic fire is the rule; choosing not to fire
+      // is what makes an ambush, a lurk, and letting someone walk past possible at all.
+      hold_fire: {
+        type: 'boolean',
+        instructions: `Should ${u.name} hold fire and stay hidden rather than shoot? Yes only when staying unseen is worth more than the damage: lurking behind them, waiting for a better moment, or letting one walk past to catch the group. No in any straight fight, and no if they have already seen you.`,
+      },
+      // The terminator. Nothing used to ask this, so an agent that arrived somewhere simply
+      // stopped existing until an enemy appeared or a new order came.
+      order_complete: {
+        type: 'boolean',
+        instructions: `Has ${u.name} finished what the commander asked (${orderLabel(u)})? Yes if they are where they were sent and the job is done, so the next thing to do is hold and watch the ground they took. No if they are still on their way or still doing it.`,
       },
     };
     if (enemies.length >= 2) {

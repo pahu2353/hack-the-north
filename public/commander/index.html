@@ -392,6 +392,9 @@
   .plan { display: grid; grid-template-columns: 58px 1fr 40px; gap: 2px 6px; font-size: 12px; align-items: center; }
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* What the squad filled in that the commander never said: how many, how fast, who first. */
+  .plan .shape { grid-column: 1 / -1; color: var(--ink-2); font-size: 11px; padding-top: 2px; }
+  .plan .note { color: var(--ink-2); }
 
   /* Optional HUD pieces, switched in Settings. */
   body:not([data-feed="on"]) .feed { display: none; }

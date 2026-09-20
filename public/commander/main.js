@@ -967,7 +967,7 @@ function followLog(entry) {
   if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
 }
 
-function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier }, voiceContext, gesture, early = false) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier, callout }, voiceContext, gesture, early = false) {
   const pct = v => `${Math.round(v * 100)}%`;
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
@@ -988,7 +988,12 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
-      el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
+      el('span', {
+        className: callout ? 'note' : 'skip',
+        textContent: callout
+          ? `Not an order (${pct(isOrder)}) — taken as a callout: the squad is watching ${callout.zone}`
+          : `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)`,
+      }));
     entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
     followLog(entry);
     entry.classList.add('ignored');
@@ -1009,6 +1014,22 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
     ];
   });
   entry.querySelector('.plan').replaceChildren(...rows);
+  // Most of an order is never spoken: how many go, how fast, how spread out, who goes in
+  // first. Showing what was filled in is what turns "it guessed" into "it understood".
+  const sent = plan.filter(p => p.applied);
+  if (sent.length) {
+    const first = sent.find(p => p.role === 'entry') ?? sent[0];
+    const shape = [
+      `${sent.length} of ${plan.length}`,
+      first?.pace === 'walk' ? 'carefully' : 'fast',
+      first?.spread === 'spread' ? 'spread out' : first?.spread === 'stacked' ? 'stacked up' : null,
+      sent.length > 1 && sent.some(p => p.role === 'trade') ? `${first.name} in first, traded` : null,
+      sent.every(p => p.role === 'lurk') && sent.length ? 'lurking, holding fire' : null,
+      callout ? `watching ${callout.zone}` : null,
+    ].filter(Boolean);
+    entry.querySelector('.plan').append(
+      el('span', { className: 'shape', textContent: shape.join(' · ') }));
+  }
   entry.querySelector('.meta').textContent = `${early ? 'acting early · ' : ''}Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
   followLog(entry);
 }
