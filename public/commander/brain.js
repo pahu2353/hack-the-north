@@ -10,6 +10,44 @@ import { dist, zoneAt, zoneByName } from './world.js';
 const THINK_MS = 450;
 const VOICE_PACE = { mild: 1.08, strong: 1.18 };
 
+// Words that start an instruction. A lone letter counts as an agent's initial only when one of
+// these follows it, which is what keeps "a" the article out of it: "throw a nade", "make a
+// push" and "take a peek" all put the letter after a verb rather than before one.
+const ORDER_WORDS = ['push', 'rush', 'hit', 'take', 'go', 'move', 'head', 'run',
+  'hold', 'camp', 'watch', 'lock', 'sit', 'stay', 'guard', 'anchor', 'post', 'defend',
+  'flank', 'rotate', 'retake', 'swing', 'lurk', 'peek', 'wrap', 'split', 'stack',
+  'retreat', 'fall', 'regroup', 'group', 'back', 'attack', 'clear',
+  'plant', 'defuse', 'nade', 'grenade', 'throw', 'frag', 'cover', 'support', 'help', 'follow'];
+
+// Agents answer to their initial as well as their name: "c hold mid", "a and b push B".
+// On this map A and B are also the two bomb sites, so position decides which is meant — an
+// agent is the subject of a clause, a site is where the clause sends them. "a push b" is
+// Alpha going to B; "push a" is the whole squad going to A.
+export function expandAgentInitials(text, roster) {
+  if (!text || !roster.length) return text;
+  // An initial two agents share names neither of them, so it stays a letter and Jev decides.
+  const counts = new Map();
+  for (const name of roster) counts.set(name[0].toLowerCase(), (counts.get(name[0].toLowerCase()) ?? 0) + 1);
+  const unique = roster.filter(name => counts.get(name[0].toLowerCase()) === 1);
+  if (!unique.length) return text;
+  const initials = unique.map(name => name[0].toLowerCase()).join('');
+  const ref = `(?:\\b(?:${roster.join('|')})\\b|\\b[${initials}]\\b)`;
+  // One agent, or several joined by commas and "and".
+  const run = `${ref}(?:(?:\\s*(?:,|and)\\s*|\\s+)${ref})*`;
+  // Only at the start of a clause: anything else is a letter doing some other job.
+  const clause = new RegExp(`(^|[,.;!?]\\s*|\\b(?:and|then|also|plus)\\s+)(${run})(?=\\s+(?:${ORDER_WORDS.join('|')})\\b)`, 'gi');
+  const lone = new RegExp(`\\b[${initials}]\\b`, 'gi');
+  const named = new Map(unique.map(name => [name[0].toLowerCase(), name]));
+  return text.replace(clause, (whole, before, addressed) =>
+    before + addressed.replace(lone, letter => named.get(letter.toLowerCase())));
+}
+
+// Ways of addressing the whole squad at once, and the two phrasings that instead mean
+// "all of you except whoever I just named", which only Jev can resolve against the clause
+// that named them.
+const SQUAD_ADDRESS = /\b(everyone|everybody|guys|all of you|y'?all|the team|the squad|all agents)\b/i;
+const ALL_BUT_ADDRESS = /\b(everyone|everybody)\s+else\b|\bthe\s+rest\b/i;
+
 function voicePaceMultiplier(context) {
   if (!context) return 1;
   const volume = context.volumeLevel === 'very_loud' ? VOICE_PACE.strong
@@ -102,6 +140,17 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
   async function interpretCommand(game, team, { source, text, gesture, pointer, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
+    // "Everyone push B", "guys hold mid". Otherwise Jev is asked once per agent whether the
+    // order is for them: five questions, and five chances to disagree with itself about a
+    // phrase that has one meaning. Nobody named and the squad addressed as a whole is not a
+    // judgement call, so it is settled here and those questions are never asked. Dead agents
+    // count as named: "Alpha and everyone push" is a mix, whether or not Alpha is still up.
+    const roster = game.units.filter(u => u.team === team).map(u => u.name);
+    // From here on the order says "Charlie", never "c": one spelling for the state Jev reads,
+    // the addressing test below, and the history a later "do the same" is resolved against.
+    const said = expandAgentInitials(text ?? '', roster);
+    const namesSomeone = roster.some(name => new RegExp(`\\b${name}\\b`, 'i').test(said));
+    const wholeSquad = !only && !namesSomeone && SQUAD_ADDRESS.test(said) && !ALL_BUT_ADDRESS.test(said);
     const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
     commandSequence = Math.max(commandSequence, commandId);
     const previousCommands = commandHistory.get(game)?.[team] ?? [];
@@ -126,11 +175,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const questions = {};
     for (const { name } of squad) {
       const key = name.toLowerCase();
-      if (!only) questions[`${key}_addressed`] = {
+      if (!only && !wholeSquad) questions[`${key}_addressed`] = {
         type: 'boolean',
         // Wording picked by measurement: it handles orders that give different jobs to
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
-        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, or if it says "everyone else" / "the rest".`,
+        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if ${name} is called by their first letter "${name[0]}" as the one being told to do something, if no names appear at all, if it addresses the whole squad ("everyone", "guys", "all of you"), or if it says "everyone else" / "the rest". A lone "A" or "B" that says where to go is the bomb site, not an agent.`,
       };
       // Both questions are about what the commander JUST said. current_orders is in the state
       // so a follow-up can be resolved, but pointing the questions at it made Jev answer with
@@ -181,7 +230,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     }
     const status = voiceContext ? roundStatus(game, team) : null;
     const state = {
-      commander_says: text,
+      commander_says: said,
       ...(only && { talking_to: only }),
       ...(source && { command_source: source }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
@@ -225,7 +274,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
-      const addressed = only ? 1 : a[`${key}_addressed`].probability;
+      const addressed = only || wholeSquad ? 1 : a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
       const skipReason = addressed < 0.5 ? 'not addressed'
@@ -270,7 +319,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       // Read the latest history after awaiting Jev: requests may complete out of order.
       // Remember accepted commands in submission order, separately for each side and round.
       const history = commandHistory.get(game) ?? {};
-      history[team] = [...(history[team] ?? []).filter(command => command.id !== commandId), { id: commandId, text }]
+      history[team] = [...(history[team] ?? []).filter(command => command.id !== commandId), { id: commandId, text: said }]
         .sort((a, b) => a.id - b.id).slice(-3);
       commandHistory.set(game, history);
     }
