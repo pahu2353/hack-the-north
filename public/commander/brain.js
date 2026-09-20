@@ -4,7 +4,7 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, enemyContact, grenadeSpot, incomingGrenade, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
+import { aliveTeam, directionPoint, enemyContact, grenadeSpot, incomingGrenade, isDirection, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -69,7 +69,7 @@ const orderGate = names => ({
 
 // The words people actually shout, not the tidy ones. Each list was grown from phrasings that
 // came back wrong: "rotate to a" was read as a flank, "camp b" as a push, "on me" as a push.
-const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek';
+const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek / shift';
 const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / anchor / sit on / lock down, without advancing';
 const AROUND = 'flank: swing around / go around / lurk / take the long way to hit them from the side';
 const BACK = 'fall back / retreat / pull out / get out / back off / reset';
@@ -137,7 +137,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
-  async function interpretCommand(game, team, { source, text, gesture, pointer, voiceContext, only, seq }) {
+  async function interpretCommand(game, team, { source, text, gesture, pointer, direction, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     // "Everyone push B", "guys hold mid". Otherwise Jev is asked once per agent whether the
@@ -171,6 +171,16 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       ? 'at the enemy: nobody has been seen, so towards their side of the map'
       : `at the enemy: where they were last seen, in ${zoneAt(game.map, contact).name}`;
     locations.current = 'stay exactly where they are now, going nowhere';
+    // A direction is a pointer given in words rather than with a hand. The client resolves it
+    // against whatever the commander is looking at and sends that angle, so these only exist
+    // while it does: without a view there is no "right" to mean, and the options stay out of
+    // the way rather than competing with the callouts for every other order.
+    if (direction) Object.assign(locations, {
+      forward: 'a short step forward from where they are standing: "forward", "up", "ahead", "move up"',
+      back: 'a short step backwards from where they are standing: "back", "down", "behind", "back up"',
+      left: 'a short step to the left of where they are standing, from the commander\'s point of view',
+      right: 'a short step to the right of where they are standing, from the commander\'s point of view',
+    });
 
     const questions = {};
     for (const { name } of squad) {
@@ -200,6 +210,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 - The sites, mains and links are named A and B. "a site", "the a site", "a main", "a link" mean the A one, never "some site", and a bare letter ("rush b", "lurk b", "go a") means that site.
 - An order about the enemy rather than a place on the map ("at them", "push them", "fight", "kill them", "go at the enemy"): the enemy.
 - Falling back or retreating with no place named: their own spawn.
+- A direction instead of a place ("move right", "shift left", "back up", "everyone forward"): that direction. "up" and "ahead" mean forward; "down" and "behind" mean back. Only when they name a direction; a bare verb is not one.
 - No place named at all ("move", "push", "go go go"): keep where ${name} is already headed in current_orders.
 - "you too" / "as well" / "same": the place named in the last of recent_commands, the one just given to someone else, not ${name}'s own.
 - "current" only when told to stop or stay put with no place named at all ("stop", "wait", "hold"). An order to hold or camp a named place ("hold b", "lock down mid") sends them to that place.`,
@@ -294,6 +305,10 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         } else if (target.choice === 'enemy') {
           point = { x: contact.x, y: contact.y };
           zone = zoneAt(game.map, contact).name;
+        } else if (isDirection(target.choice)) {
+          // Per agent: "everyone move right" steps each of them right from their own spot.
+          point = direction ? directionPoint(game, unit, direction.yaw, target.choice) : { x: unit.x, y: unit.y };
+          zone = zoneAt(game.map, point).name;
         } else if (target.choice === 'current' || target.choice === 'pointed') {
           point = { x: unit.x, y: unit.y };
           zone = zoneAt(game.map, unit).name;

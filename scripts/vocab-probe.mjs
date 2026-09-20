@@ -31,8 +31,14 @@ const CASES = [
   { text: 'everyone move', order: 'push', target: 'B Site' },
   { text: 'move', order: 'push', target: 'B Site' },
   { text: 'push', order: 'push', target: 'B Site' },
-  { text: 'move up', order: 'push', target: 'B Site' },
   { text: 'go go go', order: 'push', target: 'B Site' },
+  // A direction instead of a place. "up"/"ahead" are forward, "down"/"behind" are back.
+  { text: 'everyone move right', order: 'push', target: 'right' },
+  { text: 'shift left', order: 'push', target: 'left' },
+  { text: 'move up', order: 'push', target: 'forward' },
+  { text: 'everyone forward', order: 'push', target: 'forward' },
+  { text: 'back up', order: ['push', 'retreat', 'hold'], target: 'back' },
+  { text: 'everyone down', order: ['push', 'retreat', 'hold'], target: 'back' },
   // At the enemy, wherever that is.
   { text: 'go towards the enemy', order: 'push', target: 'enemy' },
   { text: 'move towards the enemy', order: 'push', target: 'enemy' },
@@ -97,6 +103,9 @@ function scenario() {
   return game;
 }
 
+// Commanding from the top-down map as the attackers: forward is up the screen, which is -y.
+const MAP_VIEW = { yaw: -Math.PI / 2 };
+
 // null means the place does not matter for that order (regroup goes to the squad, wherever it is).
 const wanted = (value, expected) =>
   expected === null || (Array.isArray(expected) ? expected.includes(value) : value === expected);
@@ -108,7 +117,7 @@ let bothHits = 0;
 
 for (const c of cases) {
   const game = scenario();
-  const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: c.text });
+  const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: c.text, direction: MAP_VIEW });
   const alpha = result.plan?.find(p => p.name === 'Alpha');
   if (result.ignored || !alpha) {
     console.log(`${'MISS'.padEnd(5)} "${c.text}" → not an order (gate ${Math.round(result.isOrder * 100)}%)`);
@@ -140,8 +149,8 @@ if (!only.length) {
   console.log('');
   for (const c of MEMORY) {
     const game = scene();
-    for (const earlier of c.after ?? []) await brains.interpretCommand(game, 'attack', { source: 'voice', text: earlier });
-    const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: c.text });
+    for (const earlier of c.after ?? []) await brains.interpretCommand(game, 'attack', { source: 'voice', text: earlier, direction: MAP_VIEW });
+    const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: c.text, direction: MAP_VIEW });
     const row = result.plan?.find(p => p.name === c.who);
     const got = result.ignored ? 'ignored' : row?.applied ? `${row.order} ${row.target}` : `${row?.order} ${row?.target} (not addressed)`;
     memoryHits += got === c.want;

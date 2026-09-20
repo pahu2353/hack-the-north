@@ -765,6 +765,18 @@ function gestureLabel(gesture) {
 
 const canCommand = () => matchActive();
 const commandTarget = () => (is3d ? watched()?.name : undefined);
+
+// Which way the view the commander is looking at calls forward, in world angles. On the map
+// that is screen-up, which the defending side draws rotated so it still points at the enemy;
+// in first person it is the camera, so a direction follows where you are looking rather than
+// where the agent happens to be facing — it snaps to whatever it is shooting at.
+function viewYaw() {
+  if (!session) return null;
+  if (!is3d) return session.team === 'attack' ? -Math.PI / 2 : Math.PI / 2;
+  const u = watched();
+  if (!u) return null;
+  return lastCamera?.unitId === u.id ? lastCamera.angle : u.facing;
+}
 const interpret = request => (session.kind === 'bots'
   ? brains.interpretCommand(game, session.team, request)
   : sendCommand(request));
@@ -781,9 +793,13 @@ function recentReliableGesture() {
 function prepareCommand({ source = 'text', text, gesture, voiceContext, seq = ++commandSeq, only = commandTarget() }) {
   const commandGesture = gesture ?? (source === 'hand' ? null : recentReliableGesture());
   const p = activePointer();
+  // Frozen with the order, like the pointer above: Jev takes a moment to answer and the camera
+  // eases while it does, so "right" has to keep meaning what it meant when they started talking.
+  const yaw = viewYaw();
   return {
     source, text, gesture: commandGesture, voiceContext, seq, only,
     pointer: p && { x: p.x, y: p.y },
+    direction: yaw === null ? null : { yaw },
   };
 }
 

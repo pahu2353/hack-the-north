@@ -193,6 +193,9 @@ export function createRooms(evaluate: Evaluate) {
       profanityLevel: ['none', 'mild', 'strong'].includes(cues.profanityLevel) ? cues.profanityLevel : 'none',
       profanityCount: Number.isFinite(cues.profanityCount) ? Math.max(0, Math.min(20, cues.profanityCount)) : 0,
     } : undefined;
+    // Which way the commander's own view calls forward, for "move left" and the like. Only
+    // their client knows it, so it arrives with the order and is checked like every other field.
+    const direction = Number.isFinite(message.direction?.yaw) ? { yaw: Number(message.direction.yaw) } : undefined;
     // An order given in the first-person view is for that one agent.
     const only = TEAMS[team].names.includes(message.only) ? (message.only as string) : undefined;
     try {
@@ -201,6 +204,7 @@ export function createRooms(evaluate: Evaluate) {
         text: String(message.text ?? '').slice(0, 500),
         gesture,
         pointer,
+        direction,
         only,
         seq: Number(message.id) || undefined,
         voiceContext,
