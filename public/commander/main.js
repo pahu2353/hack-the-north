@@ -1280,10 +1280,13 @@ let decisionRoster = '';
 function buildDecisionCards(names) {
   $('decisions').replaceChildren(...names.map((name, i) => {
     const card = el('div', { className: 'decision', style: `--agent:${OWN_COLORS[i % OWN_COLORS.length]}` }, [
-      el('div', { className: 'top' }, [el('span', { className: 'name', textContent: name }), el('span', { className: 'p' })]),
-      el('div', { className: 'hp' }, [el('i')]),
+      el('div', { className: 'top' }, [
+        el('span', { className: 'name', textContent: name }),
+        el('span', { className: 'hp' }),
+        el('span', { className: 'p' }),
+      ]),
       el('div', { className: 'doing' }, [el('span', { className: 'act' }), el('span', { className: 'src' })]),
-      el('div', { className: 'order' }, [el('span', { className: 'ord' }), el('span', { className: 'nade' })]),
+      el('div', { className: 'order' }, [el('span', { className: 'ord' })]),
       el('div', { className: 'spread' }),
     ]);
     card.onclick = () => {
@@ -1323,7 +1326,13 @@ function renderDecisions() {
     const spread = Object.entries(u?.alive ? d?.probabilities ?? {} : {}).sort((a, b) => b[1] - a[1]);
     const [, best] = spread[0] ?? [];
     set('.p', best == null ? '' : `${Math.round(best * 100)}%`);
-    card.querySelector('.hp i').style.width = `${u ? (u.hp / u.maxHp) * 100 : 0}%`;
+    // Health as a figure rather than a second bar. Full health and full confidence drew two
+    // identical full-width rules, one under the other, which read as the same thing twice.
+    // It takes the colour bands the first-person HUD uses, so a hurt agent still shows up
+    // without anything having to be read.
+    set('.hp', u?.alive ? String(Math.round(u.hp)) : '');
+    const left = u?.alive ? u.hp / u.maxHp : 1;
+    card.dataset.hp = left > 0.6 ? 'ok' : left > 0.3 ? 'low' : 'critical';
     // What they are doing now, and where the decision behind it came from.
     set('.act', u ? actionLabel(u, enemyName(u)) : '');
     set('.src', source);
@@ -1331,7 +1340,6 @@ function renderDecisions() {
     // while still under orders to push, and showing only one made that look like the order had
     // been dropped.
     set('.ord', u?.alive ? `order: ${u.orderLabel ?? '\u2013'}` : '');
-    set('.nade', u?.alive && u.grenades ? '\ud83d\udca3' : '');
     // One bar holding the whole distribution. Redrawn only when it actually changes, so a
     // segment's tooltip survives being hovered.
     const shown = spread.slice(0, SPREAD_SEGMENTS);
