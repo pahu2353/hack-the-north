@@ -4,7 +4,11 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, directionPoint, enemyContact, grenadeSpot, incomingGrenade, isDirection, noteCallout, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
+import {
+  aliveTeam, blinded, directionPoint, enemyContact, grenadeSpot, heldCount, incomingGrenade,
+  isDirection, noteCallout, obeying, orderAction, orderDestination, orderLabel, roundStatus,
+  setOrder, unitById, utilitySpot,
+} from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -86,7 +90,19 @@ const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / 
 const AROUND = 'flank: swing around / go around / lurk / take the long way to hit them from the side';
 const BACK = 'fall back / retreat / pull out / get out / back off / reset';
 const TOGETHER = 'group up / regroup / stack up / on me / come together with the squad';
-const NADE = 'throw a grenade / nade / frag / flash / util / molly / incendiary at the location';
+// A match without the kit has no flash to throw, so asking for one is asking for the
+// closest thing that exists. With the kit on there is a real flash order and the word
+// belongs to it, or "flash B" would come back as a grenade on B.
+const NADE_BASE = 'throw a grenade / nade / frag / util / molly / incendiary at the location';
+const NADE = `${NADE_BASE.replace('nade / frag', 'nade / frag / flash')}`;
+const FLASH_ORDER = 'flash / pop a flash / blind them at the location';
+const SMOKE_ORDER = 'smoke / smoke off / block the sightline at the location';
+// The extra two only exist when the match has them, so an ordinary match offers Jev exactly
+// the vocabulary it always did.
+const ordersFor = (team, utility) => (utility
+  ? { ...ORDERS[team], grenade: NADE_BASE, flash: FLASH_ORDER, smoke: SMOKE_ORDER }
+  : ORDERS[team]);
+
 const ORDERS = {
   attack: {
     push: `${MOVE} to the location, and going at the enemy to fight them`,
@@ -210,7 +226,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       questions[`${key}_order`] = {
         type: 'choice',
         instructions: `What has the commander just told ${name} to do? Answer from what they said, not from the order ${name} already has. Telling them to stay somewhere once they get there ("camp b", "hold b", "watch b main", "lock down mid") is holding, not pushing, even though they have to walk there first. Only when the new words carry no instruction of their own: "keep going" / "same again" means carry on with ${name}'s own order in current_orders, and "you too" / "as well" / "same" means the order in the last of recent_commands, the one just given to someone else.`,
-        criteria: ORDERS[team],
+        criteria: ordersFor(team, game.utility),
       };
       questions[`${key}_target`] = {
         type: 'choice',
@@ -510,6 +526,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const fightingMate = mates.filter(m => m.visible.length).sort((a, b) => dist(u, a) - dist(u, b))[0];
     const bomb = incomingGrenade(game, u);
     if (!enemies.length && !fightingMate && !bomb) return null;
+    const blindEnemies = u.visible.filter(e => blinded(game, e));
 
     const objective = orderDestination(game, u);
     const toObjective = Math.round(dist(u, objective));
@@ -532,6 +549,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       spike: spikeBriefing(game, u.team),
       ...(clump && { enemies_bunched_together: `${clump.caught} of them are standing within 5m of each other, in grenade range` }),
       ...(bomb && { grenade_about_to_go_off: `${Math.max(0, bomb.explodeAt - game.time).toFixed(1)}s, ${Math.round(Math.hypot(bomb.x - u.x, bomb.y - u.y))}m away` }),
+      ...(game.utility && {
+        utility_left: { grenade: u.grenades, flash: u.flashes, smoke: u.smokes },
+      }),
+      ...(game.utility && blindEnemies.length && {
+        enemies_currently_blinded: `${blindEnemies.length} of them cannot see anything right now`,
+      }),
     };
     // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled
     // situations). The one that carries out the commander's order says so.
@@ -548,6 +571,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         : 'stop and shoot the enemy in sight: standing still makes you far more accurate, but it puts your order on hold';
     }
     if (clump?.caught >= 2 && !bomb) actions.nade = `${carriesOut('nade')}throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
+    // A flash and a smoke do no damage. They are the answer to an angle you cannot cross,
+    // which is a different problem from an enemy you cannot kill — so they are offered when
+    // there is someone holding a line on you, not when you are simply winning a fight.
+    if (game.utility && heldCount(u, 'flash') > 0 && enemies.length && !bomb && !blindEnemies.length) {
+      actions.flash = `${carriesOut('flash')}pop your one flash at them: it does no damage, but for a few seconds they cannot see at all, which is how you take an angle someone is holding`;
+    }
+    if (game.utility && heldCount(u, 'smoke') > 0 && enemies.length && !bomb && utilitySpot(game, u, 'smoke')) {
+      actions.smoke = `${carriesOut('smoke')}throw your one smoke between you and them: it does no damage and blocks the sightline both ways, which is how you cross open ground or break a fight you are losing`;
+    }
     if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
     if (toObjective <= 3) actions.reposition = 'you are already where you were sent: move to a better spot on this same ground, off the angle you are being watched from and away from your teammates, without leaving';

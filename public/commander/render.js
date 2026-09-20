@@ -180,6 +180,7 @@ export function createRenderer(canvas) {
     }
 
     if (teamView.prep) drawPrepLine(teamView.prep, teamView.team, px);
+    for (const s of teamView.smokes ?? []) drawSmoke(s, px);
     for (const g of teamView.grenades ?? []) drawGrenade(g, teamView.team, px);
     drawSpike(teamView.spike, teamView.time, px);
     for (const e of teamView.effects) drawEffect(e, teamView.team, px);
@@ -212,11 +213,30 @@ export function createRenderer(canvas) {
     label(`${Math.ceil(prep.secondsLeft)}s · hold this side`, map.width / 2, line + (team === 'attack' ? 2.6 : -2.6));
   }
 
+  // A smoke is a place you cannot see through, so it is drawn as one: a soft opaque disc
+  // rather than an outline, because an outline would read as a marker on the map instead of
+  // something in the way.
+  function drawSmoke(s, px) {
+    if (s.radius < 0.1) return;
+    const grad = ctx.createRadialGradient(s.x, s.y, s.radius * 0.25, s.x, s.y, s.radius);
+    grad.addColorStop(0, `rgba(226,228,233,${0.92 * s.density})`);
+    grad.addColorStop(0.72, `rgba(198,201,208,${0.82 * s.density})`);
+    grad.addColorStop(1, `rgba(176,180,188,0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    ctx.fill();
+    void px;
+  }
+
   // In the air it's a small dark ball; on the ground, a shrinking ring shows the blast
   // and how long is left to get out of it.
+  const UTILITY_TINT = { flash: '#f2f0e4', smoke: '#c9ccd3' };
   function drawGrenade(g, team, px) {
     const mine = g.team === team;
-    if (g.landed) {
+    // Only a frag is a countdown you have to get out of. A flash or a smoke landing is
+    // information, not a threat, so it gets no blast ring.
+    if (g.landed && (g.kind ?? 'frag') === 'frag') {
       const left = Math.min(1, g.fuse / 1.2);
       ctx.fillStyle = fade(mine ? OWN : ENEMY, 0.12);
       ctx.beginPath();
@@ -230,7 +250,7 @@ export function createRenderer(canvas) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    ctx.fillStyle = '#20242c';
+    ctx.fillStyle = UTILITY_TINT[g.kind] ?? '#20242c';
     ctx.strokeStyle = mine ? OWN : ENEMY;
     ctx.lineWidth = 1.5 * px;
     ctx.beginPath();
@@ -349,6 +369,16 @@ export function createRenderer(canvas) {
       ctx.fill();
       ctx.strokeStyle = `rgba(255, 120, 40, ${fade_})`;
       ctx.lineWidth = 2 * px;
+      ctx.stroke();
+    } else if (e.kind === 'flash') {
+      // A hard white ring that snaps outward. Nothing burns, so nothing is orange.
+      const life = e.ttl / 0.5;
+      ctx.fillStyle = `rgba(255,255,245,${0.5 * life})`;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.r * (1 - life) * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${life})`;
+      ctx.lineWidth = 2.5 * px;
       ctx.stroke();
     } else if (e.kind === 'death') {
       ctx.strokeStyle = e.team === team ? 'rgba(74,163,255,0.5)' : 'rgba(255,93,93,0.5)';

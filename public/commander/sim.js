@@ -4,7 +4,7 @@
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
   MAPS, angleDiff, angleTo, blockedAt, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
-  nearestOpenPoint, walkableLine, zoneAt, zoneByName,
+  nearestOpenPoint, segmentHitsCircle, walkableLine, zoneAt, zoneByName,
 } from './world.js';
 
 export const TEAMS = {
@@ -58,6 +58,21 @@ export const GRENADE = {
   carried: 1, range: 26, radius: 6, centreDamage: 85, edgeDamage: 30,
   speed: 17, fuse: 1.5, cooldown: 1.5, clusterGap: 5,
 };
+// Two more things to throw, off by default so a normal match plays exactly as it did. A flash
+// takes a fight away from whoever is holding the angle; a smoke takes the angle away from both
+// of you. Neither does damage, which is the point: they buy a crossing rather than a kill.
+export const FLASH = {
+  carried: 1, range: 26, radius: 14, speed: 17, fuse: 1, cooldown: 1.5,
+  blind: 3.2, minBlind: 0.6,
+};
+export const SMOKE = {
+  carried: 1, range: 26, radius: 5, speed: 15, fuse: 0.6, cooldown: 1.5,
+  bloom: 0.9, lifetime: 15, fade: 1.2,
+};
+export const UTILITY = { frag: GRENADE, flash: FLASH, smoke: SMOKE };
+// What each kind is called where it has to be read by a person.
+export const UTILITY_LABEL = { frag: 'grenade', flash: 'flash', smoke: 'smoke' };
+
 const TRACK_MAX_SPEED = 8; // reject teleports/collision spikes in observed movement
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
@@ -167,7 +182,7 @@ export function forfeitMatch(game, winner, reason) {
 
 // prep: start with the ten-second setup phase. Real rounds ask for it; tests that set up a
 // situation and step a second or two start live.
-export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false, map: mapId = 'tactical' } = {}) {
+export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false, map: mapId = 'tactical', utility = false } = {}) {
   const map = MAPS[mapId] ?? MAPS.tactical;
   const game = {
     map,
@@ -186,6 +201,10 @@ export function createGame({ defenders = 'bots', opponent = 'scripted', playerTe
     nextId: 1,
     intel: { attack: new Map(), defend: new Map() },
     grenades: [],
+    // Off by default: a match plays exactly as it always has unless the commander turns
+    // flashes and smokes on in settings.
+    utility,
+    smokes: [],
     knownDown: { attack: new Set(), defend: new Set() },
     manualAim: { attack: null, defend: null },
     // What the commander said about the enemy without giving an order. "Two on B" is not a
@@ -248,6 +267,9 @@ function makeUnit(game, props) {
     settleAt: 0,
     stats: { kills: 0, deaths: 0, damage: 0 },
     grenades: GRENADE.carried,
+    flashes: game.utility ? FLASH.carried : 0,
+    smokes: game.utility ? SMOKE.carried : 0,
+    blindUntil: 0,
     throwReadyAt: 0,
     ...props,
   };
@@ -359,9 +381,32 @@ function orderBearing(game, u) {
   return dist(u, dest) > 0.5 ? angleTo(u, dest) : u.facing;
 }
 
+// Which thing an order or an action is about throwing, or null if it is about neither.
+const THROW_ORDER = { grenade: 'frag', flash: 'flash', smoke: 'smoke' };
+const THROW_ACTION = { nade: 'frag', flash: 'flash', smoke: 'smoke' };
+export const orderUtility = type => THROW_ORDER[type] ?? null;
+export const actionUtility = action => THROW_ACTION[action] ?? null;
+
+// Where a throw of this kind wants to land. A frag goes on a group; a flash goes past the
+// angle it is meant to take away, so it pops behind the people holding it; a smoke goes on
+// the sightline itself, close enough to cut it and far enough not to blind your own squad.
+export function utilitySpot(game, u, kind) {
+  if (kind === 'frag') return grenadeSpot(game, u)?.spot ?? null;
+  const spec = UTILITY[kind];
+  const threat = u.visible[0] ?? (game.intel[u.team].size ? enemyContact(game, u.team) : null);
+  if (!threat) return null;
+  const bearing = angleTo(u, threat);
+  const away = dist(u, threat);
+  const reach = kind === 'smoke'
+    ? clamp(away * 0.6, 4, spec.range) // between the two of you, cutting the angle
+    : Math.min(away + 2, spec.range); // just past them, so the pop is in their eyes
+  const spot = { x: u.x + Math.cos(bearing) * reach, y: u.y + Math.sin(bearing) * reach };
+  return hasLineOfSight(game.map, u, spot) ? spot : null;
+}
+
 // What carrying out the current order looks like, as an action.
 export function orderAction(game, u) {
-  if (u.order.type === 'grenade') return 'nade';
+  if (orderUtility(u.order.type)) return u.order.type === 'grenade' ? 'nade' : u.order.type;
   if (u.order.type === 'hold' && dist(u, orderDestination(game, u)) <= 3) return 'hold';
   return 'advance';
 }
@@ -431,6 +476,7 @@ export function stepGame(game, dt) {
   resolveCollisions(game);
   if (preparing(game)) holdBehindPrepLine(game);
   updateGrenades(game);
+  updateSmokes(game, dt);
   updateSpike(game, dt);
   game.effects = game.effects.filter(e => (e.ttl -= dt) > 0);
   checkResult(game);
@@ -440,9 +486,16 @@ function updateVision(game) {
   const living = game.units.filter(u => u.alive);
   for (const u of living) {
     const visible = [];
+    // Blind is total: no targets, so no automatic fire and no crosshair assistance either,
+    // and the sightings go stale rather than being remembered as current.
+    if (blinded(game, u)) {
+      u.seen.clear();
+      u.visible = [];
+      continue;
+    }
     for (const other of living) {
       if (other.team === u.team) continue;
-      if (dist(u, other) <= SIGHT && hasLineOfSight(game.map, u, other)) {
+      if (dist(u, other) <= SIGHT && canSee(game, u, other)) {
         visible.push(other);
         if (!u.seen.has(other.id)) u.seen.set(other.id, game.time);
       } else {
@@ -492,14 +545,18 @@ function controlAgent(game, u, dt) {
       dest = mate ?? objective;
       break;
     }
-    case 'nade': {
-      const target = u.order.type === 'grenade' ? { spot: u.order.point } : grenadeSpot(game, u);
-      if (!target) dest = objective;
-      else if (throwGrenade(game, u, target.spot)) {
+    case 'nade':
+    case 'flash':
+    case 'smoke': {
+      const kind = actionUtility(u.action);
+      // An order naming a spot wins over anything the agent would pick for itself.
+      const spot = orderUtility(u.order.type) === kind ? u.order.point : utilitySpot(game, u, kind);
+      if (!spot) dest = objective;
+      else if (throwGrenade(game, u, spot, kind)) {
         dest = null;
-        // The order was "grenade that spot", and it is done: hold here instead of re-throwing.
-        if (u.order.type === 'grenade') setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
-      } else dest = target.spot; // out of range or no line: walk it in
+        // The order was "throw that at there", and it is done: hold here instead of re-throwing.
+        if (orderUtility(u.order.type)) setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
+      } else dest = spot; // out of range or no line: walk it in
       break;
     }
     case 'scatter': {
@@ -518,9 +575,10 @@ function controlAgent(game, u, dt) {
     default: // hold, fight
       dest = null;
   }
-  // A grenade order is carried out as soon as the thrower is in range, then they hold there.
-  if (u.order.type === 'grenade' && u.grenades > 0 && u.action !== 'scatter') {
-    if (throwGrenade(game, u, u.order.point)) {
+  // A throw order is carried out as soon as the thrower is in range, then they hold there.
+  const ordered = orderUtility(u.order.type);
+  if (ordered && heldCount(u, ordered) > 0 && u.action !== 'scatter') {
+    if (throwGrenade(game, u, u.order.point, ordered)) {
       setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
       dest = null;
     } else if (u.action !== 'fight') {
@@ -528,7 +586,8 @@ function controlAgent(game, u, dt) {
     }
   }
   // Nothing left to throw: fight instead of standing there.
-  if (u.action === 'nade' && u.grenades < 1) u.action = focus ? 'fight' : 'advance';
+  const throwing = actionUtility(u.action);
+  if (throwing && heldCount(u, throwing) < 1) u.action = focus ? 'fight' : 'advance';
   // Reflexes between Jev decisions: with nothing to fight, carry out the commander's order,
   // and the nearest attacker picks up a dropped spike.
   if (!focus && ['hold', 'fight'].includes(u.action) && dist(u, objective) > 3) dest = objective;
@@ -1141,25 +1200,89 @@ function predictGrenadeTarget(game, mark, horizon) {
   return at(lo);
 }
 
-export function throwGrenade(game, u, point) {
-  if (u.grenades < 1 || game.time < u.throwReadyAt || preparing(game)) return false;
-  if (dist(u, point) > GRENADE.range || !hasLineOfSight(game.map, u, point)) return false;
-  u.grenades--;
-  u.throwReadyAt = game.time + GRENADE.cooldown;
+// How many of a kind this agent is still carrying.
+const HELD = { frag: 'grenades', flash: 'flashes', smoke: 'smokes' };
+export const heldCount = (u, kind) => u[HELD[kind]] ?? 0;
+
+export function throwGrenade(game, u, point, kind = 'frag') {
+  const spec = UTILITY[kind];
+  if (!spec || heldCount(u, kind) < 1 || game.time < u.throwReadyAt || preparing(game)) return false;
+  if (dist(u, point) > spec.range || !hasLineOfSight(game.map, u, point)) return false;
+  u[HELD[kind]]--;
+  u.throwReadyAt = game.time + spec.cooldown;
   u.facing = angleTo(u, point);
   game.grenades.push({
-    id: game.nextId++, team: u.team, throwerId: u.id,
+    id: game.nextId++, kind, team: u.team, throwerId: u.id,
     x: u.x, y: u.y, fromX: u.x, fromY: u.y, tx: point.x, ty: point.y,
-    thrownAt: game.time, landAt: game.time + Math.max(0.35, dist(u, point) / GRENADE.speed), explodeAt: 0,
+    thrownAt: game.time, landAt: game.time + Math.max(0.35, dist(u, point) / spec.speed), explodeAt: 0,
   });
-  pushFeed(game, `${u.name} threw a grenade`, u.team, u.team);
+  pushFeed(game, `${u.name} threw a ${UTILITY_LABEL[kind]}`, u.team, u.team);
   return true;
+}
+
+// ---------- flashes and smokes ----------
+
+export const blinded = (game, u) => game.time < (u.blindUntil ?? 0);
+
+// A smoke blocks a view and nothing else: bullets, grenades and the decision to take cover
+// all still go straight through, so turning smokes on cannot quietly change how a fight is
+// scored. Standing inside one blinds you as thoroughly as standing behind it.
+export function smokeBlocks(game, a, b) {
+  for (const s of game.smokes) {
+    if (s.radius > 0.2 && segmentHitsCircle(a.x, a.y, b.x, b.y, s.x, s.y, s.radius)) return true;
+  }
+  return false;
+}
+
+export const canSee = (game, a, b) => hasLineOfSight(game.map, a, b) && !smokeBlocks(game, a, b);
+
+function updateSmokes(game, dt) {
+  for (const s of game.smokes) {
+    const age = game.time - s.startedAt;
+    // Blooms open, holds, then thins out. The radius is what vision is tested against, so a
+    // smoke stops blocking gradually rather than vanishing between one frame and the next.
+    const grow = Math.min(1, age / SMOKE.bloom);
+    const left = s.expiresAt - game.time;
+    const fade = clamp(left / SMOKE.fade, 0, 1);
+    s.radius = SMOKE.radius * Math.min(grow, fade);
+    s.density = Math.min(grow, fade);
+  }
+  game.smokes = game.smokes.filter(s => game.time < s.expiresAt);
+  void dt;
+}
+
+// A flash reaches everyone who can actually see the pop — walls stop it, and so does a smoke,
+// because you cannot be blinded by a light you cannot see. Looking away is most of the
+// defence: facing it costs the full duration, turning your back costs a fraction.
+function popFlash(game, g) {
+  game.effects.push({ kind: 'flash', x: g.x, y: g.y, r: FLASH.radius, team: g.team, ttl: 0.5 });
+  for (const target of game.units) {
+    if (!target.alive) continue;
+    const d = dist(g, target);
+    if (d > FLASH.radius || !canSee(game, g, target)) continue;
+    const near = 1 - d / FLASH.radius;
+    // 1 looking straight at it, 0 facing directly away.
+    const facing = 1 - angleDiff(target.facing, angleTo(target, g)) / Math.PI;
+    const seconds = FLASH.blind * near * (0.25 + 0.75 * facing);
+    if (seconds < FLASH.minBlind) continue;
+    // A second flash while still blind extends rather than restarting, so two never stack
+    // into something longer than the worse of them.
+    target.blindUntil = Math.max(target.blindUntil ?? 0, game.time + seconds);
+  }
+}
+
+function popSmoke(game, g) {
+  game.smokes.push({
+    id: game.nextId++, team: g.team, x: g.x, y: g.y,
+    radius: 0, density: 0, startedAt: game.time, expiresAt: game.time + SMOKE.lifetime,
+  });
 }
 
 // Only hostile, unshielded blasts are dangerous: grenades cannot hurt their own team.
 export function incomingGrenade(game, u) {
   return game.grenades
-    .filter(g => g.team !== u.team && g.explodeAt > game.time && dist(g, u) <= GRENADE.radius + 2
+    .filter(g => (g.kind ?? 'frag') === 'frag'
+      && g.team !== u.team && g.explodeAt > game.time && dist(g, u) <= GRENADE.radius + 2
       && hasLineOfSight(game.map, g, u))
     .sort((a, b) => a.explodeAt - b.explodeAt)[0] ?? null;
 }
@@ -1171,13 +1294,15 @@ function updateGrenades(game) {
       if (flight >= 1) {
         g.x = g.tx;
         g.y = g.ty;
-        g.explodeAt = game.time + GRENADE.fuse;
+        g.explodeAt = game.time + (UTILITY[g.kind ?? 'frag'] ?? GRENADE).fuse;
       } else {
         g.x = g.fromX + (g.tx - g.fromX) * flight;
         g.y = g.fromY + (g.ty - g.fromY) * flight;
       }
     } else if (game.time >= g.explodeAt) {
-      explode(game, g);
+      if (g.kind === 'flash') popFlash(game, g);
+      else if (g.kind === 'smoke') popSmoke(game, g);
+      else explode(game, g);
       g.done = true;
     }
   }
@@ -1296,8 +1421,9 @@ export function teamView(game, team) {
         id: u.id, team: u.team, name: u.name, x: u.x, y: u.y, facing: u.facing, hp: u.hp, maxHp: u.maxHp, r: u.r,
         alive: true, color: ENEMY_COLORS[(u.slot ?? 0) % ENEMY_COLORS.length], firing: game.time - u.lastShotAt < 0.08,
         // Whether someone is walking or sprinting is visible from across a site, so sending
-        // it leaks nothing the agent watching them cannot already see.
-        moving: u.moving, pace: u.pace,
+        // it leaks nothing the agent watching them cannot already see. Nor does the fact
+        // that they are stood there blinded.
+        moving: u.moving, pace: u.pace, blind: Math.max(0, (u.blindUntil ?? 0) - game.time),
         // Which of your agents can see them right now: the first-person view shows only what
         // the agent you're watching sees, and the team map shows everything anyone sees.
         seenBy: watchers.filter(w => w.visible.includes(u)).map(w => w.id),
@@ -1346,7 +1472,11 @@ export function teamView(game, team) {
     ghosts,
     effects: game.effects.map(e => ({ ...e })),
     // Grenades are loud and visible, so both sides see them.
-    grenades: game.grenades.map(g => ({ id: g.id, x: g.x, y: g.y, team: g.team, landed: Boolean(g.explodeAt), fuse: g.explodeAt ? Math.max(0, g.explodeAt - game.time) : 0 })),
+    grenades: game.grenades.map(g => ({ id: g.id, kind: g.kind ?? 'frag', x: g.x, y: g.y, team: g.team, landed: Boolean(g.explodeAt), fuse: g.explodeAt ? Math.max(0, g.explodeAt - game.time) : 0 })),
+    // A smoke cloud is a physical thing in the world: both sides see it, the same way both
+    // sides see a grenade in flight.
+    smokes: game.smokes.map(s => ({ id: s.id, x: s.x, y: s.y, radius: s.radius, density: s.density, team: s.team })),
+    utility: game.utility,
     spike: spikeView(game, team),
     feed: game.feed.filter(f => (f.audience === 'all' || f.audience === team) && game.time - f.t < 8).slice(-5),
   };
@@ -1359,6 +1489,8 @@ function ownUnit(game, u) {
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
     hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
     pace: u.pace, gaze: u.gaze, role: u.role, holdFire: u.holdFire, occupying: u.occupying,
+    flashes: u.flashes, smokes: u.smokes,
+    blind: Math.max(0, (u.blindUntil ?? 0) - game.time),
     obeying: obeying(game, u),
     manualAim: Boolean(manualAimFor(game, u)),
     aimTargetId: crosshairTarget(game, u)?.id ?? null,

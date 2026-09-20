@@ -218,6 +218,16 @@ export const hasLineOfSight = (map, a, b) => !map.walls.some(w => segmentHitsRec
 export const blockedAt = (map, x, y, r) => map.walls.some(w =>
   Math.hypot(x - clamp(x, w.x, w.x + w.w), y - clamp(y, w.y, w.y + w.h)) < r);
 
+// Does the sight line a→b pass through a circle? Smoke is the only thing that blocks a view
+// without blocking a bullet or a grenade, so it is tested separately from the walls.
+export function segmentHitsCircle(ax, ay, bx, by, cx, cy, r) {
+  const dx = bx - ax, dy = by - ay;
+  const len = dx * dx + dy * dy;
+  // Closest point on the segment to the centre, clamped to the segment's ends.
+  const t = len ? clamp(((cx - ax) * dx + (cy - ay) * dy) / len, 0, 1) : 0;
+  return Math.hypot(ax + dx * t - cx, ay + dy * t - cy) < r;
+}
+
 // Nearest wall on a ray. Shared by first-person drawing and crosshair targeting.
 // Direction can be unnormalised (the renderer needs perpendicular depth).
 export function castRay(walls, ox, oy, dx, dy) {

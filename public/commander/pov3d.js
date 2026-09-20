@@ -220,6 +220,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   useMap(MAPS.tactical);
 
   const figures = new Map(); // unit id → { group, parts, lastPos, phase }
+  const smokes = new Map(); // smoke id → { group, puffs, t }
   const corpses = new Map();
   const tracers = [];
   const nades = new Map();
@@ -260,6 +261,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     pointer = null;
     for (const f of figures.values()) scene.remove(f.group);
     figures.clear();
+    for (const cloud of smokes.values()) scene.remove(cloud.group);
+    smokes.clear();
     for (const c of corpses.values()) scene.remove(c.f.group);
     corpses.clear();
     for (const t of tracers) scene.remove(t.group);
@@ -332,6 +335,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     syncCorpses(view, dt);
     syncTracers(view, dt);
     syncGrenades(view, dt);
+    syncSmoke(view, dt);
     syncSpike(view, dt);
     syncBeacon();
     aimWeapon(view, unit, cam, dt);
@@ -566,28 +570,42 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     light.distance = r * 5;
     group.add(core, ring);
 
-    const puffs = [];
-    for (let i = 0; i < 9; i++) {
+    // A frag is a detonation, not a smoke bomb: a short bloom of fire and a lot of sparks,
+    // with just enough smoke left behind to say something burned. Nine slow opaque puffs
+    // made every explosion read as grey.
+    const fire = [];
+    for (let i = 0; i < 7; i++) {
       const a = Math.random() * Math.PI * 2;
-      const speed = 1.2 + Math.random() * 2.4;
-      const s = sprite(SPRITES.smoke, 1, 0.7);
+      const speed = 3.4 + Math.random() * 3.6;
+      const s = sprite(SPRITES.glow, 0.9, 0.95);
+      s.material.color.setHex(i % 2 ? 0xffb347 : 0xff7326);
+      s.position.set(Math.cos(a) * 0.2, 0.55 + Math.random() * 0.5, Math.sin(a) * 0.2);
+      group.add(s);
+      fire.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 2.2 + Math.random() * 1.6 });
+    }
+    const puffs = [];
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const speed = 0.9 + Math.random() * 1.5;
+      const s = sprite(SPRITES.smoke, 0.8, 0.34);
       // Smoke hides what is behind it rather than glowing, unlike every other sprite here.
       s.material.blending = THREE.NormalBlending;
       s.position.set(Math.cos(a) * 0.3, 0.5 + Math.random() * 0.6, Math.sin(a) * 0.3);
       group.add(s);
-      puffs.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 0.9 + Math.random() * 0.8 });
+      puffs.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 0.8 + Math.random() * 0.7 });
     }
     const sparks = [];
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 26; i++) {
       const a = Math.random() * Math.PI * 2;
-      const speed = 5 + Math.random() * 7;
-      const s = sprite(SPRITES.glow, 0.22);
+      const speed = 6 + Math.random() * 10;
+      const s = sprite(SPRITES.glow, 0.2);
+      s.material.color.setHex(0xffd27a);
       s.position.set(0, 0.5, 0);
       group.add(s);
-      sparks.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 3 + Math.random() * 4 });
+      sparks.push({ s, vx: Math.cos(a) * speed, vz: Math.sin(a) * speed, vy: 3 + Math.random() * 5 });
     }
     scene.add(markFx(group));
-    blasts.push({ group, core, ring, light, puffs, sparks, t: 0, r, slow });
+    blasts.push({ group, core, ring, light, fire, puffs, sparks, t: 0, r, slow });
   }
 
   // A blast builds its own geometry and materials, so they go back when it ends.
@@ -598,6 +616,50 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       o.geometry?.dispose?.();
       o.material?.dispose?.();
     });
+  }
+
+  // A smoke has to actually hide what is behind it, or the simulation blocking vision looks
+  // like a bug. A cluster of soft billboards reads as volume from any angle and costs far
+  // less than real volumetrics; they are wide enough to overlap so there are no gaps.
+  function syncSmoke(view, dt) {
+    const live = new Set();
+    for (const s of view.smokes ?? []) {
+      live.add(s.id);
+      let cloud = smokes.get(s.id);
+      if (!cloud) {
+        const group = new THREE.Group();
+        const puffs = [];
+        for (let i = 0; i < 14; i++) {
+          const a = (i / 14) * Math.PI * 2 + Math.random();
+          const rise = Math.random();
+          const puff = sprite(SPRITES.smoke, 1, 0.85);
+          puff.material.blending = THREE.NormalBlending;
+          puff.material.depthWrite = false;
+          puff.material.color.setHex(0xd7dade);
+          puff.position.set(Math.cos(a) * (0.3 + rise * 0.55), 0.5 + rise * 1.5, Math.sin(a) * (0.3 + rise * 0.55));
+          group.add(puff);
+          puffs.push({ puff, spin: (Math.random() - 0.5) * 0.35, base: puff.position.clone() });
+        }
+        scene.add(markFx(group));
+        cloud = { group, puffs, t: 0 };
+        smokes.set(s.id, cloud);
+      }
+      cloud.t += dt;
+      cloud.group.position.set(s.x, 0, s.y);
+      for (const { puff, spin, base } of cloud.puffs) {
+        // A slow churn, so a standing cloud is never a frozen decal.
+        puff.position.set(base.x * s.radius * 0.55, base.y * (0.7 + s.density * 0.5), base.z * s.radius * 0.55);
+        puff.material.rotation += spin * dt;
+        puff.scale.setScalar(Math.max(0.01, s.radius * 1.25));
+        puff.material.opacity = 0.34 * s.density;
+      }
+    }
+    for (const [id, cloud] of smokes) {
+      if (live.has(id)) continue;
+      scene.remove(cloud.group);
+      cloud.group.traverse(o => { o.material?.dispose?.(); });
+      smokes.delete(id);
+    }
   }
 
   function syncGrenades(view, dt) {
@@ -642,6 +704,19 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       const ringK = Math.min(1, b.t / (0.45 * (b.slow ?? 1)));
       b.ring.scale.setScalar(Math.max(0.01, b.r * ringK));
       b.ring.material.opacity = 0.8 * (1 - ringK) ** 1.5;
+      // Fireballs: fast, bright, and out inside half a second. This is the part that makes
+      // a frag read as a detonation rather than a puff of grey.
+      for (const p of b.fire ?? []) {
+        p.s.position.x += p.vx * dt;
+        p.s.position.z += p.vz * dt;
+        p.s.position.y += p.vy * dt;
+        p.vy *= 0.9;
+        p.vx *= 0.88;
+        p.vz *= 0.88;
+        const fk = Math.min(1, b.t / (0.45 * (b.slow ?? 1)));
+        p.s.scale.setScalar(b.r * (0.25 + fk * 0.55));
+        p.s.material.opacity = Math.max(0, (1 - fk) ** 1.4);
+      }
       for (const p of b.puffs) {
         p.s.position.x += p.vx * dt;
         p.s.position.z += p.vz * dt;
@@ -650,7 +725,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
         p.vx *= 0.94;
         p.vz *= 0.94;
         p.s.scale.setScalar(b.r * (0.5 + k * 0.9));
-        p.s.material.opacity = Math.max(0, 0.7 * (1 - k) ** 1.2);
+        // Thinner than it was, and it arrives after the fire rather than with it.
+        p.s.material.opacity = Math.max(0, 0.34 * Math.min(1, b.t * 4) * (1 - k) ** 1.2);
       }
       for (const p of b.sparks) {
         p.vy -= 9 * dt; // sparks actually fall
@@ -789,6 +865,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     ownHp = unit.hp;
     ownHurt = Math.max(0, ownHurt - dt * 2.2);
     vignette(ownHurt);
+    // Being flashed covers everything, including the crosshair and the name tags: the whole
+    // point is that this agent cannot see, and the overlay has to agree with the simulation.
+    if (unit.blind > 0) {
+      blindWash(unit.blind);
+      return;
+    }
     // Name tags and health bars sit on the 2D overlay: crisper than sprites and no depth fighting.
     for (const [id, f] of figures) {
       if (!f.group.visible) continue;
@@ -832,6 +914,14 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   // Darkened corners pull the eye to the crosshair and hide the fact that the scene has no
   // post-processing. Two pixels of cost, drawn on the overlay rather than in WebGL.
+  // Full white at the moment it pops, then thinning to a haze as it wears off. The last
+  // second is translucent rather than opaque, so vision comes back before control does.
+  function blindWash(left) {
+    const strength = Math.min(1, left / 1.4);
+    hud.fillStyle = `rgba(255,255,252,${(0.35 + 0.62 * strength).toFixed(3)})`;
+    hud.fillRect(0, 0, W, H);
+  }
+
   function vignette(hurt = 0) {
     const g = hud.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.72);
     g.addColorStop(0, 'rgba(0,0,0,0)');

@@ -120,6 +120,9 @@ export function createPovRenderer(canvas) {
       add(p.x, p.y, s => figure(s, { ...u, ...p }, view));
     }
     if (pointer) add(pointer.x, pointer.y, s => ping(s, pointer));
+    for (const cloud of view.smokes ?? []) {
+      if (cloud.radius > 0.1) add(cloud.x, cloud.y, sp => smokeSprite(sp, cloud));
+    }
     sprites.sort((a, b) => b.z - a.z);
     for (const s of sprites) {
       ctx.save();
@@ -130,6 +133,31 @@ export function createPovRenderer(canvas) {
     for (const e of view.effects) if (e.kind === 'tracer') tracer(e, walls, view);
     viewmodel(view, unit);
     crosshair(unit);
+    // Flashed: everything goes, including the crosshair, because the agent genuinely has no
+    // vision and the picture has to say the same thing the simulation does.
+    if (unit.blind > 0) {
+      ctx.fillStyle = `rgba(255,255,252,${(0.35 + 0.62 * Math.min(1, unit.blind / 1.4)).toFixed(3)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  // A smoke is drawn as what it is: a soft wall of grey you cannot see past. Sized from the
+  // cloud's own radius so it grows as it blooms and thins as it dies.
+  function smokeSprite(s, cloud) {
+    const half = (cloud.radius * cam.focal) / s.z;
+    const top = project(cloud.x, cloud.y, 3.4);
+    const base = project(cloud.x, cloud.y, 0);
+    if (!top || !base) return;
+    const cy = (top.y + base.y) / 2;
+    const ry = Math.max(half, (base.y - top.y) / 2);
+    const g = ctx.createRadialGradient(s.sx, cy, half * 0.15, s.sx, cy, half);
+    g.addColorStop(0, `rgba(222,225,230,${0.95 * cloud.density})`);
+    g.addColorStop(0.7, `rgba(205,209,215,${0.88 * cloud.density})`);
+    g.addColorStop(1, 'rgba(190,194,201,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(s.sx, cy, half, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // The marker the commander placed on the map, drawn as a beacon in the world.

@@ -19,6 +19,7 @@ type Room = {
   game: any;
   match: any;
   map: string; // which layout the host picked; fixed for the whole match
+  utility: boolean; // flashes and smokes, the host's choice, fixed for the whole match
   brains: Record<Team, Brains>;
   loop: ReturnType<typeof setInterval> | null;
   next: ReturnType<typeof setTimeout> | null; // the break before the next round of the match
@@ -51,7 +52,7 @@ export function createRooms(evaluate: Evaluate) {
     do code = randomCode();
     while (rooms.has(code));
     const room: Room = {
-      code, host: ws, players: {}, game: null, match: null, loop: null, next: null, map: 'tactical',
+      code, host: ws, players: {}, game: null, match: null, loop: null, next: null, map: 'tactical', utility: false,
       brains: { attack: newBrains(), defend: newBrains() },
     };
     rooms.set(code, room);
@@ -84,6 +85,7 @@ export function createRooms(evaluate: Evaluate) {
           && (!room.game || (room.game.result && (!room.match || room.match.over)))) startMatch(room);
       else if (message.type === 'side' && ws === room.host) chooseSide(room, message.team);
       else if (message.type === 'map' && ws === room.host) chooseMap(room, message.map);
+      else if (message.type === 'utility' && ws === room.host) chooseUtility(room, message.utility);
       else if (message.type === 'command') command(room, currentTeam, message);
       else if (message.type === 'aim' && room.game) setManualAim(room.game, currentTeam, message.aim);
     });
@@ -113,6 +115,15 @@ export function createRooms(evaluate: Evaluate) {
     broadcastLobby(room);
   }
 
+  // Both players play the same game, so the kit is the host's choice too, and it is fixed
+  // for the match for the same reason the map is.
+  function chooseUtility(room: Room, on: unknown) {
+    if (typeof on !== 'boolean') return;
+    if (room.match && !room.match.over) return;
+    room.utility = on;
+    broadcastLobby(room);
+  }
+
   function startMatch(room: Room) {
     stopLoop(room);
     room.match = createMatch({});
@@ -124,7 +135,7 @@ export function createRooms(evaluate: Evaluate) {
   // round starts with fresh bodies and the same scorecard.
   function startRound(room: Room) {
     stopLoop(room);
-    const game = createGame({ defenders: 'players', match: room.match, prep: true, map: room.map });
+    const game = createGame({ defenders: 'players', match: room.match, prep: true, map: room.map, utility: room.utility });
     room.game = game;
     broadcast(room, { type: 'started' });
     let last = performance.now();
@@ -243,7 +254,7 @@ export function createRooms(evaluate: Evaluate) {
 
   function broadcastLobby(room: Room) {
     const players = { attack: Boolean(room.players.attack), defend: Boolean(room.players.defend) };
-    broadcast(room, { type: 'lobby', players, map: room.map, running: Boolean(room.game && !room.game.result) });
+    broadcast(room, { type: 'lobby', players, map: room.map, utility: room.utility, running: Boolean(room.game && !room.game.result) });
   }
 
   function broadcast(room: Room, message: unknown) {
