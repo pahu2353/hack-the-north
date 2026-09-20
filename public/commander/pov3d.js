@@ -140,10 +140,23 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   // art style, and it is where a laptop GPU runs out of room first.
   const MAX_PIXEL_RATIO = 1.5;
   const SLOW_FRAME = 1 / 45; // below this the view is visibly not keeping up
-  const FAST_FRAME = 1 / 70; // and this much headroom means the level below was unnecessary
+  // Headroom has to be judged against what the display will actually allow: a screen locked to
+  // 60Hz never delivers a frame faster than ~16.7ms, so asking for 70fps would mean the view
+  // could never climb back on the most ordinary hardware there is. The gap between the two
+  // thresholds is the hysteresis that stops a level flipping back and forth.
+  const FAST_FRAME = 1 / 55;
+  const RECOVERY_FRAMES = 300; // sustained headroom before trying a level up
+  const MAX_RECOVERY_FRAMES = 3600;
   let qualityLevel = LEVELS.length - 1;
   let appliedRatio = null;
   let fastFrames = 0;
+  // Backing off is for a climb that proved wrong, not for every drop. If the view has been
+  // holding a level for a while and then falls behind, something changed — a fight, another
+  // tab taking the GPU — and it should recover as soon as that passes. If instead it drops
+  // shortly after climbing, that level is one this machine cannot hold, and the next attempt
+  // waits twice as long. Without the distinction, one bad stretch costs the rest of the match.
+  let recoveryFrames = RECOVERY_FRAMES;
+  let framesSinceClimb = Infinity;
   const renderRatio = () => Math.min(MAX_PIXEL_RATIO, window.devicePixelRatio || 1) * LEVELS[qualityLevel].scale;
   const usingPost = () => LEVELS[qualityLevel].ao || LEVELS[qualityLevel].bloom;
   function applyLevel() {
@@ -325,15 +338,20 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     if (dt > SLOW_FRAME) slowFrames++;
     else slowFrames = Math.max(0, slowFrames - 1);
     fastFrames = dt < FAST_FRAME ? fastFrames + 1 : 0;
+    framesSinceClimb++;
     if (slowFrames > 20 && qualityLevel > 0) {
       qualityLevel--;
       slowFrames = 0;
       fastFrames = 0;
+      recoveryFrames = framesSinceClimb < RECOVERY_FRAMES * 2
+        ? Math.min(MAX_RECOVERY_FRAMES, recoveryFrames * 2) // that climb was a mistake
+        : RECOVERY_FRAMES; // it held for a while, so this is new, not flapping
       applyLevel();
       console.warn(`3D view: stepping down to quality level ${qualityLevel} to hold frame rate`);
-    } else if (fastFrames > 300 && qualityLevel < LEVELS.length - 1) {
+    } else if (fastFrames > recoveryFrames && qualityLevel < LEVELS.length - 1) {
       qualityLevel++;
       fastFrames = 0;
+      framesSinceClimb = 0;
       applyLevel();
     }
     renderer.shadowMap.needsUpdate = (shadowTick = !shadowTick);
@@ -867,7 +885,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   // What this renderer thinks its own state is, for the stall report in main.js.
   const diagnostics = () => ({
-    contextLost, qualityLevel, post: usingPost(), renderRatio: appliedRatio, slowFrames, fastFrames,
+    contextLost, qualityLevel, post: usingPost(), renderRatio: appliedRatio, slowFrames, fastFrames, recoveryFrames,
     figures: figures.size, size: [Math.round(W), Math.round(H)],
     glLost: renderer.getContext()?.isContextLost?.() ?? null,
   });
