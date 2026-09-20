@@ -188,7 +188,7 @@ function makeAgent(game, team, name, at, slot) {
   return makeUnit(game, {
     team, kind: 'agent', name, slot, x: at.x, y: at.y, r: 0.6, hp: MAX_HP, maxHp: MAX_HP, speed: 5, reaction: 0.25,
     facing: team === 'attack' ? -Math.PI / 2 : Math.PI / 2,
-    action: team === 'attack' ? 'advance' : 'hold', focusId: null, decision: null,
+    action: 'hold', focusId: null, decision: null,
   });
 }
 
@@ -214,15 +214,13 @@ function makeUnit(game, props) {
   };
 }
 
-// What an agent does before the commander says anything: attackers rush the nearer site
-// (and shoot whoever they meet), defenders hold where they spawned.
+// What an agent does before the commander says anything: nothing. Both squads hold where they
+// spawned until they are told otherwise. Attackers used to rush whichever site was nearer the
+// squad, which on a centred spawn is a tie decided by a fraction of a metre — so every round
+// opened with the same unasked-for commitment to the same site. The setup phase is there for
+// the commander to place the squad; the first order should be the first tactical decision.
 export function defaultOrder(game, u) {
-  if (u.team !== 'attack') return { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } };
-  const from = average(teamUnits(game, 'attack'));
-  const site = game.map.sites
-    .map(name => zoneByName(game.map, name))
-    .reduce((a, b) => (dist(b.center, from) < dist(a.center, from) ? b : a));
-  return { type: 'push', zone: site.name, point: site.center };
+  return { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } };
 }
 
 export const teamUnits = (game, team) => game.units.filter(u => u.team === team);
