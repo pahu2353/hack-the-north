@@ -49,12 +49,13 @@ export const MAPS = {
       Mid: { flank: ['A Link', 'B Link'] },
     },
     spawns: {
-      attack: [{ x: 36, y: 51 }, { x: 40, y: 52 }, { x: 44, y: 51 }, { x: 40, y: 48 }],
+      attack: [{ x: 34, y: 51 }, { x: 38, y: 52 }, { x: 42, y: 52 }, { x: 46, y: 51 }, { x: 40, y: 48 }],
       // Defenders start on their posts. Bot rotators move to whichever site a callout threatens.
       defend: [
         { x: 10, y: 8, rotate: false },
-        { x: 20, y: 17, rotate: true },
-        { x: 40, y: 17, rotate: true },
+        { x: 20, y: 16, rotate: true },
+        { x: 40, y: 16, rotate: true },
+        { x: 60, y: 16, rotate: true },
         { x: 70, y: 8, rotate: false },
       ],
     },
@@ -103,6 +104,29 @@ function segmentHitsRect(x1, y1, x2, y2, r) {
 }
 
 export const hasLineOfSight = (map, a, b) => !map.walls.some(w => segmentHitsRect(a.x, a.y, b.x, b.y, w));
+
+// Nearest wall on a ray. Shared by first-person drawing and crosshair targeting.
+// Direction can be unnormalised (the renderer needs perpendicular depth).
+export function castRay(walls, ox, oy, dx, dy) {
+  let best = null;
+  for (const r of walls) {
+    if (dx === 0 && (ox < r.x || ox > r.x + r.w)) continue;
+    if (dy === 0 && (oy < r.y || oy > r.y + r.h)) continue;
+    const tx1 = dx === 0 ? -Infinity : (r.x - ox) / dx;
+    const tx2 = dx === 0 ? Infinity : (r.x + r.w - ox) / dx;
+    const ty1 = dy === 0 ? -Infinity : (r.y - oy) / dy;
+    const ty2 = dy === 0 ? Infinity : (r.y + r.h - oy) / dy;
+    const txn = Math.min(tx1, tx2), tyn = Math.min(ty1, ty2);
+    const near = Math.max(txn, tyn);
+    const far = Math.min(Math.max(tx1, tx2), Math.max(ty1, ty2));
+    if (far < near || near <= 0.01 || (best && near >= best.t)) continue;
+    const side = tyn > txn;
+    const along = side ? ox + dx * near - r.x : oy + dy * near - r.y;
+    const length = side ? r.w : r.h;
+    best = { t: near, side, edge: along < 0.12 || along > length - 0.12 };
+  }
+  return best;
+}
 
 // ---------- grid pathfinding ----------
 

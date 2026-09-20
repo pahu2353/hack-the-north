@@ -150,6 +150,9 @@
   .seat b { font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
   .seat .who { color: var(--muted); }
   .seat.filled .who { color: var(--ok); }
+  .side-choice { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .side-choice select { background: var(--panel-2); color: var(--ink); border: 1px solid var(--border); padding: 8px; font: inherit; }
+  .side-choice button[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
   .note { font-size: 12px; color: var(--muted); }
   .toggles { display: grid; gap: 6px; width: min(360px, 100%); }
   .toggle-row {
@@ -158,6 +161,24 @@
   }
   .toggle-row > span { color: var(--ink-2); }
   .toggle-row button { min-width: 54px; }
+  /* Between rounds and at the end of a match: the score, then every agent's round totals. */
+  #screenResult { width: min(640px, 100%); }
+  .match-score { display: flex; align-items: center; gap: 14px; font: 800 34px/1 system-ui, sans-serif; }
+  .match-score .own { color: var(--squad); }
+  .match-score .them { color: var(--enemy); }
+  .match-score .of { font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .scoreboard { display: grid; gap: 10px; width: 100%; }
+  .scoreboard table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .scoreboard caption {
+    text-align: left; font: 700 11px/1.6 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .scoreboard caption.own { color: var(--squad); }
+  .scoreboard caption.them { color: var(--enemy); }
+  .scoreboard th, .scoreboard td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: right; }
+  .scoreboard th { font: 600 10px/1.4 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .scoreboard th:first-child, .scoreboard td:first-child { text-align: left; }
+  .scoreboard td.agent { display: flex; align-items: center; gap: 7px; }
+  .scoreboard td.agent i { width: 9px; height: 9px; background: var(--agent); border-radius: 50%; }
   .overlay .status { min-height: 18px; }
   .overlay .status.error { color: var(--enemy); }
 
@@ -195,13 +216,25 @@
     background: #05070a; color: var(--muted); font-size: 12px; text-align: center; padding: 12px;
   }
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-  .card-head span { display: flex; gap: 6px; }
+  .card-head .head-actions { display: flex; gap: 6px; }
   .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
   .signs span {
     display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
     padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
   }
   .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
+  /* The transcript and its voice summary are kept for the code that writes them, but the order
+     log says the same thing a moment later, so they stay out of the panel. */
+  .caption, .voice-summary { display: none; }
+  /* Hold-to-talk bar: only shown in that mode, since hands-free needs no button. */
+  .ptt {
+    display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px;
+    position: relative; overflow: hidden; user-select: none; background: var(--panel-2);
+  }
+  .ptt.live { border-color: rgba(255, 70, 85, 0.55); color: var(--ink); }
+  .ptt .level { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--enemy); width: 0; }
+  .mode-btn { font-size: 10px; padding: 5px 8px; }
+  .mode-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
   .cam[hidden] { display: none; }
 
   /* Device toggles live in their section heading, as icons. */
@@ -243,12 +276,18 @@
     margin-right: 6px; vertical-align: 1px;
   }
   .entry .meta { color: var(--muted); font-size: 11px; }
+  .entry .ux { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--ink-2); font-size: 11px; }
+  .entry .ux[hidden] { display: none; }
+  .entry .ux span { background: var(--panel-2); border-radius: 4px; padding: 1px 5px; }
   .entry .err { color: var(--enemy); font-size: 12px; }
   .plan { display: grid; grid-template-columns: 58px 1fr 40px; gap: 2px 6px; font-size: 12px; align-items: center; }
   .plan .skip { color: var(--muted); }
   .plan .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  footer.squad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 6px 12px; border-top: 1px solid var(--border); }
+  footer.squad {
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; padding: 6px 12px;
+    border-top: 1px solid var(--border);
+  }
   /* Optional HUD pieces, switched in Settings. */
   body:not([data-cards="on"]) footer.squad { display: none; }
   body:not([data-feed="on"]) .feed { display: none; }
@@ -303,11 +342,19 @@
     border: 1px solid rgba(255, 110, 120, 0.16); border-left: 0;
     clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
   }
+  /* Rounds won, either side of the clock: yours on the left, theirs on the right. */
+  .scorebar .round-score {
+    display: grid; place-items: center; min-width: 34px; font: 800 20px system-ui, sans-serif; color: var(--squad);
+    background: rgba(8, 10, 14, 0.92); border: 1px solid var(--border); border-left: 0; border-right: 0;
+  }
+  .scorebar .round-score.enemy { color: var(--enemy); }
   .scorebar .score-clock {
     display: grid; place-items: center; min-width: 82px; padding: 0 14px;
     font: 800 21px/1 system-ui, sans-serif; letter-spacing: 0.02em;
     background: rgba(6, 9, 12, 0.94); border: 1px solid var(--border); border-left: 0; border-right: 0;
   }
+  /* Setup time, before the round goes live. */
+  .scorebar .score-clock.prep { color: var(--gold); }
   /* Initials only: names are drawn under the dots in the game, where you need them. */
   .portrait {
     display: grid; grid-template-rows: 30px 4px; gap: 3px; align-content: center; justify-items: center;
@@ -363,13 +410,13 @@
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
   }
   /* Clear of the agent HUD, which sits bottom centre. */
-  .arena[data-view="pov"] .hint { bottom: 62px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
+  .arena[data-view="pov"] .hint { bottom: 84px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
     .arena { height: 60vh; }
     .side { border-left: 0; }
-    footer.squad { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    footer.squad { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
@@ -378,16 +425,18 @@
 <main class="layout">
   <section class="arena" id="arena" data-view="map">
     <canvas id="map" aria-label="Battle map"></canvas>
-    <canvas id="pov" class="pov-only" aria-label="First-person view"></canvas>
+    <canvas id="pov" class="pov-only" aria-label="First-person view: automatic shooting, click for mouse look, aim at enemies for better accuracy, Escape to release cursor"></canvas>
     <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
     <div class="pov-zone pov-only" id="povZone"></div>
     <div class="pov-hud pov-only">
       <span class="hp" id="povHp"></span>
-      <span class="who"><b id="povName"></b><span id="povAction"></span></span>
+      <span class="who"><b id="povName"></b><span id="povAction"></span><span id="povControl"></span></span>
     </div>
     <div class="scorebar" id="scorebar" hidden>
       <div class="team" id="squadBar"></div>
+      <div class="round-score" id="ownScore">0</div>
       <div class="score-clock" id="scoreClock">–</div>
+      <div class="round-score enemy" id="enemyScore">0</div>
       <div class="team enemy" id="enemyBar"></div>
     </div>
     <div class="toast" id="toast" hidden></div>
@@ -399,18 +448,21 @@
         <h2>Choose game mode</h2>
         <p id="menuNote"></p>
         <div class="choices">
-          <button id="playBots" class="primary big" type="button">Vs bots<small>Four scripted or AI defenders</small></button>
+          <button id="playBots" class="primary big" type="button">Vs bots<small>Attack or defend against an AI squad</small></button>
           <button id="playOnline" class="big" type="button">Multiplayer<small>Against another commander</small></button>
         </div>
         <button id="menuSettings" class="link" type="button">Settings</button>
       </section>
 
       <section id="screenBots" hidden>
-        <h2>Choose game mode</h2>
-        <p>You attack the spike. Who commands the defenders?</p>
+        <h2>Vs Bots</h2>
+        <p>Choose your side and difficulty. Both use the same health and weapons.</p>
+        <label class="side-choice" for="botSide">Your side
+          <select id="botSide"><option value="attack">Attack — plant the spike</option><option value="defend">Defend — stop the plant</option></select>
+        </label>
         <div class="choices">
-          <button id="botsScripted" class="primary big" type="button">Scripted<small>Hold posts, rotate, retake</small></button>
-          <button id="botsOpenAI" class="big" type="button">OpenAI<small>Plans from what they see</small></button>
+          <button id="botsOpenAI" class="primary big" type="button">Hard<small>OpenAI commander · Adapts its squad's strategy</small></button>
+          <button id="botsScripted" class="big" type="button">Easy<small>Scripted bots · Predictable tactics for practice</small></button>
         </div>
         <div class="status" id="botsStatus"></div>
         <button id="botsBack" class="link" type="button">← Back</button>
@@ -440,6 +492,11 @@
           <div class="seat" id="seatAttack"><b>Attack</b><span class="who"></span></div>
           <div class="seat" id="seatDefend"><b>Defend</b><span class="who"></span></div>
         </div>
+        <div class="side-choice" id="hostSideControls" role="group" aria-label="Host's side">
+          <span>Your side:</span>
+          <button id="hostAttack" type="button" aria-pressed="true">Attack</button>
+          <button id="hostDefend" type="button" aria-pressed="false">Defend</button>
+        </div>
         <button id="startMatch" class="primary big" type="button" disabled>Start match</button>
         <div class="status" id="lobbyStatus"></div>
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
@@ -466,7 +523,10 @@
       <section id="screenResult" hidden>
         <h2 id="resultTitle">Victory</h2>
         <p id="resultText"></p>
+        <div class="match-score" id="matchScore" hidden></div>
+        <div class="scoreboard" id="scoreboard" hidden></div>
         <button id="again" class="primary big" type="button">Play again</button>
+        <button id="swapSides" type="button" hidden>Swap sides for rematch</button>
         <div class="status" id="resultStatus"></div>
         <button id="resultMenu" class="link" type="button">Main menu</button>
       </section>
@@ -496,9 +556,15 @@
     </div>
     <div class="card">
       <div class="card-head">Voice
-        <button id="micBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
+        <span class="head-actions">
+          <button id="voiceMode" class="mode-btn" type="button" aria-pressed="false" title="Switch between hands-free and hold-to-talk">Hands-free</button>
+          <button id="micBtn" class="icon-btn" type="button" data-state="off" aria-label="Turn on mic" title="Turn on mic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 20 20 4"/></svg></button>
+        </span>
       </div>
       <div class="meter" id="meter"><i id="level"></i></div>
+      <button id="listen" class="ptt" type="button" hidden title="Hold to talk"><span id="listenLabel">Mic off</span><span class="level"></span></button>
+      <div class="caption" id="caption"></div>
+      <div class="voice-summary" id="voiceSummary"></div>
       <form class="order" id="textForm">
         <input id="textInput" autocomplete="off" aria-label="Order" placeholder="Type an order…">
         <button type="submit" class="primary">Send</button>
@@ -507,6 +573,7 @@
     </div>
     <div class="card" id="opponentCard" hidden>
       <div class="card-head">Enemy commander <span class="status" id="opponentStatus"></span></div>
+      <div id="opponentCoordination" role="status"></div>
       <details class="opponent-panel" id="opponentDetails">
         <summary>Current plan</summary>
         <p id="opponentReason"></p>
@@ -520,7 +587,7 @@
       <div class="status" id="permsStatus" role="status">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
-      <div class="card-head">Orders</div>
+      <div class="card-head">Orders → Jev <span class="voice-summary" id="voiceSummary">Volume: — · Emphasis: —</span></div>
       <div class="log" id="log"></div>
     </div>
   </aside>

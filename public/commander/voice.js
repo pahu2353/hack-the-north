@@ -2,6 +2,10 @@
 // While listening, audio streams continuously and each spoken sentence becomes an order as
 // soon as you pause (Deepgram's endpointing). While not listening (menus, muted), nothing is
 // sent except keep-alives.
+import { VOICE_THRESHOLDS, createVoiceMetrics, pcmRms } from './voice-metrics.js';
+
+const PREROLL_CHUNKS = 3; // 300 ms catches the first syllable in hold-to-talk mode.
+
 export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
   let ws = null;
   let ctx = null;
@@ -10,7 +14,10 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
   let keyterms = [];
   let finals = [];
   let keepAlive = null;
+  let capturing = false;
+  const preroll = [];
   const counters = { chunks: 0, sent: 0, results: 0, orders: 0 };
+  const metrics = createVoiceMetrics();
 
   function connect() {
     const params = new URLSearchParams();
@@ -53,8 +60,11 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     const text = finals.join(' ').trim();
     finals = [];
     if (!text) return;
+    if (capturing) metrics.stop();
+    const voiceContext = metrics.finish(text);
+    capturing = false;
     counters.orders++;
-    onFinal(text);
+    onFinal(text, voiceContext);
   }
 
   function send(data) {
@@ -91,12 +101,20 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     source.connect(capture).connect(mute).connect(ctx.destination);
     capture.port.onmessage = ({ data }) => {
       counters.chunks++;
-      if (!listening) return;
+      if (!listening) {
+        preroll.push(data);
+        if (preroll.length > PREROLL_CHUNKS) preroll.shift();
+        return;
+      }
       send(data);
-      const pcm = new Int16Array(data);
-      let sum = 0;
-      for (let i = 0; i < pcm.length; i += 8) sum += (pcm[i] / 32768) ** 2;
-      onLevel(Math.min(1, Math.sqrt(sum / (pcm.length / 8)) * 4));
+      const rms = pcmRms(data);
+      // Begin at audible speech so idle mic time does not dilute this utterance's rate.
+      if (!capturing && rms >= VOICE_THRESHOLDS.activityRms) {
+        metrics.start();
+        capturing = true;
+      }
+      if (capturing) metrics.sample(rms);
+      onLevel(Math.min(1, rms * 4));
     };
     keepAlive = setInterval(() => !listening && send(JSON.stringify({ type: 'KeepAlive' })), 4000);
     onStatus('Connecting to Deepgram…', 'pending');
@@ -124,9 +142,29 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
     }
   }
 
+  function startTalking() {
+    if (!stream || listening) return;
+    finals = [];
+    metrics.start();
+    capturing = true;
+    setListening(true);
+    for (const chunk of preroll.splice(0)) send(chunk);
+    onInterim('');
+  }
+
+  function stopTalking() {
+    if (!listening) return;
+    if (capturing) metrics.stop();
+    capturing = false;
+    setListening(false);
+  }
+
   function disable() {
     listening = false;
     clearInterval(keepAlive);
+    capturing = false;
+    metrics.reset();
+    preroll.length = 0;
     stream?.getTracks().forEach(track => track.stop());
     stream = null;
     ctx?.close();
@@ -138,9 +176,9 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
   }
 
   return {
-    enable, disable, setKeyterms, setListening,
+    enable, disable, setKeyterms, setListening, startTalking, stopTalking,
     get enabled() { return Boolean(stream); },
     get listening() { return listening; },
-    get debug() { return { audio: ctx?.state, socket: ws?.readyState, listening, ...counters }; },
+    get debug() { return { audio: ctx?.state, socket: ws?.readyState, listening, ...counters, ...metrics.debug }; },
   };
 }

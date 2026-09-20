@@ -4,21 +4,30 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
+import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
+const VOICE_PACE = { mild: 1.08, strong: 1.18 };
+
+function voicePaceMultiplier(context) {
+  if (!context) return 1;
+  const volume = context.volumeLevel === 'very_loud' ? VOICE_PACE.strong
+    : context.volumeLevel === 'loud' ? VOICE_PACE.mild : 1;
+  return Math.max(volume, VOICE_PACE[context.profanityLevel] ?? 1);
+}
 
 // The orchestrator question: with a hands-free mic, most of what Jev hears is not an order.
-// On labelled commands this scores chatter at 8-14% and real orders at 89-97%.
-const ORDER_GATE = {
+// Saying the quiet part out loud ("a plain statement is still an order") matters: without it,
+// "Alpha and Bravo hold B site" reads as a description of what they are doing and scores 23%.
+const orderGate = names => ({
   type: 'boolean',
-  instructions: 'Is the commander giving their squad an order, or just talking (thinking out loud, reacting to the game, chatting)?',
+  instructions: `The commander is speaking to their squad (${names.join(', ')}) during a match. Anything that tells one or more of them where to be or what to do is an order, even when it is phrased as a plain statement: "${names[0]} and ${names[1]} hold B site" is an order to hold B site, not a description. Is this an order, or is the commander just talking (reacting, asking, thinking out loud)?`,
   criteria: {
-    true: 'an order for the squad to carry out',
-    false: 'not an order: chatter, a question, a reaction, or thinking out loud',
+    true: 'an order: it tells at least one of them where to go, what to hold, or what to do',
+    false: 'not an order: a reaction, a question, or thinking out loud',
   },
-};
+});
 
 const ORDERS = {
   attack: {
@@ -27,6 +36,7 @@ const ORDERS = {
     flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
+    grenade: 'throw a grenade / nade / frag the location',
     plant: 'plant the spike (only when told to plant)',
   },
   defend: {
@@ -35,6 +45,7 @@ const ORDERS = {
     flank: 'flank: swing around / go around / take the long way to hit enemies from the side',
     retreat: 'fall back / retreat / pull out',
     regroup: 'group up / stack together with the squad',
+    grenade: 'throw a grenade / nade / frag the location',
     defuse: 'go defuse the planted spike (only when told to defuse)',
   },
 };
@@ -54,9 +65,11 @@ async function evaluateOverHttp(state, questions, maxRetries) {
 
 export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS } = {}) {
   const stats = { calls: 0, ok: 0, failed: 0, lastError: '', latencies: [], recent: [] };
-  // Orders can be interpreted out of order (a guess at partial speech can land after the
-  // finished sentence), so a lower sequence number never overwrites a higher one.
-  let appliedSeq = 0;
+  let commandSequence = 0;
+  // Track accepted orders per unit: chatter or an order for Bravo must not cancel Alpha's.
+  // Explicit sequences also prevent a partial voice guess from replacing its final sentence.
+  const lastAppliedCommand = new WeakMap();
+  const commandHistory = new WeakMap();
 
   async function ask(state, questions, maxRetries = 0) {
     stats.calls++;
@@ -78,9 +91,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
-  async function interpretCommand(game, team, { text, gesture, pointer, only, seq = Infinity }) {
+  async function interpretCommand(game, team, { source, text, gesture, pointer, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
+    const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
+    commandSequence = Math.max(commandSequence, commandId);
+    const previousCommands = commandHistory.get(game)?.[team] ?? [];
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
     const ownSpawn = team === 'attack' ? 'Attacker Spawn' : 'Defender Spawn';
@@ -105,33 +121,88 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[team] };
       questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
     }
-    questions.is_order = ORDER_GATE;
+    questions.is_order = orderGate(squad.map(u => u.name));
+    if (voiceContext) {
+      questions.command_urgency = {
+        type: 'choice',
+        instructions: 'How urgent is this order? Combine its wording, observable voice cues, profanity, remaining time, and game situation. Profanity can reinforce an explicit urgent order, but swearing alone or casual joking does not make speech an order or prove emotion. Loudness alone is not urgency.',
+        criteria: {
+          low: 'casual or low priority',
+          normal: 'ordinary command without time pressure',
+          high: 'needs prompt attention',
+          critical: 'immediate action is needed in the current situation',
+        },
+      };
+      questions.commander_certainty = {
+        type: 'choice',
+        instructions: 'How certain is the commander about the order? Consider direct wording, corrections, hedging, and observed pauses; do not infer an emotion.',
+        criteria: {
+          uncertain: 'hesitant, self-correcting, or unsure',
+          normal: 'clear enough without strong certainty cues',
+          confident: 'direct and unambiguous',
+        },
+      };
+    }
+    const status = voiceContext ? roundStatus(game, team) : null;
     const state = {
       commander_says: text,
       ...(only && { talking_to: only }),
+      ...(source && { command_source: source }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
-      squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
+      squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)}/${u.maxHp} HP`])),
+      ...(voiceContext && {
+        voice_context: {
+          volume_level: voiceContext.volumeLevel,
+          volume_vs_baseline: Math.round(voiceContext.volumeVsBaseline * 100) / 100,
+          peak_volume_level: voiceContext.peakVolumeLevel,
+          speech_rate: voiceContext.speechRate,
+          pause_level: voiceContext.pauseLevel,
+          emphasis_level: voiceContext.emphasisLevel,
+          intensity_trend: voiceContext.intensityTrend,
+          profanity_level: voiceContext.profanityLevel ?? 'none',
+          profanity_count: voiceContext.profanityCount ?? 0,
+        },
+        situation: {
+          side: team,
+          seconds_remaining: Math.max(0, Math.round(status.clock)),
+          status: status.label,
+        },
+        recent_commands: previousCommands.slice(-3),
+      }),
     };
+    const history = commandHistory.get(game) ?? {};
+    history[team] = [...previousCommands, text].slice(-3);
+    commandHistory.set(game, history);
 
     // Jev occasionally 500s on a question with no clear winner, so give it one more go.
     const result = await ask(state, questions, 2).catch(() => ask(state, questions, 2));
     const isOrder = result.answers.is_order.probability;
+    const ux = voiceContext ? {
+      urgency: result.answers.command_urgency?.choice ?? 'normal',
+      certainty: result.answers.commander_certainty?.choice ?? 'normal',
+    } : null;
     if (isOrder < 0.5) {
-      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
+      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens, ux };
     }
-    if (seq < appliedSeq) {
-      return { stale: true, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
-    }
-    appliedSeq = seq;
+    // A small speed boost once Jev accepts a shouted order. The next order resets speed from
+    // each unit's original value, so cues never stack.
+    const pace = source === 'voice' ? voicePaceMultiplier(voiceContext) : 1;
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
       const addressed = only ? 1 : a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
-      const applied = addressed >= 0.5 && unit.alive;
+      const skipReason = addressed < 0.5 ? 'not addressed'
+        : !unit.alive ? 'agent eliminated'
+        : game.result ? 'round ended'
+        : commandId < (lastAppliedCommand.get(unit) ?? 0) ? 'newer order already applied'
+        : null;
+      const applied = skipReason === null;
       if (applied) {
+        unit.commandBaseSpeed ??= unit.speed;
+        unit.speed = unit.commandBaseSpeed * pace;
         let point;
         let zone = target.choice;
         if (target.choice === 'pointed' && pointer) {
@@ -144,19 +215,22 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
           point = zoneByName(game.map, target.choice).center;
         }
         setOrder(game, unit, { type: order.choice, zone, point });
+        lastAppliedCommand.set(unit, commandId);
         unit.action = order.choice === 'hold' ? 'hold' : 'advance';
       }
       return {
         name: unit.name,
         addressed,
         applied,
+        ...(skipReason && { skipReason }),
         order: order.choice,
         orderP: order.probabilities?.[order.choice] ?? 1,
         target: target.choice === 'pointed' ? `☝ ${pointerZone}` : target.choice,
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
-    return { plan, isOrder, latency: result.latency, tokens: result.usage?.inputTokens };
+    const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
+    return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
   }
 
   // ---------- 2. per-agent decision loops ----------
@@ -167,6 +241,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       if (u.kind !== 'agent') return;
       u.brain ??= { pending: false, nextAt: now + (i * thinkMs) / 4 };
       if (u.brain.pending) return;
+      // A fresh order is carried out, not debated: the simulation is already doing exactly
+      // what the commander said. The exception is a grenade about to go off, where standing
+      // there to obey would just get them killed.
+      if (obeying(game, u) && !incomingGrenade(game, u)) {
+        u.decision = { action: u.action, probabilities: { [u.action]: 1 }, obeying: true };
+        u.brain.nextAt = now;
+        return;
+      }
       const tick = agentTick(game, u);
       // Nothing to decide (no contact): follow the commander's order without a Jev call.
       if (!tick) {
@@ -210,6 +292,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       id: e.name,
       distance_m: Math.round(dist(u, e)),
       hp: Math.round(e.hp),
+      max_hp: e.maxHp,
       shooting_at_you: e.targetId === u.id && game.time - e.lastShotAt < 1,
     }));
     const mates = aliveTeam(game, u.team).filter(m => m !== u);
@@ -218,11 +301,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
     const objective = orderDestination(game, u);
     const toObjective = Math.round(dist(u, objective));
+    const clump = u.grenades > 0 ? grenadeSpot(game, u) : null;
+    const bomb = incomingGrenade(game, u);
     const state = {
       you: {
         name: u.name,
         side: u.team === 'attack' ? 'attacker' : 'defender',
+        grenades_left: u.grenades,
         hp: Math.round(u.hp),
+        max_hp: u.maxHp,
         location: zoneAt(game.map, u).name,
         moving: u.moving,
         ...(u.team === 'attack' && { carrying_spike: game.spike.state === 'carried' && game.spike.carrierId === u.id }),
@@ -230,19 +317,34 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       commander_order: orderLabel(u),
       meters_to_ordered_position: toObjective,
       enemies_in_sight: enemies,
-      teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
+      teammates: mates.map(m => ({ name: m.name, hp: Math.round(m.hp), max_hp: m.maxHp, distance_m: Math.round(dist(u, m)), in_a_fight: m.visible.length > 0 })),
       spike: spikeBriefing(game, u.team),
+      ...(clump && { enemies_bunched_together: `${clump.caught} of them are standing within 5m of each other, in grenade range` }),
+      ...(bomb && { grenade_about_to_go_off: `${Math.max(0, bomb.explodeAt - game.time).toFixed(1)}s, ${Math.round(Math.hypot(bomb.x - u.x, bomb.y - u.y))}m away` }),
     };
-    // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled situations).
+    // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled
+    // situations). The one that carries out the commander's order says so.
+    const ordered = { hold: 'hold', grenade: 'nade' }[u.order.type] ?? 'advance';
+    const carriesOut = name => (name === ordered ? 'carry out your order: ' : '');
     const actions = {
-      advance: `keep moving to your ordered position (${u.order.zone}, ${toObjective}m away): when no enemy is in sight`,
-      hold: 'stay put and watch this angle: when no enemy is in sight but one could appear',
-      cover: 'break line of sight behind cover: when you are hurt and outnumbered',
+      advance: `${carriesOut('advance')}keep moving to your ordered position (${u.order.zone}, ${toObjective}m away)`,
+      hold: `${carriesOut('hold')}stay put and watch this angle`,
+      cover: 'break line of sight behind cover: only when you are hurt and outnumbered, and it puts your order on hold',
     };
-    if (enemies.length) actions.fight = 'stop and shoot the enemy: whenever an enemy is in sight (standing still makes you far more accurate)';
+    if (enemies.length) {
+      actions.fight = clump?.caught >= 2
+        ? 'stop and shoot one of them: only hurts the one you aim at'
+        : 'stop and shoot the enemy in sight: standing still makes you far more accurate, but it puts your order on hold';
+    }
+    if (clump?.caught >= 2 && !bomb) actions.nade = `${carriesOut('nade')}throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
+    if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
     const questions = {
-      action: { type: 'choice', instructions: `You are ${u.name}. What should you do right now?`, criteria: actions },
+      action: {
+        type: 'choice',
+        instructions: `You are ${u.name}. Your commander ordered you to ${orderLabel(u)}, and that order outranks your own judgement: carry it out unless doing so right now would get you killed or you cannot carry it out from here. What should you do?`,
+        criteria: actions,
+      },
     };
     if (enemies.length >= 2) {
       questions.target = {

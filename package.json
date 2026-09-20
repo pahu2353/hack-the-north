@@ -9,7 +9,7 @@
     "dev:lan": "HOST=0.0.0.0 node --env-file-if-exists=.env.local --watch server.ts",
     "online": "bash scripts/play-online.sh",
     "test:bot-mode": "node --test tests/opponent.test.js",
-    "test": "node --test \"tests/*.test.js\""
+    "test": "node --test tests/*.test.js tests/*.test.mjs"
   },
   "repository": {
     "type": "git",

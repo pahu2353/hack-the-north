@@ -2,7 +2,7 @@
 
 Experiments with [Jev](https://vercel.com/ai-gateway/models/jev), TypeSafe AI's evaluation model on Vercel AI Gateway:
 
-- **Commander**: command a squad of four AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
+- **Commander**: command a squad of five AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
 - **Jev visualizer**: a playground for Jev's typed questions and probability answers.
 
 ## What is Jev?
@@ -49,6 +49,12 @@ Pricing is $0.042 per 1M input tokens, with no charge for output. A request can 
    ```
    DEEPGRAM_API_KEY=...
    ```
+6. For **Hard** bot matches, add a direct OpenAI key:
+   ```
+   OPENAI_API_KEY=...
+   ```
+   The opponent prefers this key when present, otherwise uses AI Gateway. Jev still uses
+   `AI_GATEWAY_API_KEY`; voice still uses `DEEPGRAM_API_KEY`. Keys stay on the server.
 
 ## Commander
 
@@ -56,19 +62,27 @@ Pricing is $0.042 per 1M input tokens, with no charge for output. A request can 
 npm run dev    # then open http://localhost:3000/commander/ in Chrome
 ```
 
-A Valorant-style round (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your four agents. Attackers (Alpha, Bravo, Charlie, Delta) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders. Defenders (Echo, Foxtrot, Golf, Hotel) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers. Standing still makes shots far more accurate, so good fight-or-move decisions matter.
+A Valorant-style match (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your five agents. Shooting is always automatic; in first-person, keeping your crosshair on an enemy improves that agent's accuracy while it follows your movement orders. Attackers (Alpha, Bravo, Charlie, Delta, Echo) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders — a planted spike wins the round even if every attacker dies. Defenders (Foxtrot, Golf, Hotel, India, Juliett) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers before the plant. Standing still makes automatic shots far more accurate, so good fight-or-move decisions matter.
+
+**A match is a best of three.** Each round opens with **ten seconds of setup**: you can move and give orders, but neither squad may cross into more than its own third of the map (a dashed line shows how far), and nobody can shoot or throw until the round goes live. Between rounds you get the score and a scoreboard of everyone's kills, deaths and damage for the match so far. The map is always drawn with your own side at the bottom, so commanding the defence turns it around.
+
+**Everyone starts with 150 HP.** Rifles deal 28 damage every 0.22s at most: six hits to eliminate a full-health unit. Automatic fire has 0.38 base accuracy before distance, movement and standing-still modifiers (previously 0.55). Aligning the first-person crosshair with a visible enemy raises hit probability to 90% while stationary or 80% while moving, with the same damage, range, reaction time and cooldown. Looking elsewhere keeps normal automatic shooting without the bonus. These rules apply equally to both sides, both difficulties and multiplayer. This is an initial balance pass; match difficulty still needs playtesting.
+
+**Everyone carries one grenade**, which punishes squads walking around as one clump. It can be thrown 26m, has a 6m blast radius and deals up to 85 damage at the centre. It lands, waits a second and a half (a red ring shows the blast and time left), then goes off; walls block it. Jev throws at clusters and can scatter out of nearby grenades. One central blast now leaves a full-health agent at 65 HP. You can also order one: "nade B site", or point at the map and say "grenade there". The 💣 on an agent's card means they still have theirs.
 
 The start screen has:
 
-- **Vs Bots:** you attack; four scripted defender bots hold posts, rotate to threatened sites, and retake the spike. The match runs in your browser.
+- **Vs Bots:** choose Attack or Defend, then **Easy** (scripted bots) or **Hard** (OpenAI commander). Difficulty changes the opposing commander, not its health or weapon stats. The match runs in your browser, with AI requests relayed through the server.
 - **Multiplayer:** you command against another person (see below).
-- **3D:** a toggle for a 3D view. The button is there, but the 3D view isn't built yet.
+
+During a match, press **Tab** or pinch to switch between the team map and one agent's
+first-person view, with a minimap. Orders in first-person address only the watched agent.
 
 ### Multiplayer
 
-1. One player clicks **Multiplayer → Create game**. They command the attackers and get a five-letter invite code and link.
-2. The other player opens the link, or clicks **Multiplayer**, types the code, and joins as the defenders.
-3. The host clicks **Start match**. After a round, the host can start a rematch.
+1. One player clicks **Multiplayer → Create game** and gets a five-letter invite code and link. In the lobby, the host chooses **Attack** or **Defend**.
+2. The other player opens the link, or enters the code, and joins the opposite side. Changing the host's side updates both players before the match.
+3. The host clicks **Start match**. Rounds of the best-of-three run one after another, with a short break on the scoreboard between them. Once the match is decided, **Rematch** keeps the sides; **Swap sides for rematch** returns both players to the lobby with their sides reversed. Sides are locked during a match, and the room creator remains the host on either side.
 
 The server runs the match, including both teams' Jev brains, and sends each player only what their own agents can see. Enemies show up in red while they're in sight, then fade to a dashed "last seen" marker. Your orders and Jev's decisions are never sent to your opponent. If a player leaves mid-round, the other wins by forfeit; if the host leaves, the room closes.
 
@@ -89,9 +103,10 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | Voice | Hands-free: the mic turns on when a match starts, and each sentence becomes an order when you pause. Just say "Alpha and Bravo push B, Charlie hold mid, Delta flank A." The squad acts on the first clause while you're still talking (see below). **Mute** stops it; it only listens during matches. |
 | Text | Type in the order box and press Enter. |
 | Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." A finger held sideways or down does nothing. |
-| Hand signals | Click **Enable camera**, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
+| Hand signals | Turn on the camera in the side panel, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
 | Switching agents | Hold your thumb out left or right, hitchhiker style. Keep holding and it keeps stepping through the squad, faster the longer you hold. Or swipe your hand, press ←/→ or 1–4, or click an agent on the top bar. |
 | Switching views | Pinch your thumb and index finger, or press <kbd>Tab</kbd>. |
+| First-person aiming | Shooting stays automatic. Click the 3D canvas once for mouse look, then keep your crosshair on an enemy for better accuracy. Green crosshair = aim bonus active. Esc releases the cursor. |
 | Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
 | Settings | From the menu or the pause screen: agent cards (off by default), kill feed, minimap, Jev numbers, control hints. Remembered per machine. |
 
@@ -100,10 +115,22 @@ shooter's menus read; the first-person view and the radar follow CS instead — 
 geometry in the view, and a round, player-centred radar with grey geometry and yellow site
 letters.
 
-**First-person view.** The map is the default view. Switch to first-person and you watch over one
-agent's shoulder: their view of the map drawn in 3D, a minimap, and the top bar showing who is
-alive on both sides. It's for monitoring, not aiming, so pointing, ✌️ split and 🤟 special are
-map-view only, and every order you give in first-person goes to the agent you're watching alone.
+**First-person view.** The map is the default view. Switch to first-person to see one agent's
+view, with a minimap and the top bar showing who is alive on both sides. Shooting stays automatic;
+there is no fire button. Click the canvas once to enable mouse look, then move the mouse to put
+an enemy under the crosshair. That enemy becomes the shooting target and gets the accuracy bonus.
+A green crosshair confirms alignment; a white hit marker confirms an assisted hit. Looking away
+keeps the agent shooting normally at its own target, with normal accuracy. Merely entering the
+view gives no bonus. Walls, range and the enemy's on-screen height still matter. There is no
+headshot bonus or friendly fire. The agent still follows orders, moves and dodges; you do not
+steer it with WASD. Other agents stay autonomous.
+
+Switch agents with ←/→, 1–4, or hand signals; only the watched agent can get the aim bonus. Esc
+releases the mouse, then Esc again opens the menu. Map view, menus, leaving the tab or ending the
+round stop the aim assistance. In multiplayer the server validates ownership and alignment and
+removes the bonus if aim updates stop for 0.6s. No AI call or click is needed to fire.
+
+Pointing, ✌️ split and 🤟 special remain map-view only, and every order you give in first-person goes to the agent you're watching alone.
 You see only what that agent sees, while the map shows everything your team sees. Each agent has
 their own shade (yours blue, theirs red) on the bar, the map, in 3D and on their card. The top bar
 keeps both full squads on screen all match, in one strip: a red cross once you know they're down,
@@ -118,7 +145,7 @@ attackers rush the nearer site and shoot what they meet; defenders hold their po
 
 **How Jev is used.** Two layers, both plain typed questions:
 
-1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call. One question asks whether it's an order at all, which matters with a hands-free mic: on labelled examples, chatter like "nice shot" scores 5–14% while real orders score 89–97%, so chatter is ignored and shown greyed out in the log. Three more questions per agent ask whether the order applies to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant or defuse), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was.
+1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call. One question asks whether it's an order at all, which matters with a hands-free mic: on labelled examples, chatter like "nice shot" scores 5–14% while real orders score 89–97%, so chatter is ignored and shown greyed out in the log. Three more questions per agent ask whether the order applies to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant or defuse), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was. If replies arrive out of order, an older reply cannot replace a newer accepted order for the same agent; chatter and orders for other agents don't cancel it.
 2. **Agent brains.** Like Jev playing Doom, each agent in a fight sends its situation to Jev about twice a second: health, order, enemies in sight, teammates in fights, and the spike. It gets back an action (fight, take cover, advance, hold, support) and which enemy to shoot. Each card at the bottom shows an agent's current action probabilities. Out of contact, agents just follow orders without calling Jev.
 
 **Spoken orders act early.** Waiting for a finished sentence makes the squad feel sluggish: a five-second order used to take about 5.2s to move anyone. So the partial transcript is interpreted while you're still speaking, those orders are applied straight away (shown with a ⚡ in the log), and the finished sentence corrects them. Measured on the same recorded order, the squad starts moving after about 1.4s instead of 5.2s, with the final orders landing at the same moment as before. A guess that arrives late can't overwrite newer orders: every interpretation carries a sequence number, and the server drops stale ones.
@@ -127,19 +154,52 @@ Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice st
 
 **Legacy: Titan Siege.** The earlier Commander Erwin scenario (Levi, Mikasa, Hange, and Armin holding a gate against waves of titans) lives on as a standalone snapshot at `/legacy/erwin/` (`public/legacy/erwin/`).
 
-**Vs Bots: who commands the defenders.** Choosing **Vs Bots** asks which opponent you want:
+**Vs Bots: choose your side and difficulty.** Attack with Alpha, Bravo, Charlie, Delta and Echo, or defend with Foxtrot, Golf, Hotel, India and Juliett. The opposing bots are E1–E5. **Next round** plays on with the same score; after the match, a rematch keeps your selected side and difficulty.
 
-- **Scripted bots** (no key needed): hold posts, rotate to callouts, retake the spike.
-- **OpenAI commander**: an OpenAI model plans the defense every few seconds from the defenders'
-  own sightings, and replans when it loses someone, spots a push, or the spike goes down. Orders
-  are bounded (`hold`, `rotate`, `flank`, `retreat`, `regroup`, `retake` plus a zone) and
-  validated server-side, so a bad answer can never move a defender somewhere illegal. If the
+- **Easy — scripted bots** (no opponent API calls; your Jev squad still needs the Gateway key): defenders hold posts, rotate to callouts and retake; attackers push B, recover the spike and plant.
+- **Hard — OpenAI commander**: an OpenAI model plans for its side every few seconds from its squad's
+  own sightings, and replans when it loses someone, spots an enemy moving into a new zone, or the spike goes down.
+  Defender orders are `hold`, `rotate`, `flank`, `retreat`, `regroup`, and `retake`.
+  Attacker orders are `hold`, `push`, `flank`, `retreat`, `regroup`, and `plant`.
+  Each order names a map zone and is validated server-side. If the
   model is slow or unavailable, the bots fall back to scripted tactics and the panel says so.
   The side panel shows its current plan and why it replanned.
 
 It needs `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY` in `.env.local`; set `OPENAI_BOT_MODEL` to
 override the model (default `gpt-5.6-sol`). `npm run mock` (or `OPPONENT_MOCK=1`) plans without
 calling OpenAI, and `npm run test:bot-mode` runs the opponent's tests.
+
+The default uses low reasoning effort with an eight-second server timeout. Routine replanning
+waits five seconds after the previous response, so response latency adds to the interval.
+Sightings, casualties, emergency retreats, grenade use or nearby hostile landings, and plants can trigger earlier requests, with at most
+one request running at a time. Each request contains the bot squad's health, positions,
+orders and local combat counts, sightings from the last eight seconds, and the public planted spike state.
+Attacking bots also know their own carrier and dropped spike position; defending bots do not.
+It has no conversation history or memory across rounds. The returned action and zone are
+executed by the bot controller: movement usually stops on contact, except during
+retreat/regroup and coordinated retakes. OpenAI chooses objectives; game code chooses paths and cover.
+The **Enemy commander** panel shows the model, plan, latency, and any fallback error.
+
+On both sides, OpenAI also sees each bot's grenades remaining, nearby teammates at risk of sharing
+a blast, reachable enemy clusters, and which bots are dodging. Active grenades include their public
+positions, teams and remaining fuse after landing; hidden landing targets and enemy grenade supplies
+are not sent. Its instructions explain blast damage, walls, safe spacing and how to support a squad
+during a dodge. Throws and dodges still run immediately in game code, including while OpenAI is slow
+or unavailable. Bots ignore friendly grenades and blasts blocked by walls, stay clear until a hostile
+blast ends, then resume their orders. The enemy plan details show dodging and remaining grenades.
+Grenade events share the existing two-second minimum request interval, debounce and failure backoff.
+
+When OpenAI orders at least two defenders to retake, they assemble at their site's Link or rear
+hallway, favoring a route protected from recent sightings. Most of the assigned group must arrive
+(four of five bots) before they advance together. Waiting ends early if only one survives,
+a teammate is already defusing, or the remaining spike timer approaches travel time plus the
+six-second defuse and a two-second margin. Emergency cover reflexes still apply. The panel shows
+the rally location and ready count; OpenAI receives the current coordination phase. Renewed
+retake orders preserve progress, and cancelled or expired orders clear the rally.
+
+Run `npm test` for all tests, including command ordering, persistent elimination knowledge,
+first-person visibility and shooting, multiplayer aim ownership and side selection, attacking bots and coordinated retakes.
+These tests use local fixtures without API calls; multiplayer tests open temporary localhost ports.
 
 ## Jev visualizer
 
@@ -163,7 +223,7 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 | File | What it is |
 | --- | --- |
 | `server.ts` | Serves `public/`, proxies `POST /api/evaluate` to Jev, and relays `/api/voice` to Deepgram, keeping both keys server-side |
-| `opponent.ts` | The OpenAI commander for the defender bots: snapshot validation, the plan schema, and the model call |
+| `opponent.ts` | The OpenAI commander for either side: snapshot validation, side-specific plan schemas and prompts, and the model call |
 | `multiplayer.ts` | Multiplayer rooms: invite codes, the server-side match loop, and per-team views over `/api/room` |
 | `public/commander/` | Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js` (top-down), `pov.js` (first-person raycaster), `voice.js`, `gestures.js` |
 | `public/legacy/erwin/` | The Titan Siege (Commander Erwin) version, kept as a standalone snapshot |

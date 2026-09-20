@@ -39,12 +39,12 @@ test('snapshot includes only defender knowledge and the public planted objective
 test('input validation strips extra information and rejects invalid snapshots', () => {
   const snapshot = opponentSnapshot(makeGame());
   snapshot.playerOrders = 'not allowed';
-  snapshot.defenders[0].secret = 'not allowed';
+  snapshot.squad[0].secret = 'not allowed';
   snapshot.spike.carrierId = 1;
   const parsed = parseOpponentSnapshot(snapshot);
   assert(!JSON.stringify(parsed).includes('not allowed'));
   assert.deepEqual(parsed.spike, { state: 'unplanted' });
-  for (const invalid of [null, {}, { ...snapshot, contacts: [{}] }, { ...snapshot, defenders: [snapshot.defenders[0], snapshot.defenders[0]] }, { ...snapshot, time: NaN }]) {
+  for (const invalid of [null, {}, { ...snapshot, contacts: [{}] }, { ...snapshot, squad: [snapshot.squad[0], snapshot.squad[0]] }, { ...snapshot, time: NaN }]) {
     assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   }
 });
@@ -63,16 +63,16 @@ test('combat facts use visible enemies and nearby allies with sightlines; the se
   assert.equal(defenderCombat(game, anchor).nearbyAllies, 2); // shared crossfire counts despite the wall between allies
   blocked.visible = [];
   const snapshot = opponentSnapshot(game);
-  snapshot.defenders[0].combat.extra = 'strip this';
+  snapshot.squad[0].combat.extra = 'strip this';
   const parsed = parseOpponentSnapshot(snapshot);
-  assert.deepEqual(parsed.defenders[0].combat, { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
+  assert.deepEqual(parsed.squad[0].combat, { visibleEnemies: 1, nearbyAllies: 1, fallingBack: false });
   for (const combat of [
     { visibleEnemies: -1, nearbyAllies: 0, fallingBack: false },
     { visibleEnemies: 1, nearbyAllies: 99, fallingBack: false },
     { visibleEnemies: 1, nearbyAllies: 0, fallingBack: 'yes' },
   ]) {
     const invalid = structuredClone(snapshot);
-    invalid.defenders[0].combat = combat;
+    invalid.squad[0].combat = combat;
     assert.throws(() => parseOpponentSnapshot(invalid), /Invalid opponent/);
   }
 });
@@ -148,7 +148,7 @@ function rushFixture({ grouped = false, opponent = 'openai' } = {}) {
   const game = createGame({ defenders: 'bots', opponent });
   const defenders = bots(game);
   for (const [i, u] of game.units.filter(u => u.team === 'attack').entries()) {
-    Object.assign(u, { x: 9 + i * 1.3, y: 25, action: 'fight', cooldown: 100 });
+    Object.assign(u, { x: 9 + i * 1.1, y: 25, action: 'fight', cooldown: 100 });
     setOrder(game, u, { type: 'hold', zone: 'A Main', point: { x: u.x, y: u.y } });
   }
   for (const [i, u] of defenders.entries()) {
@@ -163,12 +163,12 @@ test('a healthy isolated OpenAI defender immediately escapes a rush and stays in
   const game = rushFixture();
   const anchor = bots(game)[0];
   stepGame(game, 1 / 60);
-  assert.equal(anchor.hp, 100);
-  assert.equal(anchor.visible.length, 4);
+  assert.equal(anchor.hp, anchor.maxHp);
+  assert.equal(anchor.visible.length, 5);
   assert.equal(anchor.moving, true);
   assert(anchor.botFallback);
   const fallback = anchor.botFallback;
-  assert.deepEqual(opponentSnapshot(game).defenders[0].combat, { visibleEnemies: 4, nearbyAllies: 0, fallingBack: true });
+  assert.deepEqual(opponentSnapshot(game).squad[0].combat, { visibleEnemies: 5, nearbyAllies: 0, fallingBack: true });
   // Break contact while keeping the original hold order. The bot must not immediately re-peek.
   for (const [i, attacker] of game.units.filter(u => u.team === 'attack').entries()) {
     Object.assign(attacker, { x: 66 + i * 2, y: 50 });
@@ -190,10 +190,10 @@ test('supported defenders stand their ground in a fair fight; scripted mode reta
   const together = rushFixture({ grouped: true });
   stepGame(together, 1 / 60);
   assert(bots(together).every(u => !u.botFallback && !u.moving));
-  assert.equal(defenderCombat(together, bots(together)[0]).nearbyAllies, 3);
+  assert.equal(defenderCombat(together, bots(together)[0]).nearbyAllies, 4);
   const scripted = rushFixture({ opponent: 'scripted' });
   stepGame(scripted, 1 / 60);
-  assert.equal(bots(scripted)[0].hp, 100);
+  assert.equal(bots(scripted)[0].hp, bots(scripted)[0].maxHp);
   assert.equal(bots(scripted)[0].moving, false);
   assert(!bots(scripted)[0].botFallback);
 });
@@ -201,7 +201,7 @@ test('supported defenders stand their ground in a fair fight; scripted mode reta
 test('arriving support lets a withdrawing defender resume the fight before its recovery timer expires', () => {
   const game = rushFixture();
   const [anchor, support] = bots(game);
-  for (const [i, attacker] of game.units.slice(2, 4).entries()) {
+  for (const [i, attacker] of game.units.slice(2, 5).entries()) {
     Object.assign(attacker, { x: 68 + i * 2, y: 50 });
     setOrder(game, attacker, { type: 'hold', zone: 'Attacker Spawn', point: { x: attacker.x, y: attacker.y } });
   }
@@ -309,7 +309,7 @@ test('new sightings are batched and rate limited; refreshed sightings and visibi
   await commander.update(game);
   assert.equal(sent.length, 2);
   assert.equal(sent[1].contacts.length, 2);
-  assert.equal(game.botCommander.reason, '2 attackers spotted at B Main');
+  assert.equal(game.botCommander.reason, '2 enemies spotted at B Main');
 
   for (now = 2300; now < 6900; now += 100) {
     game.time = now / 1000;
@@ -337,7 +337,7 @@ test('a known attacker seen in a new zone triggers an early plan after the debou
   now = 2850;
   await commander.update(game);
   assert.equal(calls, 2);
-  assert.equal(game.botCommander.reason, '1 attacker spotted at B Main');
+  assert.equal(game.botCommander.reason, '1 enemy spotted at B Main');
 });
 
 test('an emergency fallback triggers a debounced support plan without repeatedly requesting the same event', async () => {
@@ -380,13 +380,13 @@ test('casualties and sightings during an outstanding request trigger a fresh pla
   waiting.resolve(response(oldAnswer));
   await first;
   const followup = commander.update(game);
-  assert.equal(game.botCommander.planningReason, 'E1 eliminated · 1 attacker spotted at B Main');
+  assert.equal(game.botCommander.planningReason, 'E1 eliminated · 1 enemy spotted at B Main');
   assert.equal(game.botCommander.reason, 'Opening defense'); // old plan's reason stays with its summary
   await followup;
   assert.equal(sent.length, 2);
-  assert.equal(sent[1].defenders.length, 3);
-  assert.equal(game.botCommander.reason, 'E1 eliminated · 1 attacker spotted at B Main');
-  assert.equal(game.botCommander.orders.length, 3);
+  assert.equal(sent[1].squad.length, 4);
+  assert.equal(game.botCommander.reason, 'E1 eliminated · 1 enemy spotted at B Main');
+  assert.equal(game.botCommander.orders.length, 4);
   assert(!bots(game)[0].botOrder);
   now = 5500;
   commander.update(game);
@@ -411,7 +411,7 @@ test('combat and plant events respect failure backoff, then recover using curren
   await commander.update(game);
   assert.equal(calls, 2);
   assert.equal(game.botCommander.status, 'active');
-  assert.equal(game.botCommander.orders.length, 3);
+  assert.equal(game.botCommander.orders.length, 4);
   assert(bots(game).filter(u => u.alive).every(u => u.botOrder.action === 'retake'));
 });
 
@@ -502,7 +502,7 @@ test('API supports explicitly labeled mock plans and fails clearly without a key
   const snapshot = opponentSnapshot(makeGame());
   const result = await createOpponentPlan(snapshot, { mock: true, env: {} });
   assert.equal(result.mock, true);
-  assert.equal(result.plan.orders.length, 4);
+  assert.equal(result.plan.orders.length, 5);
   await assert.rejects(createOpponentPlan(snapshot, { env: {} }), /Set OPENAI_API_KEY or AI_GATEWAY_API_KEY/);
 });
 
@@ -523,7 +523,7 @@ test('direct OpenAI request uses bounded structured output and validates the ret
   assert.equal(requestBody.model, 'test-model');
   assert.equal(requestBody.store, false);
   assert.equal(requestBody.text.format.strict, true);
-  assert.equal(requestBody.text.format.schema.properties.orders.maxItems, 4);
+  assert.equal(requestBody.text.format.schema.properties.orders.maxItems, 5);
   assert.deepEqual(result.plan, expected);
   assert.equal(result.mock, false);
 });

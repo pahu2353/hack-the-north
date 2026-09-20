@@ -1,17 +1,19 @@
-// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
+// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → five agents.
 // Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
 import { createOpponentCommander } from './opponent.js';
-import { SIGNALS, createGestures } from './gestures.js';
 import { createCamera, createPovRenderer } from './pov.js';
-import { createRenderer } from './render.js';
-import { OWN_COLORS, TEAMS, actionLabel, createGame, stepGame, teamView } from './sim.js';
+import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
+  createGestures, reliableGestureForSpeech } from './gestures.js';
+import { createRenderer, flipPoint, flippedFor } from './render.js';
+import { ENEMY_COLORS, MANUAL_AIM, OWN_COLORS, TEAMS, actionLabel, createGame, createMatch,
+  otherTeam, setManualAim, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
 const STEP = 1 / 60;
-const POINTER_MS = 8000;
+const RECENT_GESTURE_MS = 2000;
 const $ = id => document.getElementById(id);
 
 const ZONE_TERMS = ['A Site', 'B Site', 'A Main', 'B Main', 'Mid', 'A Link', 'B Link', 'spike', 'flank', 'regroup', 'rotate'];
@@ -20,14 +22,16 @@ const keytermsFor = team => [...TEAMS[team].names, ...ZONE_TERMS, team === 'atta
 // What each hand signal says. The words go to Jev like any other order.
 function signalOrder(name, team, pointed) {
   const attack = team === 'attack';
-  const [a, b, c, d] = TEAMS[team].names;
+  const [a, b, c, d, e] = TEAMS[team].names;
   const carrier = view?.units.find(u => u.carrying)?.name ?? a;
   const orders = {
     Thumb_Up: pointed ? 'Everyone push there!' : 'Everyone push forward!',
     Open_Palm: 'Everyone hold your positions!',
     Closed_Fist: 'Everyone regroup!',
     Thumb_Down: attack ? 'Everyone fall back to spawn!' : 'Everyone fall back to Defender Spawn!',
-    Victory: attack ? `${a} and ${b} push A Site. ${c} and ${d} push B Site.` : `${a} and ${b} hold A Site. ${c} and ${d} hold B Site.`,
+    Victory: attack
+      ? `${a}, ${b} and ${c} push A Site. ${d} and ${e} push B Site.`
+      : `${a}, ${b} and ${c} hold A Site. ${d} and ${e} hold B Site.`,
     ILoveYou: attack
       ? `${carrier}, plant the spike${pointed ? ' there' : ' on B Site'}. Everyone else push with them.`
       : 'Everyone retake the site and defuse the spike!',
@@ -54,6 +58,11 @@ let resultShown = false;
 let is3d = false; // first-person view of one agent, instead of the top-down map
 let watchedId = null; // which agent that is
 const positions = new Map(); // smoothed unit positions for multiplayer
+let recentGesture = null;
+let aim = null; // first-person mouse look; the agent always fires automatically
+let lastAimSent = 0;
+let lastAimEnded = -Infinity;
+let lastCamera = null;
 
 // ---------- view: the top-down map (default) or one agent's first-person view ----------
 
@@ -61,10 +70,11 @@ const ownUnits = () => (view?.units ?? []).filter(u => u.team === view.team);
 const watched = () => ownUnits().find(u => u.id === watchedId && u.alive) ?? null;
 
 function setView(next) {
+  if (!next) stopAiming();
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('hint').textContent = is3d
-    ? 'Orders here go to this agent. ←/→ or thumb: switch agent. Tab or pinch: map.'
+    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–4: switch. Tab: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -87,6 +97,10 @@ function cycleAgent(dir) {
 }
 
 function watchAgent(u) {
+  if (u.id !== watchedId && aim) {
+    aim = { unitId: u.id, yaw: u.facing, pitch: 0 };
+    sendAim(); // only the newly watched agent can receive the crosshair bonus
+  }
   watchedId = u.id;
   showToast(u.name.toUpperCase());
   updateScorebar();
@@ -100,11 +114,12 @@ function showToast(text) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 700);
 }
 
-const activePointer = () => (pointer && performance.now() - pointer.at < POINTER_MS ? pointer : null);
+const activePointer = () => (pointer && performance.now() - pointer.at < POINTER_ORDER_TTL_MS ? pointer : null);
 
 // ---------- screens ----------
 
 function showScreen(name) {
+  if (name) stopAiming();
   $('overlay').hidden = !name;
   for (const id of ['screenMenu', 'screenBots', 'screenOnline', 'screenLobby', 'screenPause', 'screenSettings', 'screenResult']) {
     $(id).hidden = id !== name;
@@ -120,6 +135,7 @@ function showScreen(name) {
 }
 
 function goToMenu() {
+  resetSpeech();
   leaveOnline();
   opponentCommander.reset();
   session = null;
@@ -131,13 +147,14 @@ function goToMenu() {
   showScreen('screenMenu');
 }
 
-let botOpponent = 'scripted'; // who commands the defenders: 'scripted' or 'openai'
+let botOpponent = 'openai';
+let botSide = 'attack';
 $('playBots').onclick = () => {
   setStatus('botsStatus', '');
   showScreen('screenBots');
 };
-$('botsScripted').onclick = () => startBotGame('scripted');
-$('botsOpenAI').onclick = () => startBotGame('openai');
+$('botsScripted').onclick = () => startBotGame('scripted', $('botSide').value);
+$('botsOpenAI').onclick = () => startBotGame('openai', $('botSide').value);
 $('botsBack').onclick = () => showScreen('screenMenu');
 $('playOnline').onclick = () => {
   setStatus('onlineStatus', '');
@@ -212,12 +229,18 @@ $('joinForm').onsubmit = e => {
   if (code) connectOnline(code);
 };
 $('again').onclick = () => {
-  if (session?.kind === 'bots') startBotGame(botOpponent);
-  else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
+  // Mid-match it starts the next round of the same best-of-three; afterwards, a new match.
+  if (session?.kind === 'bots') {
+    if (game?.match && !game.match.over) startBotRound(game.match);
+    else startBotGame(botOpponent);
+  } else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
   else if (online) showScreen('screenLobby');
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
 $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
+for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
+  online?.ws.send(JSON.stringify({ type: 'side', team }));
+$('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
 
 // ---------- microphone and camera ----------
 
@@ -281,14 +304,21 @@ async function restoreDevices() {
 
 // ---------- vs bots ----------
 
-function startBotGame(opponent = botOpponent) {
+function startBotGame(opponent = botOpponent, playerTeam = botSide) {
   leaveOnline();
   botOpponent = opponent;
-  opponentCommander.reset();
-  session = { kind: 'bots', team: 'attack' };
-  game = createGame({ defenders: 'bots', opponent });
+  botSide = playerTeam;
+  session = { kind: 'bots', team: playerTeam };
   brains = createBrains();
-  view = teamView(game, 'attack');
+  startBotRound(createMatch({ playerTeam }));
+}
+
+// Each round of the match is a fresh game that keeps the match's score and scorecard. The
+// brains carry over: their Jev counters are for the whole match.
+function startBotRound(match) {
+  opponentCommander.reset();
+  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true });
+  view = teamView(game, session.team);
   beginMatch();
 }
 
@@ -332,15 +362,30 @@ function handleServer(connection, message) {
       break;
     case 'lobby':
       connection.players = message.players;
+      connection.running = message.running;
       renderLobby();
       if (resultShown) updateResultActions();
       break;
+    case 'sides':
+      resetSpeech();
+      connection.team = message.team;
+      session = { kind: 'online', team: message.team };
+      view = null;
+      resultShown = false;
+      for (const { reject } of connection.pending.values()) reject(new Error('Sides changed'));
+      connection.pending.clear();
+      updateTeamUi();
+      renderLobby();
+      showScreen('screenLobby');
+      break;
     case 'started':
+      connection.running = true;
       view = null;
       beginMatch();
       break;
     case 'state':
       view = message.view;
+      if (view.result) connection.running = false;
       connection.jev = message.jev;
       break;
     case 'plan': {
@@ -373,6 +418,12 @@ async function renderLobby() {
   const ready = Boolean(players?.attack && players?.defend);
   $('startMatch').hidden = !host;
   $('startMatch').disabled = !ready;
+  $('hostSideControls').hidden = !host;
+  for (const side of ['attack', 'defend']) {
+    const button = $(side === 'attack' ? 'hostAttack' : 'hostDefend');
+    button.setAttribute('aria-pressed', String(team === side));
+    button.disabled = Boolean(online.running);
+  }
   if (!host) setStatus('lobbyStatus', 'Waiting for the host to start the match…');
   else setStatus('lobbyStatus', ready ? 'Both commanders are here.' : 'Waiting for your opponent to join…');
   $('inviteLink').value = await inviteUrl(code);
@@ -404,6 +455,7 @@ $('copyInvite').onclick = async () => {
 };
 
 function leaveOnline() {
+  stopAiming();
   if (!online) return;
   const { ws } = online;
   online = null;
@@ -413,10 +465,19 @@ function leaveOnline() {
 // ---------- matches ----------
 
 function beginMatch() {
+  stopAiming();
+  lastCamera = null;
+  resetSpeech();
   if (readDevices().mic !== false) ensureMic();
+  pov.reset();
+  clearTimeout(speculateTimer);
+  guess = null;
+  utterance = null;
   resultShown = false;
   positions.clear();
+  recentGesture = null;
   $('log').replaceChildren();
+  $('voiceSummary').textContent = 'Volume: — · Emphasis: —';
   $('feed').replaceChildren();
   updateTeamUi();
   buildSquadCards();
@@ -427,17 +488,67 @@ function beginMatch() {
 }
 
 function showResult() {
+  resetSpeech();
   resultShown = true;
+  const match = view.match;
   const won = view.result.winner === session.team;
-  $('resultTitle').textContent = won ? 'Victory' : 'Defeat';
+  const decided = match?.over ?? true;
+  $('resultTitle').textContent = decided ? (won ? 'Victory' : 'Defeat') : won ? 'Round won' : 'Round lost';
   $('resultTitle').className = won ? 'win' : 'lose';
   $('resultText').textContent = view.result.reason;
+  renderMatchScore(match);
+  renderScoreboard(match);
   updateResultActions();
   showScreen('screenResult');
 }
 
+// Rounds won, yours first.
+function renderMatchScore(match) {
+  $('matchScore').hidden = !match;
+  if (!match) return;
+  $('matchScore').replaceChildren(
+    el('span', { className: 'own', textContent: String(match.score[session.team]) }),
+    el('span', { className: 'of', textContent: match.over ? `best of ${match.bestOf}` : `first to ${match.needed}` }),
+    el('span', { className: 'them', textContent: String(match.score[otherTeam(session.team)]) }),
+  );
+}
+
+// Kills, deaths and damage for every agent, totalled over the rounds played so far.
+const SCORE_COLUMNS = [['K', r => r.kills], ['D', r => r.deaths], ['DMG', r => r.damage]];
+
+function renderScoreboard(match) {
+  $('scoreboard').hidden = !match;
+  if (!match) return;
+  $('scoreboard').replaceChildren(...[session.team, otherTeam(session.team)]
+    .map(team => scoreTable(match.scoreboard?.[team] ?? [], team)));
+}
+
+function scoreTable(rows, team) {
+  const mine = team === session.team;
+  const colors = mine ? OWN_COLORS : ENEMY_COLORS;
+  return el('table', {}, [
+    el('caption', { className: mine ? 'own' : 'them', textContent: mine ? 'Your squad' : TEAMS[team].label }),
+    el('thead', {}, [el('tr', {}, [
+      el('th', { textContent: 'Agent' }),
+      ...SCORE_COLUMNS.map(([head]) => el('th', { textContent: head })),
+    ])]),
+    el('tbody', {}, rows.map(row => el('tr', {}, [
+      el('td', { className: 'agent', style: `--agent:${colors[row.slot % colors.length]}` }, [
+        el('i'), row.name,
+      ]),
+      ...SCORE_COLUMNS.map(([, value]) => el('td', { textContent: String(value(row)) })),
+    ]))),
+  ]);
+}
+
 function updateResultActions() {
-  if (session.kind === 'bots') {
+  const between = Boolean(view?.match && !view.match.over); // the match goes on: this was only a round
+  $('swapSides').hidden = between || session.kind !== 'online' || !online?.host || !opponentPresent();
+  if (between && (session.kind === 'bots' || opponentPresent())) {
+    $('again').hidden = session.kind !== 'bots';
+    $('again').textContent = 'Next round';
+    setStatus('resultStatus', session.kind === 'bots' ? '' : 'The next round starts in a moment…');
+  } else if (session.kind === 'bots') {
     $('again').hidden = false;
     $('again').textContent = 'Play again';
     setStatus('resultStatus', '');
@@ -454,19 +565,90 @@ function updateResultActions() {
 
 // ---------- orders ----------
 
-// Speaking takes seconds, so waiting for the finished sentence makes the squad feel slow.
-// Instead we interpret the partial transcript while you're still talking, apply it, and
-// reconcile when the final transcript arrives (identical text costs nothing extra).
-const SPECULATE_AFTER_MS = 120; // the partial must stop changing for this long
+// Partial transcripts let the squad begin moving before the commander finishes speaking.
+// The final transcript is evaluated with completed voice metrics, and a sequence prevents
+// an older guess from overwriting its correction.
+const SPECULATE_AFTER_MS = 120;
 const SPECULATE_MIN_WORDS = 3;
-let guess = null; // { text, entry, promise, applied, stale, seq }
+let guess = null;
 let speculateTimer = null;
 let speculateEnabled = true;
 let commandSeq = 0;
+let speechEpoch = 0;
 // One record per spoken utterance, for measuring how quickly the squad reacts.
 let utterance = null;
 const utterances = [];
-const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() === b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() ===
+  b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+function voiceLabels(context) {
+  return [
+    `Volume: ${context.volumeLevel.replaceAll('_', ' ')}`,
+    `Emphasis: ${context.emphasisLevel}`,
+    `Rate: ${context.speechRate}`,
+    ...(context.profanityLevel && context.profanityLevel !== 'none'
+      ? [`Profanity cue: ${context.profanityLevel}`] : []),
+  ];
+}
+
+function gestureLabel(gesture) {
+  return `Gesture: ${gesture.label} · ${gesture.context.confidenceLevel} confidence · ${Math.round(gesture.context.stability * 100)}% stable`;
+}
+
+const canCommand = () => matchActive();
+const commandTarget = () => (is3d ? watched()?.name : undefined);
+const interpret = request => (session.kind === 'bots'
+  ? brains.interpretCommand(game, session.team, request)
+  : sendCommand(request));
+
+function recentReliableGesture() {
+  if (!recentGesture || performance.now() - recentGesture.at >= RECENT_GESTURE_MS) return null;
+  const gesture = { ...recentGesture.gesture, context: {
+    ...recentGesture.gesture.context,
+    ageMs: Math.round(performance.now() - recentGesture.at),
+  } };
+  return reliableGestureForSpeech(gesture) ? gesture : null;
+}
+
+function prepareCommand({ source = 'text', text, gesture, voiceContext, seq = ++commandSeq, only = commandTarget() }) {
+  const commandGesture = gesture ?? (source === 'hand' ? null : recentReliableGesture());
+  const p = activePointer();
+  return {
+    source, text, gesture: commandGesture, voiceContext, seq, only,
+    pointer: p && { x: p.x, y: p.y },
+  };
+}
+
+async function runCommand(entry, request, { early = false, current = () => true } = {}) {
+  try {
+    const result = await interpret(request);
+    if (current()) renderPlan(entry, result, request.voiceContext, request.gesture, early);
+    return result;
+  } catch (error) {
+    if (current()) showEntryError(entry, error);
+    return null;
+  }
+}
+
+async function issueCommand(input) {
+  if (!input.text?.trim()) return;
+  if (!canCommand()) {
+    setStatus('micStatus', 'Start a match first.', 'error');
+    return;
+  }
+  const request = prepareCommand(input);
+  const label = request.only ? `→ ${request.only}: ${request.text}` : request.text;
+  const entry = addLogEntry(request.source, label, request.gesture, request.voiceContext);
+  return runCommand(entry, request);
+}
+
+function resetSpeech() {
+  speechEpoch++;
+  clearTimeout(speculateTimer);
+  if (guess) guess.stale = true;
+  guess = null;
+  utterance = null;
+}
 
 function onInterimTranscript(text) {
   if (!text.trim()) return;
@@ -479,87 +661,60 @@ function onInterimTranscript(text) {
 }
 
 function speculate(text) {
-  if (guess?.promise) return; // one guess in flight at a time
-  const entry = guess?.entry ?? addLogEntry('voice', text, null, true);
-  const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq };
-  guess = g;
+  if (!canCommand() || guess?.promise) return; // one guess in flight, within the current match
+  if (guess) guess.stale = true;
+  const request = prepareCommand({ source: 'voice', text });
+  const entry = guess?.entry ?? addLogEntry('voice', text, request.gesture, null, true);
   setEntryText(entry, text, true);
-  g.promise = interpret({ text, seq: g.seq, only: commandTarget() })
+  const g = { text, entry, promise: null, applied: false, stale: false,
+    epoch: speechEpoch, only: request.only, pointer: request.pointer };
+  guess = g;
+  g.promise = runCommand(entry, request, { early: true, current: () => !g.stale && g.epoch === speechEpoch })
     .then(result => {
-      if (result.stale) return;
-      renderPlan(entry, result, true);
-      g.applied = !result.ignored;
+      g.applied = Boolean(result && !result.ignored && !result.stale && result.plan?.some(p => p.applied));
       // the first moment the squad moved on this utterance
-      if (g.applied && !g.stale && utterance) utterance.actedAt ||= performance.now();
+      if (g.applied && utterance) utterance.actedAt ||= performance.now();
     })
-    .catch(error => showEntryError(entry, error))
     .finally(() => { g.promise = null; });
 }
 
-// The finished sentence. If we already acted on exactly these words, keep those orders.
-async function onFinalTranscript(text) {
+async function onFinalTranscript(text, voiceContext) {
   clearTimeout(speculateTimer);
+  if (!canCommand()) { resetSpeech(); return; }
+  const epoch = speechEpoch;
+  $('caption').textContent = text;
+  $('voiceSummary').textContent = voiceContext
+    ? voiceLabels(voiceContext).filter(label => !label.startsWith('Rate:')).join(' · ')
+    : 'Volume: — · Emphasis: —';
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
   u.finalAt = performance.now();
   const g = guess;
   guess = null;
-  let reused = false;
-  if (g && sameWords(g.text, text)) {
-    await g.promise; // nearly always already resolved
-    reused = g.applied;
-  }
-  if (reused) {
-    setEntryText(g.entry, text, '');
-  } else if (g) {
-    g.stale = true; // its orders must not overwrite the finished sentence's
-    setEntryText(g.entry, text, '');
-    await runCommand(g.entry, { text, seq: ++commandSeq });
+  const pointer = activePointer();
+  const reusedGuess = Boolean(g && sameWords(g.text, text) && g.only === commandTarget()
+    && g.pointer?.x === pointer?.x && g.pointer?.y === pointer?.y);
+  if (g) g.stale = true; // its orders must not overwrite the finished sentence's
+  if (epoch !== speechEpoch || !canCommand()) return;
+  let result;
+  if (g) {
+    const request = prepareCommand({ source: 'voice', text, voiceContext });
+    setEntryText(g.entry, text, false);
+    result = await runCommand(g.entry, request);
   } else {
-    await issueCommand({ source: 'voice', text, seq: ++commandSeq });
+    result = await issueCommand({ source: 'voice', text, voiceContext });
   }
   u.settledAt = performance.now();
+  if (!u.actedAt && result && !result.ignored && !result.stale && result.plan?.some(p => p.applied)) {
+    u.actedAt = u.settledAt;
+  }
   utterances.push({
-    text,
-    speculated: reused || Boolean(u.actedAt),
-    reusedGuess: reused,
-    // how long after we first heard you the squad moved, and when the final orders landed
+    text, speculated: Boolean(u.actedAt && u.actedAt < u.finalAt), reusedGuess,
     actedAfterMs: Math.round((u.actedAt || u.settledAt) - u.heardAt),
     settledAfterMs: Math.round(u.settledAt - u.heardAt),
     afterYouStopMs: Math.round(u.settledAt - u.finalAt),
   });
   if (utterances.length > 20) utterances.shift();
-}
-
-const canCommand = () => matchActive();
-// First-person is one agent's view, so every order given there is for them alone.
-const commandTarget = () => (is3d ? watched()?.name : undefined);
-const interpret = request => (session.kind === 'bots'
-  ? brains.interpretCommand(game, session.team, request)
-  : sendCommand(request));
-
-async function issueCommand({ source, text, gesture, seq }) {
-  if (!text?.trim()) return;
-  if (!session || !view || view.result) {
-    setStatus('micStatus', 'Start a match first.', 'error');
-    return;
-  }
-  const only = commandTarget();
-  await runCommand(addLogEntry(source, only ? `→ ${only}: ${text}` : text, gesture), { text, gesture, seq, only });
-}
-
-async function runCommand(entry, { text, gesture, seq = ++commandSeq, only = commandTarget() }) {
-  const p = activePointer();
-  try {
-    renderPlan(entry, await interpret({ text, gesture, pointer: p && { x: p.x, y: p.y }, only, seq }));
-  } catch (error) {
-    showEntryError(entry, error);
-  }
-}
-
-function showEntryError(entry, error) {
-  entry.querySelector('.plan').replaceChildren();
-  entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
 }
 
 function sendCommand(request) {
@@ -575,18 +730,29 @@ function sendCommand(request) {
   });
 }
 
-function setEntryText(entry, text, mark) {
-  const said = entry.querySelector('.said');
-  said.replaceChildren(el('span', { className: 'src', textContent: said.querySelector('.src').textContent }), text);
-  entry.classList.toggle('early', Boolean(mark));
+function showEntryError(entry, error) {
+  entry.querySelector('.plan').replaceChildren();
+  entry.querySelector('.meta').replaceChildren(el('span', { className: 'err', textContent: `Jev failed: ${error.message}` }));
 }
 
-function addLogEntry(source, text, gesture, early = false) {
-  const icon = { voice: 'Voice', text: 'Typed', hand: 'Sign' }[source];
+function setEntryText(entry, text, early) {
+  const said = entry.querySelector('.said');
+  said.replaceChildren(el('span', { className: 'src', textContent: said.querySelector('.src').textContent }), text);
+  entry.classList.toggle('early', early);
+}
+
+function addLogEntry(source, text, gesture, voiceContext, early = false) {
+  const icon = { voice: 'Voice', text: 'Typed', hand: gesture?.emoji ?? 'Sign' }[source];
+  const details = [
+    ...(voiceContext ? voiceLabels(voiceContext) : []),
+    ...(gesture?.context ? [gestureLabel(gesture)] : []),
+  ];
   const entry = el('div', { className: `entry${early ? ' early' : ''}` }, [
     el('div', { className: 'said' }, [el('span', { className: 'src', textContent: icon }), text]),
     el('div', { className: 'plan', textContent: 'Jev is reading the order…' }),
     el('div', { className: 'meta' }),
+    el('div', { className: 'ux', hidden: !details.length },
+      details.map(detail => el('span', { textContent: detail }))),
   ]);
   const log = $('log');
   const following = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
@@ -603,13 +769,24 @@ function followLog(entry) {
   if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
 }
 
-function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, early = false) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier }, voiceContext, gesture, early = false) {
   const pct = v => `${Math.round(v * 100)}%`;
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
     entry.classList.add('ignored');
     followLog(entry);
     return;
+  }
+  if (voiceContext && ux) {
+    const details = [
+      `Urgency: ${ux.urgency}`,
+      `Certainty: ${ux.certainty}`,
+      ...voiceLabels(voiceContext),
+      ...(paceMultiplier > 1 && !ignored ? [`Movement pace: ${Math.round(paceMultiplier * 100)}%`] : []),
+      ...(gesture?.context ? [gestureLabel(gesture)] : []),
+    ];
+    entry.querySelector('.ux').replaceChildren(...details.map(detail => el('span', { textContent: detail })));
+    entry.querySelector('.ux').hidden = false;
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
@@ -623,7 +800,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
     if (!p.applied) {
       return [
         el('span', { className: 'skip', textContent: p.name }),
-        el('span', { className: 'skip', textContent: 'not addressed' }),
+        el('span', { className: 'skip', textContent: p.skipReason ?? 'not addressed' }),
         el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
       ];
     }
@@ -639,22 +816,36 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
 }
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
-
-// Hand tracking keeps running while a menu is up (so the preview still works), but nothing it
-// sees should reach the match behind the overlay.
 const matchActive = () => Boolean(session && view && !view.result && $('overlay').hidden);
 
-function handleSignal(name) {
+function handleSignal(signal) {
   if (!matchActive()) return;
+  const name = typeof signal === 'string' ? signal : signal.name;
+  if (!Object.hasOwn(SIGNALS, name)) return;
   if (is3d && SQUAD_ONLY_SIGNALS[name]) {
     showSign(`${SQUAD_ONLY_SIGNALS[name]}: map view only`);
     return;
   }
-  const { text: said, gesture } = signalOrder(name, session.team, Boolean(activePointer()));
-  // A signal carries no names, so in first-person it speaks to the agent you're watching.
+  const p = activePointer();
+  const { text: said, gesture } = signalOrder(name, session.team, Boolean(p));
   const u = is3d ? watched() : null;
   const text = u ? said.replace(/^Everyone/, u.name) : said;
-  showSign(`${gesture.emoji} ${gesture.label}`);
+  if (typeof signal !== 'string') {
+    const pointerAgeMs = p ? performance.now() - p.at : Infinity;
+    gesture.context = {
+      name, meaning: gesture.meaning,
+      confidence: signal.confidence, stability: signal.stability, heldMs: signal.heldMs,
+      confidenceLevel: signal.confidenceLevel, stabilityLevel: signal.stabilityLevel,
+      pointer: p ? {
+        active: signal.pointer?.active ?? pointerAgeMs < POINTER_ACTIVE_MS,
+        zone: zoneAt(MAPS.tactical, p).name,
+        ageMs: Math.round(pointerAgeMs),
+      } : null,
+      ageMs: 0,
+    };
+    recentGesture = { gesture, at: performance.now() };
+  }
+  showSign(`✓ ${gesture.emoji} ${gesture.label}`);
   issueCommand({ source: 'hand', text, gesture });
 }
 
@@ -667,6 +858,10 @@ let lastHud = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
+  if (aim) {
+    if (!matchActive() || !is3d) stopAiming();
+    else if (session.kind === 'bots' || now - lastAimSent >= 50) sendAim();
+  }
   if (session?.kind === 'bots' && game) {
     if (!game.result && !paused()) {
       accumulator += dt;
@@ -674,10 +869,10 @@ function frame(now) {
         stepGame(game, STEP);
         accumulator -= STEP;
       }
-      brains.update(game, 'attack');
+      brains.update(game, session.team);
       opponentCommander.update(game);
     }
-    view = teamView(game, 'attack');
+    view = teamView(game, session.team);
   }
   if (session?.kind === 'online') smoothPositions(dt);
   const smoothed = session?.kind === 'online' ? positions : null;
@@ -686,7 +881,8 @@ function frame(now) {
   if (u) {
     const at = unit => smoothed?.get(unit.id) ?? unit;
     pov.setPointer(activePointer());
-    pov.draw(view, u, camera.update({ ...u, ...at(u) }, dt), at);
+    lastCamera = camera.update({ ...u, ...at(u) }, dt, aim);
+    pov.draw(view, u, lastCamera, at);
     minimap.draw(view, { pointer: activePointer(), positions: smoothed, focusId: u.id, mini: true });
   } else {
     renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
@@ -725,7 +921,7 @@ function smoothPositions(dt) {
 // An accurate title: which match you're in, or that you're in the menus.
 function updateTitle() {
   const where = session && $('overlay').hidden
-    ? `${TEAMS[session.team].label} · ${session.kind === 'online' ? online?.code ?? 'online' : 'vs bots'}`
+    ? `${TEAMS[session.team].label} · ${session.kind === 'online' ? online?.code ?? 'online' : `vs bots · ${botOpponent === 'openai' ? 'Hard' : 'Easy'}`}`
     : 'Menu';
   const title = `Commander — ${where}`;
   if (document.title !== title) document.title = title;
@@ -736,7 +932,7 @@ function updateTeamUi() {
   // The card keeps its place between matches; only what it says changes.
   $('teamBadge').className = `badge ${team ?? ''}`;
   $('teamBadge').textContent = team
-    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ' · vs bots'}`
+    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ` · ${botOpponent === 'openai' ? 'Hard' : 'Easy'} bots`}`
     : 'No match';
   $('textInput').placeholder = team === 'defend'
     ? 'e.g. “Echo hold A, Golf rotate B”…'
@@ -747,6 +943,8 @@ function updateTeamUi() {
     $('opponentCard').hidden = true;
     $('squad').replaceChildren();
     $('scoreClock').textContent = '–';
+    $('ownScore').textContent = '0';
+    $('enemyScore').textContent = '0';
     $('roundLabel').textContent = '';
     $('jevStats').textContent = '—';
   }
@@ -759,6 +957,14 @@ function updateTeamUi() {
 let scorebarKey = '';
 
 function buildScorebar() {
+  // A multiplayer match starts before its first snapshot arrives, so there is nobody to show
+  // yet. updateScorebar builds the bar as soon as one does.
+  if (!view) {
+    scorebarKey = '';
+    $('squadBar').replaceChildren();
+    $('enemyBar').replaceChildren();
+    return;
+  }
   const portrait = (u, onclick) => {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
@@ -775,7 +981,7 @@ function buildScorebar() {
   scorebarKey = own.map(u => u.id).join(',');
   $('squadBar').replaceChildren(...own.map(u => portrait(u, () => watchAgent(u))));
   // The whole enemy roster, named and coloured from the start; what changes is how they look.
-  $('enemyBar').replaceChildren(...(view.roster ?? []).map(u => portrait(u)));
+  $('enemyBar').replaceChildren(...(view?.roster ?? []).map(u => portrait(u)));
 }
 
 
@@ -836,24 +1042,29 @@ function updateOpponentHud() {
     thinking: 'planning…',
     active: `${s?.model} · ${s?.latency} ms · ${s?.plans} plans`,
     mock: `mock · ${s?.plans} plans`,
-    fallback: 'unavailable · scripted defense',
+    fallback: 'unavailable · scripted tactics',
   };
   const text = game.result ? 'round finished' : labels[s?.status] ?? 'starting…';
   setStatus('opponentStatus', text, s?.status === 'fallback' ? 'error' : '');
-  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, and plants. Bots keep acting while it thinks.';
+  $('opponentStatus').title = s?.error || 'The enemy commander reacts to sightings, casualties, grenades, and plants. Bots keep acting while it thinks.';
   $('opponentReason').textContent = s?.status === 'thinking' ? `Replanning: ${s.planningReason}`
     : s?.status === 'fallback' ? '' : s?.reason ? `Why this plan: ${s.reason}` : '';
   $('opponentSummary').textContent = s?.error || (s?.summary
     ? `${s.status === 'thinking' ? 'Current plan: ' : ''}${s.summary}`
-    : 'Waiting for the first plan. Defenders use their normal tactics in the meantime.');
+    : 'Waiting for the first plan. Bots use their normal tactics in the meantime.');
+  const group = game.botRetake;
+  $('opponentCoordination').textContent = !group ? '' : group.phase === 'gathering'
+    ? `Gathering at ${group.zone}: ${group.ready}/${group.required} ready`
+    : `Retaking ${group.site} · ${group.reason}`;
   if ($('opponentDetails').open) {
     $('opponentOrders').replaceChildren(...(s?.orders ?? []).map(order => {
       const unit = game.units.find(u => u.id === order.unitId);
       const escape = unit?.botFallback;
-      const reflex = escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
+      const reflex = unit?.botDodge ? 'dodging grenade · '
+        : escape ? `taking cover (${escape.allies} vs ${escape.enemies}) · ` : '';
       return el('div', {
         className: 'order',
-        textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone}` : 'eliminated'}`,
+        textContent: `${unit?.name ?? order.unitId}: ${unit?.alive ? `${reflex}${order.action} → ${order.zone} · ${unit.grenades} grenade${unit.grenades === 1 ? '' : 's'} left` : 'eliminated'}`,
       });
     }));
   }
@@ -881,8 +1092,15 @@ function updateHud() {
   if (!session || !view) return;
   const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  $('scoreClock').classList.toggle('prep', Boolean(view.status.prep));
   updateTitle();
-  $('roundLabel').textContent = view.status.label;
+  $('roundLabel').textContent = view.match
+    ? `Round ${view.match.round} · ${view.status.label}`
+    : view.status.label;
+  if (view.match) {
+    $('ownScore').textContent = String(view.match.score[session.team]);
+    $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
+  }
   updateOpponentHud();
 
   const s = session.kind === 'bots' ? brains.summary() : online?.jev;
@@ -904,9 +1122,11 @@ function updateHud() {
     card.querySelector('.name').textContent = u.name;
     card.querySelector('.hp i').style.width = `${(u.hp / u.maxHp) * 100}%`;
     card.querySelector('.doing').textContent = actionLabel(u, enemyName(u));
-    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}` : '';
-    card.querySelector('.brain').textContent = !u.alive ? '' : !u.decision ? '…'
-      : u.decision.local ? 'no contact' : `Jev ${Math.round(u.decision.latency)} ms`;
+    card.querySelector('.order').textContent = u.alive ? `Order: ${u.orderLabel}${u.grenades ? ' · 💣' : ''}` : '';
+    card.querySelector('.brain').textContent = !u.alive ? ''
+      : u.decision?.obeying ? 'following your order'
+      : !u.decision ? 'thinking…'
+      : u.decision.local ? 'no contact: following order' : `Jev ${Math.round(u.decision.latency)} ms`;
     // Just the chosen action's confidence: the full spread was more noise than signal.
     const [action, p] = (u.alive ? Object.entries(u.decision?.probabilities ?? {}).sort((a, b) => b[1] - a[1])[0] : null) ?? [];
     card.querySelector('.probs').replaceChildren(...(action ? [
@@ -925,6 +1145,10 @@ function updateHud() {
   const watching = watched();
   if (watching) {
     $('povHp').textContent = Math.round(watching.hp);
+    $('povHp').title = `${Math.round(watching.hp)} / ${watching.maxHp} HP`;
+    $('povControl').textContent = aim
+      ? `AUTO FIRE · ${watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy'} · Esc releases cursor`
+      : 'AUTO FIRE · Click for mouse look · Aim at an enemy for better accuracy';
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
     $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
@@ -941,25 +1165,33 @@ const voice = createVoice({
   onLevel: level => { $('level').style.width = `${level * 100}%`; },
 });
 
-// Voice is hands-free: the mic turns on when a match starts and listens only during matches.
-// Each sentence becomes an order when you pause. Muting keeps it off until you unmute.
+// Hands-free is the multiplayer default; hold-to-talk preserves the previous V-key control.
 let micMuted = false;
+let voiceMode = 'handsfree';
+let pttHeld = false;
+let micEnabling = null;
 async function ensureMic() {
-  if (voice.enabled || !window.isSecureContext) return;
-  try {
-    await voice.enable(keytermsFor(session?.team ?? 'attack'));
-  } catch (error) {
-    setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error');
+  if (!window.isSecureContext) {
+    setStatus('micStatus', 'Voice needs HTTPS or localhost.', 'error');
+    return;
   }
+  if (micEnabling) return micEnabling;
+  if (voice.enabled) return;
+  micEnabling = voice.enable(keytermsFor(session?.team ?? 'attack'))
+    .catch(error => setStatus('micStatus', `Mic unavailable: ${error.message}`, 'error'))
+    .finally(() => { micEnabling = null; });
+  return micEnabling;
 }
 
 function syncListening() {
-  const inMatch = Boolean(session && view && !view.result);
-  voice.setListening(inMatch && !micMuted);
+  const inMatch = matchActive();
+  const shouldListen = inMatch && !micMuted && (voiceMode === 'handsfree' || pttHeld);
+  if (voiceMode === 'ptt' && shouldListen && !voice.listening) voice.startTalking();
+  else if (voiceMode === 'ptt' && !shouldListen && voice.listening) voice.stopTalking();
+  else if (voiceMode === 'handsfree') voice.setListening(shouldListen);
+  // The mic icon carries the state; the talk bar only appears in hold-to-talk.
   const state = !voice.enabled ? 'off' : micMuted ? 'muted' : voice.listening ? 'live' : 'on';
-  const labels = {
-    off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic',
-  };
+  const labels = { off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic' };
   const mic = $('micBtn');
   if (mic.dataset.state !== state) {
     mic.dataset.state = state;
@@ -967,6 +1199,15 @@ function syncListening() {
     mic.setAttribute('aria-label', labels[state]);
   }
   $('meter').classList.toggle('live', voice.listening);
+  $('listen').hidden = voiceMode !== 'ptt';
+  const label = !voice.enabled ? 'Mic off'
+    : micMuted ? 'Muted'
+    : !inMatch ? 'Waiting for a match'
+      : pttHeld ? 'Listening — release to send' : 'Hold V or this button to talk';
+  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
+  $('listen').classList.toggle('live', voice.listening);
+  $('voiceMode').textContent = voiceMode === 'ptt' ? 'Hold to talk' : 'Hands-free';
+  $('voiceMode').setAttribute('aria-pressed', String(voiceMode === 'ptt'));
 }
 
 async function toggleMic() {
@@ -981,6 +1222,33 @@ async function toggleMic() {
   syncListening();
 }
 $('micBtn').onclick = toggleMic;
+$('voiceMode').onclick = () => {
+  pttHeld = false;
+  voiceMode = voiceMode === 'handsfree' ? 'ptt' : 'handsfree';
+  syncListening();
+};
+$('listen').onclick = () => { if (voiceMode === 'handsfree') toggleMic(); };
+$('listen').addEventListener('pointerdown', () => {
+  if (voiceMode !== 'ptt') return;
+  pttHeld = true;
+  if (!voice.enabled) ensureMic().then(syncListening);
+  syncListening();
+});
+function releaseToTalk() {
+  if (!pttHeld) return;
+  pttHeld = false;
+  syncListening();
+}
+for (const event of ['pointerup', 'pointercancel', 'pointerleave']) $('listen').addEventListener(event, releaseToTalk);
+document.addEventListener('keydown', e => {
+  if (voiceMode !== 'ptt' || e.code !== 'KeyV' || e.repeat || document.activeElement?.tagName === 'INPUT') return;
+  e.preventDefault();
+  pttHeld = true;
+  if (!voice.enabled) ensureMic().then(syncListening);
+  syncListening();
+});
+document.addEventListener('keyup', e => { if (e.code === 'KeyV') releaseToTalk(); });
+window.addEventListener('blur', releaseToTalk);
 
 $('textForm').onsubmit = e => {
   e.preventDefault();
@@ -996,12 +1264,57 @@ canvas.addEventListener('click', e => {
   pointer = { ...p, at: performance.now() };
 });
 
-// No aiming in first-person: it's a view for watching one agent, not for marking spots.
-povCanvas.addEventListener('click', () => showToast('Aim from the map view'));
+// Pointer lock gives mouse aiming without hitting the edges of the canvas. We transmit
+// camera direction at 20 Hz; the shared simulation owns automatic shots and accuracy.
+function sendAim() {
+  if (!session) return;
+  lastAimSent = performance.now();
+  if (session.kind === 'bots' && game) setManualAim(game, session.team, aim);
+  else if (online?.ws.readyState === WebSocket.OPEN) online.ws.send(JSON.stringify({ type: 'aim', aim }));
+}
 
-const typing = () => document.activeElement?.tagName === 'INPUT';
+function stopAiming() {
+  if (aim) {
+    aim = null;
+    lastAimEnded = performance.now();
+    sendAim();
+  }
+  if (document.pointerLockElement === povCanvas) document.exitPointerLock();
+}
+
+povCanvas.addEventListener('mousedown', async e => {
+  if (e.button !== 0 || !matchActive() || !is3d || !watched()) return;
+  e.preventDefault();
+  if (aim) return;
+  try {
+    await povCanvas.requestPointerLock();
+  } catch {
+    showToast('Click again to aim; your agent is still firing automatically.');
+  }
+});
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement !== povCanvas) { stopAiming(); return; }
+  const u = watched();
+  if (!matchActive() || !is3d || !u) { stopAiming(); return; }
+  document.activeElement?.blur();
+  aim = { unitId: u.id, yaw: lastCamera?.unitId === u.id ? lastCamera.angle : u.facing, pitch: 0 };
+  sendAim();
+});
+document.addEventListener('mousemove', e => {
+  if (!aim || document.pointerLockElement !== povCanvas) return;
+  aim.yaw = Math.atan2(Math.sin(aim.yaw + e.movementX * 0.002), Math.cos(aim.yaw + e.movementX * 0.002));
+  aim.pitch = Math.max(-MANUAL_AIM.maxPitch, Math.min(MANUAL_AIM.maxPitch, aim.pitch - e.movementY * 0.002));
+});
+window.addEventListener('blur', stopAiming);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopAiming(); });
+
+const typing = () => ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName);
 document.addEventListener('keydown', e => {
   if (typing()) return;
+  if (e.code === 'Escape' && (aim || performance.now() - lastAimEnded < 250)) {
+    stopAiming();
+    return;
+  }
   // Escape is the way back to the menu now that there's no header.
   if (e.code === 'Escape' && session && view && !view.result) {
     e.preventDefault();
@@ -1030,6 +1343,19 @@ function setIconState(id, state, label) {
 }
 
 let gestures = null;
+let gestureFeedback = { stage: 'none', name: null };
+
+function renderGestureFeedback({ stage, name }) {
+  const sign = $('sign');
+  if (stage === 'none') { sign.hidden = true; return; }
+  sign.hidden = false;
+  if (stage === 'pointing') { sign.textContent = '☝️ Aiming'; return; }
+  const signal = SIGNALS[name];
+  sign.textContent = stage === 'confirmed' ? `✓ ${signal.emoji} ${signal.label}`
+    : stage === 'stabilizing' ? `${signal.emoji} ${signal.label}…`
+      : `${signal.emoji} ${signal.label} detected`;
+}
+
 $('previewBtn').onclick = () => {
   const showing = $('cam').hidden;
   $('cam').hidden = !showing;
@@ -1044,38 +1370,40 @@ $('camBtn').onclick = async () => {
 };
 
 function stopCamera() {
-  {
-    gestures.stop();
-    gestures = null;
-    setIconState('camBtn', 'off', 'Turn on camera');
-    $('camOff').hidden = false;
-    $('cam').hidden = false;
-    $('previewBtn').hidden = true;
-    $('sign').hidden = true;
-    setStatus('camStatus', 'Camera off');
-  }
+  if (!gestures) return;
+  gestures.stop();
+  gestures = null;
+  recentGesture = null;
+  gestureFeedback = { stage: 'none', name: null };
+  clearTimeout(signTimer);
+  signTimer = null;
+  setIconState('camBtn', 'off', 'Turn on camera');
+  $('camOff').hidden = false;
+  $('cam').hidden = false; // the frame stays, showing its placeholder
+  $('previewBtn').hidden = true;
+  $('sign').hidden = true;
+  setStatus('camStatus', 'Camera off');
 }
 
 async function startCamera() {
   if (gestures) return true;
+  $('camBtn').disabled = true;
   try {
     $('camOff').hidden = true;
     gestures = await createGestures({
       video: $('video'),
       overlay: $('hand'),
       onStatus: (text, kind) => setStatus('camStatus', text, kind),
-      onPointer: (p, name) => {
-        if (!signTimer) {
-          const labels = { Pointing_Up: '☝️ Aiming', Thumb_Left: '👈 Previous agent', Thumb_Right: '👉 Next agent' };
-          const label = labels[name] ?? (SIGNALS[name] ? `${SIGNALS[name].emoji} ${SIGNALS[name].label}…` : '');
-          $('sign').hidden = name === 'None';
-          $('sign').textContent = label;
-        }
-        if (!p || is3d || !matchActive()) return; // aiming is map-view only
+      onFeedback: feedback => {
+        gestureFeedback = feedback;
+        if (!signTimer) renderGestureFeedback(feedback);
+      },
+      onPointer: p => {
+        if (!p || is3d || !matchActive()) return;
         // Use the middle of the camera frame so you don't have to reach the edges.
-        const nx = Math.min(1, Math.max(0, (p.x - 0.15) / 0.7));
-        const ny = Math.min(1, Math.max(0, (p.y - 0.15) / 0.7));
-        pointer = { x: nx * 80, y: ny * 56, at: performance.now() };
+        const spot = cameraToMapPoint(p, MAPS.tactical);
+        // The defending map is turned around, so pointing “up there” means up the screen.
+        pointer = { ...(flippedFor(session?.team) ? flipPoint(MAPS.tactical, spot) : spot), at: performance.now() };
       },
       onSignal: handleSignal,
       onSwipe: dir => {
@@ -1101,8 +1429,12 @@ async function startCamera() {
     return true;
   } catch (error) {
     $('camOff').hidden = false;
+    gestureFeedback = { stage: 'none', name: null };
+    renderGestureFeedback(gestureFeedback);
     setStatus('camStatus', `Camera unavailable: ${error.message}`, 'error');
     return false;
+  } finally {
+    $('camBtn').disabled = false;
   }
 }
 
@@ -1111,7 +1443,7 @@ function showSign(text) {
   $('sign').hidden = false;
   $('sign').textContent = text;
   clearTimeout(signTimer);
-  signTimer = setTimeout(() => { signTimer = null; }, 1200);
+  signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
 const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
@@ -1129,6 +1461,8 @@ if (!window.isSecureContext) {
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
+  $('listen').disabled = true;
+  $('voiceMode').disabled = true;
   $('camBtn').disabled = true;
 }
 
@@ -1163,6 +1497,7 @@ window.commander = {
   get view() { return view; },
   get online() { return online && { code: online.code, team: online.team, host: online.host, players: online.players }; },
   get game() { return game; },
+  get gestures() { return gestures; },
   issueCommand,
   signal: handleSignal,
   get is3d() { return is3d; },
