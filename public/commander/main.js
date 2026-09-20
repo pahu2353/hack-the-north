@@ -74,7 +74,7 @@ function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('hint').textContent = is3d
-    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–4: switch. Tab: map.'
+    ? 'Auto fire. Click for mouse look; keep the crosshair on an enemy for better accuracy. ←/→ or 1–5: switch. Tab: map.'
     : 'Click the map or point up to mark a spot, then say “push there”. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
@@ -383,11 +383,14 @@ function handleServer(connection, message) {
       view = null;
       beginMatch();
       break;
-    case 'state':
+    case 'state': {
+      const wasOver = view?.match?.over;
       view = message.view;
       if (view.result) connection.running = false;
       connection.jev = message.jev;
+      if (resultShown && view.result && view.match?.over && !wasOver) showResult();
       break;
+    }
     case 'plan': {
       const waiter = connection.pending.get(message.id);
       connection.pending.delete(message.id);
@@ -491,11 +494,11 @@ function showResult() {
   resetSpeech();
   resultShown = true;
   const match = view.match;
-  const won = view.result.winner === session.team;
+  const won = (match?.over ? match.winner : view.result.winner) === session.team;
   const decided = match?.over ?? true;
   $('resultTitle').textContent = decided ? (won ? 'Victory' : 'Defeat') : won ? 'Round won' : 'Round lost';
   $('resultTitle').className = won ? 'win' : 'lose';
-  $('resultText').textContent = view.result.reason;
+  $('resultText').textContent = match?.reason ?? view.result.reason;
   renderMatchScore(match);
   renderScoreboard(match);
   updateResultActions();
@@ -876,7 +879,10 @@ function frame(now) {
   }
   if (session?.kind === 'online') smoothPositions(dt);
   const smoothed = session?.kind === 'online' ? positions : null;
-  if (is3d && !watched()) cycleAgent(1); // the agent you were watching died
+  if (is3d && view && !watched()) {
+    if (ownUnits().some(u => u.alive)) cycleAgent(1);
+    else setView(false); // the planted round can continue after your entire squad dies
+  }
   const u = is3d ? watched() : null;
   if (u) {
     const at = unit => smoothed?.get(unit.id) ?? unit;
@@ -1329,7 +1335,7 @@ document.addEventListener('keydown', e => {
   } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
     e.preventDefault();
     cycleAgent(e.code === 'ArrowRight' ? 1 : -1);
-  } else if (/^Digit[1-4]$/.test(e.code)) {
+  } else if (/^Digit[1-5]$/.test(e.code)) {
     const u = ownUnits()[Number(e.code.slice(5)) - 1];
     if (u?.alive) watchAgent(u);
   }

@@ -8,8 +8,8 @@ const eliminated = view => view.roster.filter(u => u.down).map(u => u.name);
 
 function commandHarness() {
   const pending = [];
-  const brains = createBrains({ evaluate: (state, questions) => new Promise(resolve => {
-    pending.push({ questions, resolve });
+  const brains = createBrains({ evaluate: (state, questions) => new Promise((resolve, reject) => {
+    pending.push({ state, questions, resolve, reject });
   }) });
   function reply(index, assignments, isOrder = 1) {
     const { questions, resolve } = pending[index];
@@ -22,8 +22,80 @@ function commandHarness() {
     }));
     resolve({ answers, latency: 1 });
   }
-  return { brains, reply };
+  return { brains, reply, pending };
 }
+
+test('follow-ups from text, partial voice and gestures see accepted commands and the current squad orders', async () => {
+  const game = createGame();
+  const { brains, reply, pending } = commandHarness();
+  const first = brains.interpretCommand(game, 'attack', { text: 'Alpha hold B' });
+  reply(0, { alpha: ['hold', 'B Site'] });
+  await first;
+  const inputs = [
+    { source: 'text', text: 'Bravo do the same' },
+    { source: 'voice', text: 'Bravo do the same', seq: 3 }, // partials have no voice cues yet
+    { source: 'hand', text: 'Go', gesture: { emoji: '👍', label: 'Go', meaning: 'Push there' } },
+  ];
+  for (const input of inputs) {
+    const index = pending.length;
+    const next = brains.interpretCommand(game, 'attack', { ...input, only: 'Bravo' });
+    assert.equal(pending[index].state.current_orders.Alpha, 'hold → B Site');
+    assert(pending[index].state.recent_commands.includes('Alpha hold B'));
+    reply(index, { bravo: ['push', 'B Site'] });
+    await next;
+  }
+});
+
+test('command memory excludes chatter and stale replies, keeps submission order, and resets per side and round', async () => {
+  const game = createGame({ defenders: 'players' });
+  const { brains, reply, pending } = commandHarness();
+  const first = brains.interpretCommand(game, 'attack', { text: 'Alpha push A', seq: 1 });
+  const second = brains.interpretCommand(game, 'attack', { text: 'Bravo hold B', seq: 3 });
+  reply(1, { bravo: ['hold', 'B Site'] });
+  await second;
+  reply(0, { alpha: ['push', 'A Site'] });
+  await first;
+  const stale = brains.interpretCommand(game, 'attack', { text: 'Bravo push A', seq: 2 });
+  reply(2, { bravo: ['push', 'A Site'] });
+  assert.equal((await stale).stale, true);
+  const chatter = brains.interpretCommand(game, 'attack', { text: 'Nice shot!' });
+  reply(3, {}, 0);
+  await chatter;
+  const followup = brains.interpretCommand(game, 'attack', { text: 'Keep doing that' });
+  assert.deepEqual(pending[4].state.recent_commands, ['Alpha push A', 'Bravo hold B']);
+  reply(4, {}, 0);
+  await followup;
+  for (const [nextGame, team] of [[game, 'defend'], [createGame(), 'attack']]) {
+    const index = pending.length;
+    const next = brains.interpretCommand(nextGame, team, { text: 'Hold' });
+    assert.deepEqual(pending[index].state.recent_commands, []);
+    reply(index, {}, 0);
+    await next;
+  }
+});
+
+test('failed commands do not enter memory and only the last three accepted commands are sent', async () => {
+  const { brains, reply, pending } = commandHarness();
+  const game = createGame();
+  const failed = brains.interpretCommand(game, 'attack', { text: 'Alpha push A' });
+  const rejected = assert.rejects(failed, /offline/);
+  pending[0].reject(new Error('offline'));
+  await new Promise(resolve => setImmediate(resolve));
+  pending[1].reject(new Error('offline'));
+  await rejected;
+  for (const name of ['Alpha', 'Bravo', 'Charlie', 'Delta']) {
+    const index = pending.length;
+    const command = brains.interpretCommand(game, 'attack', { text: `${name} hold B` });
+    assert(!pending[index].state.recent_commands.includes('Alpha push A'));
+    reply(index, { [name.toLowerCase()]: ['hold', 'B Site'] });
+    await command;
+  }
+  const index = pending.length;
+  const next = brains.interpretCommand(game, 'attack', { text: 'Echo do the same' });
+  assert.deepEqual(pending[index].state.recent_commands, ['Bravo hold B', 'Charlie hold B', 'Delta hold B']);
+  reply(index, { echo: ['hold', 'B Site'] });
+  await next;
+});
 
 for (const [team, firstName, secondName] of [['attack', 'Alpha', 'Bravo'], ['defend', 'Foxtrot', 'Golf']]) {
   test(`${team}: late squad order preserves a newer individual order, while still reaching other agents`, async () => {
