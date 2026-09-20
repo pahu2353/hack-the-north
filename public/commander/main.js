@@ -600,7 +600,6 @@ function beginMatch() {
   positions.clear();
   recentGesture = null;
   $('log').replaceChildren();
-  $('voiceSummary').textContent = 'Volume: — · Emphasis: —';
   $('feed').replaceChildren();
   updateTeamUi();
   buildSquadCards();
@@ -854,10 +853,6 @@ async function onFinalTranscript(text, voiceContext) {
   clearTimeout(speculateTimer);
   if (!canCommand()) { resetSpeech(); return; }
   const epoch = speechEpoch;
-  $('caption').textContent = text;
-  $('voiceSummary').textContent = voiceContext
-    ? voiceLabels(voiceContext).filter(label => !label.startsWith('Rate:')).join(' · ')
-    : 'Volume: — · Emphasis: —';
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
   u.finalAt = performance.now();
