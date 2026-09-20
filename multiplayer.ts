@@ -128,18 +128,48 @@ export function createRooms(evaluate: Evaluate) {
     const pointer = Number.isFinite(message.pointer?.x) && Number.isFinite(message.pointer?.y)
       ? { x: message.pointer.x, y: message.pointer.y }
       : null;
-    const gesture = message.gesture
-      ? { emoji: String(message.gesture.emoji ?? ''), label: String(message.gesture.label ?? ''), meaning: String(message.gesture.meaning ?? '') }
-      : undefined;
-    // An order given in the first-person view is for that one agent; only their own names count.
+    const signal = message.gesture;
+    const context = signal?.context;
+    const gesture = signal ? {
+      emoji: String(signal.emoji ?? ''), label: String(signal.label ?? ''), meaning: String(signal.meaning ?? ''),
+      ...(context && { context: {
+        name: String(context.name ?? ''),
+        confidence: context.confidence,
+        confidenceLevel: String(context.confidenceLevel ?? ''),
+        stability: context.stability,
+        stabilityLevel: String(context.stabilityLevel ?? ''),
+        heldMs: context.heldMs,
+        ageMs: context.ageMs,
+        pointer: context.pointer && {
+          active: Boolean(context.pointer.active),
+          zone: String(context.pointer.zone ?? ''),
+          ageMs: context.pointer.ageMs,
+        },
+      } }),
+    } : undefined;
+    const cues = message.voiceContext;
+    const voiceContext = cues ? {
+      volumeLevel: String(cues.volumeLevel ?? ''),
+      volumeVsBaseline: cues.volumeVsBaseline,
+      peakVolumeLevel: String(cues.peakVolumeLevel ?? ''),
+      speechRate: String(cues.speechRate ?? ''),
+      pauseLevel: String(cues.pauseLevel ?? ''),
+      emphasisLevel: String(cues.emphasisLevel ?? ''),
+      intensityTrend: String(cues.intensityTrend ?? ''),
+      profanityLevel: ['none', 'mild', 'strong'].includes(cues.profanityLevel) ? cues.profanityLevel : 'none',
+      profanityCount: Number.isFinite(cues.profanityCount) ? Math.max(0, Math.min(20, cues.profanityCount)) : 0,
+    } : undefined;
+    // An order given in the first-person view is for that one agent.
     const only = TEAMS[team].names.includes(message.only) ? (message.only as string) : undefined;
     try {
       const result = await room.brains[team].interpretCommand(game, team, {
+        source: ['voice', 'text', 'hand'].includes(message.source) ? message.source : 'text',
         text: String(message.text ?? '').slice(0, 500),
         gesture,
         pointer,
         only,
         seq: Number(message.id) || undefined,
+        voiceContext,
       });
       send(ws, { type: 'plan', id: message.id, ...result });
     } catch (error: any) {

@@ -4,10 +4,18 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderDestination, orderLabel, setOrder, unitById } from './sim.js';
+import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
+const VOICE_PACE = { mild: 1.08, strong: 1.18 };
+
+function voicePaceMultiplier(context) {
+  if (!context) return 1;
+  const volume = context.volumeLevel === 'very_loud' ? VOICE_PACE.strong
+    : context.volumeLevel === 'loud' ? VOICE_PACE.mild : 1;
+  return Math.max(volume, VOICE_PACE[context.profanityLevel] ?? 1);
+}
 
 // The orchestrator question: with a hands-free mic, most of what Jev hears is not an order.
 // Saying the quiet part out loud ("a plain statement is still an order") matters: without it,
@@ -61,6 +69,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
   // Track accepted orders per unit: chatter or an order for Bravo must not cancel Alpha's.
   // Explicit sequences also prevent a partial voice guess from replacing its final sentence.
   const lastAppliedCommand = new WeakMap();
+  const commandHistory = new WeakMap();
 
   async function ask(state, questions, maxRetries = 0) {
     stats.calls++;
@@ -82,11 +91,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
 
   // `only` names the one agent an order is for: in the first-person view you are talking to
   // the agent you're watching, so Jev isn't asked who it addresses.
-  async function interpretCommand(game, team, { text, gesture, pointer, only, seq }) {
+  async function interpretCommand(game, team, { source, text, gesture, pointer, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
     const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
     commandSequence = Math.max(commandSequence, commandId);
+    const previousCommands = commandHistory.get(game)?.[team] ?? [];
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
     const ownSpawn = team === 'attack' ? 'Attacker Spawn' : 'Defender Spawn';
@@ -112,20 +122,72 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
+    if (voiceContext) {
+      questions.command_urgency = {
+        type: 'choice',
+        instructions: 'How urgent is this order? Combine its wording, observable voice cues, profanity, remaining time, and game situation. Profanity can reinforce an explicit urgent order, but swearing alone or casual joking does not make speech an order or prove emotion. Loudness alone is not urgency.',
+        criteria: {
+          low: 'casual or low priority',
+          normal: 'ordinary command without time pressure',
+          high: 'needs prompt attention',
+          critical: 'immediate action is needed in the current situation',
+        },
+      };
+      questions.commander_certainty = {
+        type: 'choice',
+        instructions: 'How certain is the commander about the order? Consider direct wording, corrections, hedging, and observed pauses; do not infer an emotion.',
+        criteria: {
+          uncertain: 'hesitant, self-correcting, or unsure',
+          normal: 'clear enough without strong certainty cues',
+          confident: 'direct and unambiguous',
+        },
+      };
+    }
+    const status = voiceContext ? roundStatus(game, team) : null;
     const state = {
       commander_says: text,
       ...(only && { talking_to: only }),
+      ...(source && { command_source: source }),
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
       squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)} HP`])),
+      ...(voiceContext && {
+        voice_context: {
+          volume_level: voiceContext.volumeLevel,
+          volume_vs_baseline: Math.round(voiceContext.volumeVsBaseline * 100) / 100,
+          peak_volume_level: voiceContext.peakVolumeLevel,
+          speech_rate: voiceContext.speechRate,
+          pause_level: voiceContext.pauseLevel,
+          emphasis_level: voiceContext.emphasisLevel,
+          intensity_trend: voiceContext.intensityTrend,
+          profanity_level: voiceContext.profanityLevel ?? 'none',
+          profanity_count: voiceContext.profanityCount ?? 0,
+        },
+        situation: {
+          side: team,
+          seconds_remaining: Math.max(0, Math.round(status.clock)),
+          status: status.label,
+        },
+        recent_commands: previousCommands.slice(-3),
+      }),
     };
+    const history = commandHistory.get(game) ?? {};
+    history[team] = [...previousCommands, text].slice(-3);
+    commandHistory.set(game, history);
 
     // Jev occasionally 500s on a question with no clear winner, so give it one more go.
     const result = await ask(state, questions, 2).catch(() => ask(state, questions, 2));
     const isOrder = result.answers.is_order.probability;
+    const ux = voiceContext ? {
+      urgency: result.answers.command_urgency?.choice ?? 'normal',
+      certainty: result.answers.commander_certainty?.choice ?? 'normal',
+    } : null;
     if (isOrder < 0.5) {
-      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens };
+      return { ignored: true, isOrder, plan: [], latency: result.latency, tokens: result.usage?.inputTokens, ux };
     }
+    // A small speed boost once Jev accepts a shouted order. The next order resets speed from
+    // each unit's original value, so cues never stack.
+    const pace = source === 'voice' ? voicePaceMultiplier(voiceContext) : 1;
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
@@ -139,6 +201,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         : null;
       const applied = skipReason === null;
       if (applied) {
+        unit.commandBaseSpeed ??= unit.speed;
+        unit.speed = unit.commandBaseSpeed * pace;
         let point;
         let zone = target.choice;
         if (target.choice === 'pointed' && pointer) {
@@ -166,7 +230,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       };
     });
     const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
-    return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens };
+    return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
   }
 
   // ---------- 2. per-agent decision loops ----------
