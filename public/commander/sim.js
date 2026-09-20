@@ -306,6 +306,33 @@ export function orderDestination(game, u) {
   return o.point;
 }
 
+// ---------- directional orders ----------
+
+// "Move right" is a pointer the commander describes in words instead of with their hand, so it
+// resolves against what they are looking at, never against the agent's own facing: shoot()
+// snaps that to whatever it is firing at, so "right" would mean something new every second and
+// the commander cannot see it anyway. The client sends the world angle its view calls forward —
+// screen-up on the map (which the defending side draws rotated), the camera in first person —
+// and everything here is that angle turned by a quarter.
+export const NUDGE = 7; // metres: enough to change an angle or clear a corner, not a rotation
+const TURN = { forward: 0, right: Math.PI / 2, back: Math.PI, left: -Math.PI / 2 };
+export const isDirection = value => Object.hasOwn(TURN, value);
+
+// A step that direction, shortened until it is a walk rather than a trip around the building.
+// Nothing that way means stay put: a nudge into a wall should do nothing, not path 40 m around.
+export function directionPoint(game, u, yaw, direction) {
+  const angle = yaw + TURN[direction];
+  const grid = gridFor(game);
+  for (let d = NUDGE; d >= 2; d--) {
+    const p = {
+      x: clamp(u.x + Math.cos(angle) * d, 1, game.map.width - 1),
+      y: clamp(u.y + Math.sin(angle) * d, 1, game.map.height - 1),
+    };
+    if (walkableLine(grid, u, p)) return p;
+  }
+  return { x: u.x, y: u.y };
+}
+
 function average(units) {
   const n = units.length || 1;
   return { x: units.reduce((s, u) => s + u.x, 0) / n, y: units.reduce((s, u) => s + u.y, 0) / n };

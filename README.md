@@ -71,6 +71,7 @@ opponent.
 | **Voice** | Hands-free by default: the mic opens when a match starts, and each sentence becomes an order when you pause. "Alpha and Bravo push B, Charlie hold mid, Delta flank A." Switch to hold-to-talk (<kbd>V</kbd>) in the side panel. |
 | **Text** | Type in the order box, press Enter. |
 | **Pointing** | Click the map, or point your index finger straight up at the camera, to mark a spot — then say "push there". |
+| **Directions** | "Move right", "shift left", "back up", "everyone forward" — a short step rather than a callout. Resolved against the view you're looking at: screen directions on the map, camera-relative in first person. "Up"/"ahead" mean forward, "down"/"behind" mean back. |
 | **Aiming** | In first person, raise a fist: the crosshair follows it. Shooting stays automatic. |
 | **Switch agent** | ←/→, 1–5, click the top bar, or hold four fingers up to the camera to step through the squad — keep holding to keep stepping. |
 | **Switch view** | <kbd>Tab</kbd> or a pinch. <kbd>G</kbd> toggles the 3D and 2D first-person renderers. |
