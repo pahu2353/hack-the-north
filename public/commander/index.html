@@ -83,9 +83,6 @@
   .badge.attack { border-color: var(--squad); color: var(--squad); }
   .badge.defend { border-color: var(--gold); color: var(--gold); }
   .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; min-width: 52px; text-align: center; }
-  #roundLabel { color: var(--ink-2); text-transform: none; letter-spacing: 0; font-weight: 600; }
-  #jevStats { font-variant-numeric: tabular-nums; }
-  #jevStats b { color: var(--ink-2); font-weight: 600; }
   .card-head .badge { padding: 2px 6px; }
 
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
@@ -274,10 +271,13 @@
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head .head-actions { display: flex; gap: 6px; }
   /* Four of them, so they sit two by two rather than three and a lonely one. */
-  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 5px; }
+  /* Four of them, and they belong on one line: one wrapping onto a row of its own reads as a
+     mistake. Equal columns rather than auto-fill, so the row cannot break however narrow it is. */
+  .signs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
   .signs span {
-    display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
-    padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+    display: flex; align-items: center; justify-content: center; gap: 5px; background: var(--panel-2);
+    border: 1px solid var(--border); padding: 5px 4px; font-size: 11px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden;
   }
   .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
   /* The transcript and its voice summary are kept for the code that writes them, but the order
@@ -346,7 +346,7 @@
   body:not([data-cards="on"]) footer.squad { display: none; }
   body:not([data-feed="on"]) .feed { display: none; }
   body:not([data-hints="on"]) .hint { display: none; }
-  body:not([data-stats="on"]) #jevStats, body:not([data-stats="on"]) .agent .probs { display: none; }
+  body:not([data-stats="on"]) .agent .probs { display: none; }
   body:not([data-minimap="on"]) #minimap, body:not([data-minimap="on"]) .pov-zone { display: none; }
   .agent {
     background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--agent);
@@ -461,11 +461,18 @@
     position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center;
     gap: 14px; padding: 8px 18px 8px 16px; pointer-events: none;
     background: linear-gradient(180deg, rgba(10, 16, 20, 0.5), rgba(6, 9, 12, 0.82));
-    border-top: 2px solid var(--accent); clip-path: var(--cut);
+    /* Your own side's colour, not the interface accent: the bar belongs to the agent under it. */
+    border-top: 2px solid var(--squad); clip-path: var(--cut);
   }
-  .pov-hud .hp { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
-  .pov-hud .who { display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
-  .pov-hud .who b { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
+  /* Health the way a shooter shows it: a mark saying what the number counts, then the number,
+     both changing colour together as it falls. Colour is what gets read mid-fight; the digits
+     are for when you have a moment. */
+  .pov-hud .hp { display: flex; align-items: center; gap: 7px; color: var(--ink); }
+  .pov-hud .hp svg { width: 17px; height: 17px; fill: currentColor; }
+  .pov-hud .hp b { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .pov-hud[data-hp="low"] .hp { color: var(--gold); }
+  .pov-hud[data-hp="critical"] .hp { color: var(--enemy); }
+  .pov-hud .who { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
   /* The spike, once it's down: a banner under the scoreboard, and a defuse bar that fills. */
   .spike-state {
     position: absolute; top: 62px; left: 50%; transform: translateX(-50%); display: grid; gap: 4px;
@@ -502,9 +509,9 @@
     <canvas id="pov3dHud" class="pov-only" aria-hidden="true"></canvas>
     <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
     <div class="pov-zone pov-only" id="povZone"></div>
-    <div class="pov-hud pov-only">
-      <span class="hp" id="povHp"></span>
-      <span class="who"><b id="povName"></b><span id="povAction"></span><span id="povControl"></span></span>
+    <div class="pov-hud pov-only" id="povHud">
+      <span class="hp" id="povHp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 3h5v6.5H21v5h-6.5V21h-5v-6.5H3v-5h6.5z"/></svg><b id="povHpNum">–</b></span>
+      <b class="who" id="povName"></b>
     </div>
     <div class="scorebar" id="scorebar" hidden>
       <div class="team" id="squadBar"></div>
@@ -636,10 +643,6 @@
   </section>
 
   <aside class="side">
-    <div class="card" id="matchCard">
-      <div class="card-head"><span class="badge" id="teamBadge">No match</span><span id="roundLabel"></span></div>
-      <div class="status" id="jevStats">—</div>
-    </div>
     <div class="card">
       <div class="card-head">Hands
         <span class="head-actions">

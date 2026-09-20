@@ -1170,11 +1170,6 @@ function updateTitle() {
 
 function updateTeamUi() {
   const team = session?.team;
-  // The card keeps its place between matches; only what it says changes.
-  $('teamBadge').className = `badge ${team ?? ''}`;
-  $('teamBadge').textContent = team
-    ? `${TEAMS[team].label}${session.kind === 'online' ? ` · ${online?.code ?? ''}` : ` · ${botOpponent === 'openai' ? 'Hard' : 'Easy'} bots`}`
-    : 'No match';
   $('textInput').placeholder = team === 'defend'
     ? 'e.g. “Echo hold A, Golf rotate B”…'
     : 'e.g. “Alpha and Bravo push B”…';
@@ -1186,8 +1181,6 @@ function updateTeamUi() {
     $('scoreClock').textContent = '–';
     $('ownScore').textContent = '0';
     $('enemyScore').textContent = '0';
-    $('roundLabel').textContent = '';
-    $('jevStats').textContent = '—';
   }
 }
 
@@ -1361,9 +1354,6 @@ function updateHud() {
   $('scoreClock').classList.toggle('prep', Boolean(view.status.prep));
   updateSpikeState();
   updateTitle();
-  $('roundLabel').textContent = view.match
-    ? `Round ${view.match.round} · ${view.status.label}`
-    : view.status.label;
   if (view.match) {
     $('ownScore').textContent = String(view.match.score[session.team]);
     $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
@@ -1371,15 +1361,7 @@ function updateHud() {
   updateOpponentHud();
   if (!signTimer) renderGestureFeedback();
 
-  const s = session.kind === 'bots' ? brains.summary() : online?.jev;
-  if (s) {
-    $('jevStats').replaceChildren(
-      'Jev ', el('b', { textContent: `${s.perMinute}/min` }),
-      ' · p50 ', el('b', { textContent: s.p50 ? `${s.p50} ms` : '–' }),
-      ` · ${s.ok} ok · ${s.failed} failed`,
-    );
-    $('jevStats').title = s.lastError;
-  }
+
 
   const own = view.units.filter(u => u.team === session.team);
   own.forEach((u, i) => {
@@ -1418,15 +1400,14 @@ function updateHud() {
   updateScorebar();
   const watching = watched();
   if (watching) {
-    $('povHp').textContent = Math.round(watching.hp);
-    $('povHp').title = `${Math.round(watching.hp)} / ${watching.maxHp} HP`;
-    const bonus = watching.aimTargetId ? 'Aim bonus active' : 'Aim at an enemy for better accuracy';
-    $('povControl').textContent = aimSource === 'hand' ? `AUTO FIRE · ✊ Fist aim · ${bonus}`
-      : aim ? `AUTO FIRE · ${bonus} · Esc releases cursor`
-      : 'AUTO FIRE · Raise a fist or click to aim · Aim at an enemy for better accuracy';
+    const hp = Math.round(watching.hp);
+    $('povHpNum').textContent = hp;
+    $('povHp').title = `${hp} / ${watching.maxHp} HP`;
+    // Bands rather than a gradient: a colour you can name is read faster than one you compare.
+    const left = watching.hp / watching.maxHp;
+    $('povHud').dataset.hp = left > 0.6 ? 'ok' : left > 0.3 ? 'low' : 'critical';
     $('povName').textContent = watching.name;
     $('povName').style.color = watching.color;
-    $('povAction').textContent = `${actionLabel(watching, enemyName(watching))} · order: ${watching.orderLabel ?? '–'}`;
     $('povZone').textContent = zoneAt(currentMap(), watching).name.toUpperCase();
   }
 }
@@ -1783,10 +1764,10 @@ function showSign(text) {
 
 const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  signChip('☝️', 'mark spot', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
+  signChip('☝️', 'mark', 'Point your index finger straight up to mark a spot on the map, then say what to do there'),
   signChip('✊', 'aim', 'In first person, raise a fist: the crosshair follows it. Lower your hand to go back to automatic fire'),
-  signChip('4️⃣', 'next agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
-  signChip('🤏', 'swap view', 'Pinch your thumb and index finger to switch between the map and first-person'),
+  signChip('4️⃣', 'agent', 'Hold four fingers up, thumb tucked in. Keep holding to keep stepping through the squad'),
+  signChip('🤏', 'view', 'Pinch your thumb and index finger to switch between the map and first-person'),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.
