@@ -1540,7 +1540,11 @@ async function toggleMic() {
 $('micBtn').onclick = toggleMic;
 canvas.addEventListener('click', e => {
   const p = renderer.toWorld(e.clientX, e.clientY);
-  if (p.x < 0 || p.y < 0 || p.x > 80 || p.y > 56) return;
+  // The canvas is letterboxed around the map, so a click in the margin lands outside it. The
+  // bounds are whichever map is being played: written out as tactical's 80x56, every click past
+  // those on dust2 (88x88) was dropped, which is most of T Spawn and everything east of Mid.
+  const map = currentMap();
+  if (p.x < 0 || p.y < 0 || p.x > map.width || p.y > map.height) return;
   pointer = { ...p, at: performance.now() };
 });
 
