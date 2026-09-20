@@ -714,7 +714,13 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     return { x: p.x, y: p.z };
   }
 
-  return { draw, toWorld, setPointer, reset };
+  // What this renderer thinks its own state is, for the stall report in main.js.
+  const diagnostics = () => ({
+    contextLost, post, slowFrames, figures: figures.size, size: [Math.round(W), Math.round(H)],
+    glLost: renderer.getContext()?.isContextLost?.() ?? null,
+  });
+
+  return { draw, toWorld, setPointer, reset, diagnostics };
 }
 
 // ---------- scene construction ----------

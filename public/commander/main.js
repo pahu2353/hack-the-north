@@ -907,19 +907,60 @@ let last = performance.now();
 let accumulator = 0;
 let lastHud = 0;
 let frameFailures = 0;
+
+// ---------- stall diagnostics ----------
+// A freeze has been reported that no one has yet caught in the act. This watches the loop from
+// a timer rather than from inside it, so it still reports when the loop itself has stopped, and
+// records enough state to tell the three causes apart: an exception, a lost GPU context, and a
+// frame that is merely slow. __diag() in the console prints the same picture on demand.
+const diag = { lastFrameAt: 0, longestMs: 0, simMs: 0, drawMs: 0, lastError: null, stalls: 0, reported: false };
+function diagSnapshot(gapMs) {
+  return {
+    gapMs: Math.round(gapMs),
+    engine: use3d && !pov3dFailed ? '3d' : '2d',
+    pov3dFailed,
+    renderer: pov3d?.diagnostics?.() ?? null,
+    lastFrameMs: { sim: Math.round(diag.simMs), draw: Math.round(diag.drawMs), longest: Math.round(diag.longestMs) },
+    lastError: diag.lastError,
+    frameFailures,
+    aiming: Boolean(aim),
+    pointerLock: document.pointerLockElement?.id ?? null,
+    paused: paused(),
+    hidden: document.hidden,
+    view: view ? { time: +view.time?.toFixed?.(2), result: Boolean(view.result), units: view.units?.length } : null,
+    session: session?.kind ?? null,
+    is3d,
+  };
+}
+window.__diag = () => diagSnapshot(performance.now() - diag.lastFrameAt);
+setInterval(() => {
+  if (!diag.lastFrameAt || document.hidden || !session) return;
+  const gap = performance.now() - diag.lastFrameAt;
+  // rAF runs at least 30/s on any live tab, so a second without one is a stall, not slowness.
+  if (gap < 1000) { diag.reported = false; return; }
+  if (diag.reported) return;
+  diag.reported = true;
+  diag.stalls++;
+  console.error('[stall] the frame loop has not run for %dms. Copy this:', Math.round(gap), diagSnapshot(gap));
+}, 500);
 // requestAnimationFrame stops rescheduling the moment a frame throws, and this loop is the only
 // thing driving the simulation, the view and the HUD — so an escaping exception doesn't lose one
 // frame, it ends the match until the page is reloaded. Keep the loop alive and say what broke.
 function frame(now) {
+  const began = performance.now();
   try {
     drawFrame(now);
     frameFailures = 0;
   } catch (err) {
+    diag.lastError = { message: err?.message ?? String(err), stack: err?.stack?.split('\n').slice(0, 4).join(' | ') };
     if (frameFailures === 0) console.error('Frame failed; the loop is still running.', err);
     // A renderer that fails every frame is not going to recover on its own, and the raycaster
     // draws the same match from the same snapshot.
     if (++frameFailures > 30 && use3d && !pov3dFailed) dropTo2d('it failed 30 frames in a row');
   }
+  const took = performance.now() - began;
+  diag.lastFrameAt = performance.now();
+  if (took > diag.longestMs) diag.longestMs = took;
   requestAnimationFrame(frame);
 }
 
@@ -930,6 +971,7 @@ function drawFrame(now) {
     if (!matchActive() || !is3d) stopAiming();
     else if (session.kind === 'bots' || now - lastAimSent >= 50) sendAim();
   }
+  const simBegan = performance.now();
   if (session?.kind === 'bots' && game) {
     if (!game.result && !paused()) {
       accumulator += dt;
@@ -942,12 +984,14 @@ function drawFrame(now) {
     }
     view = teamView(game, session.team);
   }
+  diag.simMs = performance.now() - simBegan;
   if (session?.kind === 'online') smoothPositions(dt);
   const smoothed = session?.kind === 'online' ? positions : null;
   if (is3d && view && !watched()) {
     if (ownUnits().some(u => u.alive)) cycleAgent(1);
     else setView(false); // the planted round can continue after your entire squad dies
   }
+  const drawBegan = performance.now();
   const u = is3d ? watched() : null;
   if (u) {
     const at = unit => smoothed?.get(unit.id) ?? unit;
@@ -959,6 +1003,7 @@ function drawFrame(now) {
   } else {
     renderer.draw(view, { pointer: activePointer(), positions: smoothed, focusId: watchedId });
   }
+  diag.drawMs = performance.now() - drawBegan;
   if (view?.result && !resultShown && session) {
     opponentCommander.reset();
     showResult();
