@@ -346,13 +346,11 @@ $('again').onclick = () => {
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
 $('startMatch').onclick = () => online?.ws.send(JSON.stringify({ type: 'start' }));
-for (const team of ['attack', 'defend']) $(team === 'attack' ? 'hostAttack' : 'hostDefend').onclick = () =>
-  online?.ws.send(JSON.stringify({ type: 'side', team }));
+// Taking a side is clicking the seat you want. The guest's seats are disabled, so this only
+// ever fires for the host.
+for (const id of ['seatAttack', 'seatDefend']) $(id).onclick = () =>
+  online?.ws.send(JSON.stringify({ type: 'side', team: $(id).dataset.side }));
 $('swapSides').onclick = () => online?.ws.send(JSON.stringify({ type: 'side', team: otherTeam(session.team) }));
-// One list of maps, shown in two places, both built from the map definitions themselves so a
-// map added to the game can never be missing from either picker.
-$('lobbyMap').replaceChildren(...MAP_OPTIONS.map(o => el('option', { value: o.value, textContent: o.label })));
-$('lobbyMap').onchange = () => online?.ws.send(JSON.stringify({ type: 'map', map: $('lobbyMap').value }));
 
 // ---------- microphone and camera ----------
 
@@ -527,27 +525,29 @@ async function renderLobby() {
   if (!online?.code) return;
   const { code, team, host, players } = online;
   $('lobbyCode').textContent = code;
-  $('lobbyIntro').textContent = `You command the ${TEAMS[team].label.toLowerCase()}. Share this code or link with your opponent:`;
+  $('lobbyIntro').textContent = 'Share this code with your opponent.';
+  // The guest sees which side and map they're about to play, but neither is theirs to change,
+  // and nobody changes them once the match is under way.
+  const locked = !host || Boolean(online.running);
   for (const [id, seat] of [['seatAttack', 'attack'], ['seatDefend', 'defend']]) {
     const filled = Boolean(players?.[seat]);
+    const mine = seat === team;
     $(id).classList.toggle('filled', filled);
-    $(id).querySelector('.who').textContent = seat === team ? 'You' : filled ? 'Opponent ready' : 'Waiting for opponent…';
+    $(id).classList.toggle('mine', mine);
+    $(id).querySelector('.who').textContent = mine ? 'You' : filled ? 'Opponent' : 'Open';
+    $(id).setAttribute('aria-pressed', String(mine));
+    $(id).disabled = locked;
+    $(id).title = locked ? '' : `Command the ${seat === 'attack' ? 'attackers' : 'defenders'}`;
   }
   const ready = Boolean(players?.attack && players?.defend);
   $('startMatch').hidden = !host;
   $('startMatch').disabled = !ready;
-  $('hostSideControls').hidden = !host;
-  // The guest sees which map they're about to play, but it isn't theirs to change, and nobody
-  // changes it once the match is under way.
-  if (online.map) $('lobbyMap').value = online.map;
-  $('lobbyMap').disabled = !host || Boolean(online.running);
-  for (const side of ['attack', 'defend']) {
-    const button = $(side === 'attack' ? 'hostAttack' : 'hostDefend');
-    button.setAttribute('aria-pressed', String(team === side));
-    button.disabled = Boolean(online.running);
-  }
-  if (!host) setStatus('lobbyStatus', 'Waiting for the host to start the match…');
-  else setStatus('lobbyStatus', ready ? 'Both commanders are here.' : 'Waiting for your opponent to join…');
+  segment('lobbyMap', MAP_OPTIONS, online.map ?? 'tactical', value =>
+    online?.ws.send(JSON.stringify({ type: 'map', map: value })));
+  for (const button of $('lobbyMap').children) button.disabled = locked;
+  // The seats already say whether the other commander is here, so the host only needs a line
+  // when they are waiting on somebody else to act — which, as host, they never are.
+  setStatus('lobbyStatus', host ? '' : 'Waiting for the host to start the match…');
   $('inviteLink').value = await inviteUrl(code);
 }
 
@@ -560,7 +560,7 @@ async function inviteUrl(code) {
   const local = isLocalHost(location.hostname);
   const origin = serverInfo.public || (local && serverInfo.lan[0]) || location.origin;
   $('inviteNote').textContent = isLocalHost(new URL(origin).hostname)
-    ? 'This link only works on this computer. Run npm run online for a link anyone can open.'
+    ? 'Local link — run npm run online to share it.'
     : '';
   return `${origin}/commander/?join=${code}`;
 }
@@ -568,12 +568,15 @@ async function inviteUrl(code) {
 $('copyInvite').onclick = async () => {
   try {
     await navigator.clipboard.writeText($('inviteLink').value);
-    $('copyInvite').textContent = 'Copied';
+    $('inviteNote').textContent = 'Link copied.';
+    // renderLobby puts back whatever the note should say, warning included.
+    setTimeout(renderLobby, 1500);
   } catch {
+    // Clipboard refused: show the link so it can be copied by hand.
+    $('inviteLink').hidden = false;
     $('inviteLink').select();
-    $('copyInvite').textContent = 'Press ⌘C';
+    $('inviteNote').textContent = 'Press ⌘C to copy the link.';
   }
-  setTimeout(() => { $('copyInvite').textContent = 'Copy link'; }, 1500);
 };
 
 function leaveOnline() {

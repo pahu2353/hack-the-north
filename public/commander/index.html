@@ -149,13 +149,24 @@
   .join { display: flex; gap: 6px; }
   .join input { width: 150px; text-align: center; text-transform: uppercase; letter-spacing: 0.2em; font-weight: 700; }
   .code { font: 800 38px/1 ui-monospace, monospace; letter-spacing: 0.22em; color: var(--gold); }
-  .invite { display: flex; gap: 6px; width: min(460px, 100%); }
-  .invite input { flex: 1; min-width: 0; color: var(--ink-2); }
+  .invite { display: flex; gap: 10px; align-items: center; }
+  .invite-fallback { width: min(460px, 100%); color: var(--ink-2); }
   .seats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: min(420px, 100%); }
-  .seat { border: 1px solid var(--border); padding: 10px; display: grid; gap: 3px; }
+  /* A seat is a button for the host and inert for the guest, but it looks the same either way:
+     what it shows is who is on that side, not whether you can press it. */
+  .seat {
+    border: 1px solid var(--border); background: var(--panel); padding: 10px 12px; display: grid;
+    gap: 3px; justify-items: center; font: inherit; letter-spacing: normal; text-transform: none;
+    color: var(--ink); min-height: 0;
+  }
+  .seat:disabled { opacity: 1; cursor: default; }
+  .seat-icon { font-size: 17px; line-height: 1; filter: saturate(0.7); }
   .seat b { font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
-  .seat .who { color: var(--muted); }
+  .seat .who { color: var(--muted); font-size: 12px; }
   .seat.filled .who { color: var(--ok); }
+  /* Yours: the same gold the top bar uses for the agent you are watching. */
+  .seat.mine { border-color: var(--gold); }
+  .seat.mine b { color: var(--gold); }
   .side-choice { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .side-choice select { background: var(--panel-2); color: var(--ink); border: 1px solid var(--border); padding: 8px; font: inherit; }
   .side-choice button[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
@@ -566,26 +577,34 @@
 
       <section id="screenLobby" data-title="Lobby" hidden>
         <p id="lobbyIntro">Share this code with your opponent.</p>
-        <div class="code" id="lobbyCode" translate="no">·····</div>
+        <!-- The code and the link are the same invite, so they share a line: the code to read
+             out, one button to copy the link. The input only appears if the clipboard is
+             refused and the link has to be copied by hand. -->
         <div class="invite">
-          <input id="inviteLink" readonly translate="no" spellcheck="false" aria-label="Invite link">
-          <button id="copyInvite" type="button">Copy link</button>
+          <span class="code" id="lobbyCode" translate="no">·····</span>
+          <button id="copyInvite" class="icon-btn" type="button" aria-label="Copy invite link" title="Copy invite link">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+          </button>
         </div>
+        <input id="inviteLink" class="invite-fallback" readonly hidden translate="no" spellcheck="false" aria-label="Invite link">
         <div class="note" id="inviteNote"></div>
-        <div class="seats">
-          <div class="seat" id="seatAttack"><b>Attack</b><span class="who"></span></div>
-          <div class="seat" id="seatDefend"><b>Defend</b><span class="who"></span></div>
+        <!-- The seats say who is here and, for the host, are how you pick a side: two controls
+             that both meant "which side am I on" are now one. -->
+        <div class="seats" id="seats" role="group" aria-label="Sides">
+          <button class="seat" id="seatAttack" type="button" data-side="attack">
+            <span class="seat-icon" aria-hidden="true">⚔️</span><b>Attack</b><span class="who"></span>
+          </button>
+          <button class="seat" id="seatDefend" type="button" data-side="defend">
+            <span class="seat-icon" aria-hidden="true">🛡️</span><b>Defend</b><span class="who"></span>
+          </button>
         </div>
-        <div class="side-choice" id="hostSideControls" role="group" aria-label="Host's side">
-          <span>Your side:</span>
-          <button id="hostAttack" type="button" aria-pressed="true">Attack</button>
-          <button id="hostDefend" type="button" aria-pressed="false">Defend</button>
+        <!-- Both players see the map; only the host can change it. Built from the same map
+             list as the Vs Bots picker, so the two can never offer different sets. -->
+        <div class="pickers">
+          <div class="picker"><span class="picker-label" id="lobbyMapLabel">Map</span>
+            <div class="segment" id="lobbyMap" role="radiogroup" aria-labelledby="lobbyMapLabel"></div>
+          </div>
         </div>
-        <!-- Both players see the map; only the host can change it. Its options are copied from
-             the Vs Bots picker at startup so the two lists cannot drift apart. -->
-        <label class="side-choice" for="lobbyMap">Map
-          <select id="lobbyMap"></select>
-        </label>
         <button id="startMatch" class="primary big" type="button" disabled>Start match</button>
         <div class="status" id="lobbyStatus"></div>
         <button id="lobbyLeave" class="link" type="button">Leave game</button>
