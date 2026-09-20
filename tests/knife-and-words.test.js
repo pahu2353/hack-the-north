@@ -192,10 +192,28 @@ test('the order vocabulary grows with the kit and never shrinks below what it wa
   assert.equal(plain.includes('flash'), false, 'no flashes without the kit');
   assert.ok(kitted.includes('flash') && kitted.includes('smoke'));
 
-  // And the places include both the callouts and the relative steps.
+  // And the places include the callouts and the spike.
   const places = Object.keys((await seenFor(false)).alpha_target.criteria);
-  for (const p of ['forward', 'back', 'enemy', 'current', 'Mid', 'A Site']) {
+  for (const p of ['enemy', 'current', 'spike', 'Mid', 'A Site']) {
     assert.ok(places.includes(p), `${p} must be somewhere you can be sent`);
+  }
+  // "Forward" and "right" only mean anything relative to what the commander is looking at,
+  // so they are offered only when the client sends the angle its view calls forward.
+  for (const p of ['forward', 'back', 'left', 'right']) {
+    assert.equal(places.includes(p), false, `${p} needs a view to be relative to`);
+  }
+});
+
+test('a view angle turns the directions on', async () => {
+  let seen = null;
+  const brains = createBrains({ evaluate: async (state, questions) => { seen = questions; throw new Error('stop'); } });
+  const game = createGame({ defenders: 'bots', playerTeam: 'attack' });
+  await brains.interpretCommand(game, 'attack', {
+    source: 'text', text: 'alpha move right', direction: { yaw: 0 },
+  }).catch(() => {});
+  const places = Object.keys(seen.alpha_target.criteria);
+  for (const p of ['forward', 'back', 'left', 'right']) {
+    assert.ok(places.includes(p), `${p} should be offered once there is a view`);
   }
 });
 

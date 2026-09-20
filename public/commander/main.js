@@ -255,6 +255,12 @@ function segment(target, options, selected, pick) {
 }
 
 const MAP_OPTIONS = Object.values(MAPS).map(m => ({ value: m.id, label: m.label, title: m.blurb }));
+// What an agent can still throw, in the order it shows on their card.
+const KIT = [['grenades', '\u{1F4A3}', 'grenade'], ['flashes', '\u2728', 'flash'], ['smokes', '\u{1F32B}\uFE0F', 'smoke']];
+const KIT_OPTIONS = [
+  { value: 'frags', label: 'Grenades', title: 'One grenade each, as always' },
+  { value: 'full', label: 'Full kit', title: 'A grenade, a flash and a smoke each' },
+];
 const SIDE_OPTIONS = [
   { value: 'attack', label: 'Attack', title: 'Plant the spike on one of the two sites' },
   { value: 'defend', label: 'Defend', title: 'Stop the plant, or defuse it' },
@@ -291,6 +297,9 @@ const SETTINGS = [
   ['feed', 'Kill feed', true],
   ['minimap', 'Minimap and zone name', true],
   ['stats', 'Jev numbers', true],
+  // Off by default: a match plays exactly as it always has until you ask for the rest of
+  // the kit. It is read when a round is created, so turning it on starts at the next match.
+  ['utility', 'Flashes & smokes', false],
 ];
 const SETTINGS_KEY = 'commander:settings';
 let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
@@ -442,7 +451,7 @@ function startBotGame(opponent = botOpponent, playerTeam = botSide, map = botMap
 // brains carry over: their Jev counters are for the whole match.
 function startBotRound(match) {
   opponentCommander.reset();
-  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true, map: botMap });
+  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true, map: botMap, utility: Boolean(settings.utility) });
   view = teamView(game, session.team);
   beginMatch();
 }
@@ -557,7 +566,9 @@ async function renderLobby() {
   $('startMatch').disabled = !ready;
   segment('lobbyMap', MAP_OPTIONS, online.map ?? 'tactical', value =>
     online?.ws.send(JSON.stringify({ type: 'map', map: value })));
-  for (const button of $('lobbyMap').children) button.disabled = locked;
+  segment('lobbyKit', KIT_OPTIONS, online.utility ? 'full' : 'frags', value =>
+    online?.ws.send(JSON.stringify({ type: 'utility', utility: value === 'full' })));
+  for (const button of [...$('lobbyMap').children, ...$('lobbyKit').children]) button.disabled = locked;
   // The seats already say whether the other commander is here, so the host only needs a line
   // when they are waiting on somebody else to act — which, as host, they never are.
   setStatus('lobbyStatus', host ? '' : 'Waiting for the host to start the match…');
@@ -1335,7 +1346,7 @@ function buildDecisionCards(names) {
         el('span', { className: 'p' }),
       ]),
       el('div', { className: 'doing' }, [el('span', { className: 'act' }), el('span', { className: 'src' })]),
-      el('div', { className: 'order' }, [el('span', { className: 'ord' })]),
+      el('div', { className: 'order' }, [el('span', { className: 'ord' }), el('span', { className: 'kit' })]),
       el('div', { className: 'spread' }),
     ]);
     card.onclick = () => {
@@ -1389,6 +1400,17 @@ function renderDecisions() {
     // while still under orders to push, and showing only one made that look like the order had
     // been dropped.
     set('.ord', u?.alive ? `order: ${u.orderLabel ?? '\u2013'}` : '');
+    // One pip per thing still in hand, beside the order. Flashes and smokes only appear
+    // when the match has them, so an ordinary match's cards look exactly as they always
+    // did. Rebuilt only when it changes, like the spread bar, so a hovered tooltip survives.
+    const kit = u?.alive ? KIT.filter(([field]) => u[field] > 0) : [];
+    const kitBar = card.querySelector('.kit');
+    const kitSig = kit.map(([field]) => `${field}:${u[field]}`).join('|');
+    if (kitBar.dataset.sig !== kitSig) {
+      kitBar.dataset.sig = kitSig;
+      kitBar.replaceChildren(...kit.map(([field, icon, name]) =>
+        el('span', { className: 'nade', title: `${u[field]} ${name}`, textContent: icon })));
+    }
     // One bar holding the whole distribution. Redrawn only when it actually changes, so a
     // segment's tooltip survives being hovered.
     const shown = spread.slice(0, SPREAD_SEGMENTS);
