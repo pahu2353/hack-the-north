@@ -38,11 +38,15 @@ site for 3s — and keep it alive for 35s, or wipe the defenders. **Defenders** 
 stall the plant for 100s, defuse (6s on the spike with no attacker in sight), or wipe the
 attackers before the plant.
 
-- **Health and damage.** Everyone has 150 HP. Rifles do 28 damage every 0.22s — six hits to kill.
-  No headshots, no friendly fire.
+- **Health and damage.** Human squads and Easy bots have 150 HP; Hard bots have 175 HP. Rifles do
+  28 damage every 0.22s — six hits to kill a human/Easy unit, seven for a Hard bot. No headshots,
+  no friendly fire.
 - **Accuracy.** Shooting is always automatic; there is no fire button. Standing still helps a lot.
-  In first person, holding your crosshair on a visible enemy raises that agent's hit chance to
-  90% still / 80% moving. Looking away just means normal automatic fire.
+  Base accuracy is 0.38 for humans/Easy bots and 0.50 for Hard bots, before range/movement modifiers.
+  In first person, holding your crosshair on a visible enemy gives that agent 70% standing / 50%
+  moving accuracy **before** distance and moving-target penalties, with no extra idle bonus.
+  At 20m against a stationary enemy, that's about 45% / 32%, versus 30% for a settled human/Easy
+  agent or 40% for a settled Hard bot. Looking away just means normal automatic fire.
 - **Grenades.** One each. 26m throw, 6m blast, up to 85 damage at the centre, 1.5s fuse with a red
   ring showing the blast. Walls block it. Punishes squads that walk as one clump. 💣 on an agent's
   card means they still have theirs.
@@ -54,8 +58,8 @@ attackers before the plant.
   each site). Your own side is always drawn at the bottom.
 
 **Vs Bots** lets you pick a side, a map, and a difficulty: **Easy** is scripted bots, **Hard** is an
-OpenAI model commanding the other squad. Difficulty changes the opposing commander only, never its
-health or weapons. **Multiplayer** puts you against another person — one player creates a game and
+OpenAI model commanding tougher bots with sharper aim and leading grenade throws. Damage and fire
+rate stay the same. **Multiplayer** uses the human stats on both sides — one player creates a game and
 picks side and map, the other joins on the five-letter code or link. The server runs the match and
 sends each player only what their own agents can see; your orders are never visible to your
 opponent.
@@ -184,6 +188,18 @@ zone, or the spike drops. It only sees its own squad's sightings from the last e
 every returned order is a validated action plus a map zone. Game code still chooses paths, cover,
 throws and dodges. If the model is slow or unavailable the bots fall back to scripted tactics and
 the **Enemy commander** panel says so. `npm run mock` plans without calling OpenAI.
+
+Hard bots move at 5m/s and react in 0.25s, matching an unboosted human agent. Easy bots move at
+4.5m/s and react in 0.28–0.40s. The Hard stat advantages remain active during scripted fallback.
+Hard bots favor visible enemies they can finish in fewer hits, continue flanks through contact
+unless survival requires cover, and give all five bots distinct arrival and retake staging positions.
+
+Before throwing, Hard bots observe a cluster for at least 0.12s, then lead its movement through
+flight time **plus** the 1.5s fuse. They use observed positions, never the player's orders or future
+path. Predictions stop at walls and lose direction after contact is lost; turning or stopping after
+the throw can still evade it. Easy bots and player-issued grenade locations keep their existing
+targeting. These combat decisions run without waiting for OpenAI. The endpoint accepts all ten
+grenades in a five-versus-five round. Difficulty still needs playtesting against human first-person aim.
 
 ## Jev visualizer
 
