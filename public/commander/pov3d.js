@@ -815,7 +815,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
         hud.fillRect(p.x - w / 2, p.y, (w * u.hp) / u.maxHp, 4);
       }
     }
-    crosshair();
+    crosshair(unit);
   }
 
   // Project a world point to overlay pixels; null when it is behind the camera. Called for
@@ -846,10 +846,15 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     hud.fillRect(0, 0, W, H);
   }
 
-  function crosshair() {
+  // Green only while the sim says this agent actually has someone under the crosshair, and a
+  // marker on a hit it helped land. Drawn permanently green, it said "the bonus is live" at all
+  // times — including while you were looking at a wall — so the one mechanic in the game that
+  // rewards aiming gave the player nothing to learn from. Same two rules as pov.js: G switches
+  // between the two renderers mid-round, and they should not disagree about what you are seeing.
+  function crosshair(unit) {
     const cx = W / 2;
     const cy = H / 2;
-    hud.strokeStyle = 'rgba(120, 255, 190, 0.95)';
+    hud.strokeStyle = unit.aimTargetId != null ? 'rgba(120, 255, 190, 0.95)' : 'rgba(255, 255, 255, 0.5)';
     hud.lineWidth = 2;
     hud.beginPath();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -857,6 +862,15 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       hud.lineTo(cx + dx * 10, cy + dy * 10);
     }
     hud.stroke();
+    if (unit.aimHit) {
+      hud.strokeStyle = '#fff';
+      hud.beginPath();
+      for (const [dx, dy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+        hud.moveTo(cx + dx * 12, cy + dy * 12);
+        hud.lineTo(cx + dx * 18, cy + dy * 18);
+      }
+      hud.stroke();
+    }
   }
 
   // ---------- input ----------
