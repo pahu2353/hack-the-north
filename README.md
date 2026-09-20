@@ -171,8 +171,6 @@ current action; first-person also shows both. First-person commands address only
 
 Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice streams through the local server to Deepgram, so the key never reaches the browser.
 
-**Legacy: Titan Siege.** The earlier Commander Erwin scenario (Levi, Mikasa, Hange, and Armin holding a gate against waves of titans) lives on as a standalone snapshot at `/legacy/erwin/` (`public/legacy/erwin/`).
-
 **Vs Bots: choose your side and difficulty.** Attack with Alpha, Bravo, Charlie, Delta and Echo, or defend with Foxtrot, Golf, Hotel, India and Juliett. The opposing bots are E1–E5. **Next round** plays on with the same score; after the match, a rematch keeps your selected side and difficulty.
 
 - **Easy — scripted bots** (no opponent API calls; your Jev squad still needs the Gateway key): defenders hold posts, rotate to callouts and retake; attackers push B, recover the spike and plant.
@@ -245,7 +243,6 @@ The server calls Jev with `maxRetries: 0`, so errors such as 429s appear immedia
 | `opponent.ts` | The OpenAI commander for either side: snapshot validation, side-specific plan schemas and prompts, and the model call |
 | `multiplayer.ts` | Multiplayer rooms: invite codes, the server-side match loop, and per-team views over `/api/room` |
 | `public/commander/` | Commander: `main.js` (UI, lobby), `brain.js` (Jev calls), `sim.js` (rules, bots, per-team views), `world.js` (map, pathfinding), `render.js` (top-down), `pov.js` (first-person raycaster), `voice.js`, `gestures.js` |
-| `public/legacy/erwin/` | The Titan Siege (Commander Erwin) version, kept as a standalone snapshot |
 | `public/index.html` | The visualizer UI (a single file, no build step) |
 | `scripts/play-online.sh` | `npm run online`: tunnel + server + public link in one go |
 | `scripts/rate-limit-probe.ts` | Measures Jev's rate limit on your tier |
