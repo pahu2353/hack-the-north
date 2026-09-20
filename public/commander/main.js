@@ -255,6 +255,12 @@ function segment(target, options, selected, pick) {
 }
 
 const MAP_OPTIONS = Object.values(MAPS).map(m => ({ value: m.id, label: m.label, title: m.blurb }));
+// What an agent can still throw, in the order it shows on their card.
+const KIT = [['grenades', '\u{1F4A3}', 'grenade'], ['flashes', '\u2728', 'flash'], ['smokes', '\u{1F32B}\uFE0F', 'smoke']];
+const KIT_OPTIONS = [
+  { value: 'frags', label: 'Grenades', title: 'One grenade each, as always' },
+  { value: 'full', label: 'Full kit', title: 'A grenade, a flash and a smoke each' },
+];
 const SIDE_OPTIONS = [
   { value: 'attack', label: 'Attack', title: 'Plant the spike on one of the two sites' },
   { value: 'defend', label: 'Defend', title: 'Stop the plant, or defuse it' },
@@ -291,9 +297,27 @@ const SETTINGS = [
   ['feed', 'Kill feed', true],
   ['minimap', 'Minimap and zone name', true],
   ['stats', 'Jev numbers', true],
+  // On by default: the full kit is the game now, and a flash or a smoke is most of what
+  // there is to say to a squad. Read when a round is created, so a change starts at the
+  // next match rather than mid-round.
+  ['utility', 'Flashes & smokes', true],
 ];
 const SETTINGS_KEY = 'commander:settings';
-let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...readJson(SETTINGS_KEY) };
+// This toggle used to default off, and every setting is written back to storage together,
+// so anyone who has opened the game before is carrying a stored `false` they never chose.
+// Drop that one key once so the new default reaches them, and leave their other choices be.
+const UTILITY_DEFAULT_KEY = 'commander:utility-on';
+function clearStaleUtility(stored) {
+  try {
+    if (localStorage.getItem(UTILITY_DEFAULT_KEY)) return stored;
+    localStorage.setItem(UTILITY_DEFAULT_KEY, '1');
+    const { utility, ...rest } = stored;
+    return rest;
+  } catch {
+    return stored; // private windows and blocked storage: the default stands on its own
+  }
+}
+let settings = { ...Object.fromEntries(SETTINGS.map(([key, , value]) => [key, value])), ...clearStaleUtility(readJson(SETTINGS_KEY)) };
 
 function readJson(key) {
   try {
@@ -442,7 +466,7 @@ function startBotGame(opponent = botOpponent, playerTeam = botSide, map = botMap
 // brains carry over: their Jev counters are for the whole match.
 function startBotRound(match) {
   opponentCommander.reset();
-  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true, map: botMap });
+  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true, map: botMap, utility: Boolean(settings.utility) });
   view = teamView(game, session.team);
   beginMatch();
 }
@@ -557,7 +581,9 @@ async function renderLobby() {
   $('startMatch').disabled = !ready;
   segment('lobbyMap', MAP_OPTIONS, online.map ?? 'tactical', value =>
     online?.ws.send(JSON.stringify({ type: 'map', map: value })));
-  for (const button of $('lobbyMap').children) button.disabled = locked;
+  segment('lobbyKit', KIT_OPTIONS, online.utility ? 'full' : 'frags', value =>
+    online?.ws.send(JSON.stringify({ type: 'utility', utility: value === 'full' })));
+  for (const button of [...$('lobbyMap').children, ...$('lobbyKit').children]) button.disabled = locked;
   // The seats already say whether the other commander is here, so the host only needs a line
   // when they are waiting on somebody else to act — which, as host, they never are.
   setStatus('lobbyStatus', host ? '' : 'Waiting for the host to start the match…');
@@ -967,7 +993,7 @@ function followLog(entry) {
   if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
 }
 
-function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier }, voiceContext, gesture, early = false) {
+function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier, callout }, voiceContext, gesture, early = false) {
   const pct = v => `${Math.round(v * 100)}%`;
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
@@ -988,7 +1014,12 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
-      el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
+      el('span', {
+        className: callout ? 'note' : 'skip',
+        textContent: callout
+          ? `Not an order (${pct(isOrder)}) — taken as a callout: the squad is watching ${callout.zone}`
+          : `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)`,
+      }));
     entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
     followLog(entry);
     entry.classList.add('ignored');
@@ -1002,6 +1033,16 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
         el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
       ];
     }
+    // An agent who was told to throw but is not the one throwing is not a failure and not
+    // a refusal: it went to whoever could make it. Saying which is the difference between
+    // the squad looking broken and the squad looking organised.
+    if (p.standDown) {
+      return [
+        el('span', { className: 'skip', textContent: p.name }),
+        el('span', { className: 'skip', textContent: `${p.order}: ${p.standDown}` }),
+        el('span', { className: 'p', textContent: pct(p.orderP), title: 'P(order)' }),
+      ];
+    }
     return [
       el('span', { textContent: p.name }),
       el('span', { textContent: `${p.order} → ${p.target}`, title: `addressed ${pct(p.addressed)} · order ${pct(p.orderP)} · target ${pct(p.targetP)}` }),
@@ -1009,6 +1050,22 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
     ];
   });
   entry.querySelector('.plan').replaceChildren(...rows);
+  // Most of an order is never spoken: how many go, how fast, how spread out, who goes in
+  // first. Showing what was filled in is what turns "it guessed" into "it understood".
+  const sent = plan.filter(p => p.applied);
+  if (sent.length) {
+    const first = sent.find(p => p.role === 'entry') ?? sent[0];
+    const shape = [
+      `${sent.length} of ${plan.length}`,
+      first?.pace === 'walk' ? 'carefully' : 'fast',
+      first?.spread === 'spread' ? 'spread out' : first?.spread === 'stacked' ? 'stacked up' : null,
+      sent.length > 1 && sent.some(p => p.role === 'trade') ? `${first.name} in first, traded` : null,
+      sent.every(p => p.role === 'lurk') && sent.length ? 'lurking, holding fire' : null,
+      callout ? `watching ${callout.zone}` : null,
+    ].filter(Boolean);
+    entry.querySelector('.plan').append(
+      el('span', { className: 'shape', textContent: shape.join(' · ') }));
+  }
   entry.querySelector('.meta').textContent = `${early ? 'acting early · ' : ''}Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
   followLog(entry);
 }
@@ -1304,7 +1361,7 @@ function buildDecisionCards(names) {
         el('span', { className: 'p' }),
       ]),
       el('div', { className: 'doing' }, [el('span', { className: 'act' }), el('span', { className: 'src' })]),
-      el('div', { className: 'order' }, [el('span', { className: 'ord' })]),
+      el('div', { className: 'order' }, [el('span', { className: 'ord' }), el('span', { className: 'kit' })]),
       el('div', { className: 'spread' }),
     ]);
     card.onclick = () => {
@@ -1358,6 +1415,17 @@ function renderDecisions() {
     // while still under orders to push, and showing only one made that look like the order had
     // been dropped.
     set('.ord', u?.alive ? `order: ${u.orderLabel ?? '\u2013'}` : '');
+    // One pip per thing still in hand, beside the order. Flashes and smokes only appear
+    // when the match has them, so an ordinary match's cards look exactly as they always
+    // did. Rebuilt only when it changes, like the spread bar, so a hovered tooltip survives.
+    const kit = u?.alive ? KIT.filter(([field]) => u[field] > 0) : [];
+    const kitBar = card.querySelector('.kit');
+    const kitSig = kit.map(([field]) => `${field}:${u[field]}`).join('|');
+    if (kitBar.dataset.sig !== kitSig) {
+      kitBar.dataset.sig = kitSig;
+      kitBar.replaceChildren(...kit.map(([field, icon, name]) =>
+        el('span', { className: 'nade', title: `${u[field]} ${name}`, textContent: icon })));
+    }
     // One bar holding the whole distribution. Redrawn only when it actually changes, so a
     // segment's tooltip survives being hovered.
     const shown = spread.slice(0, SPREAD_SEGMENTS);

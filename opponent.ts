@@ -50,9 +50,17 @@ export function parseOpponentSnapshot(value: any) {
           || !Number.isInteger(opportunity.enemiesCaught) || !finite(opportunity.enemiesCaught, 2, 8)))
         || (u.dodgingGrenadeId !== null && !grenades.some((g: any) =>
           g.id === u.dodgingGrenadeId && g.landed && g.team !== value.team))) bad();
+    // The rest of the kit is optional, because a match without it has none of these fields.
+    for (const held of ['flashesLeft', 'smokesLeft']) {
+      if (u[held] !== undefined && (!Number.isInteger(u[held]) || !finite(u[held], 0, 1))) bad();
+    }
+    if (u.blinded !== undefined && u.blinded !== true) bad();
     return {
       id: u.id, name: u.name, hp: u.hp, maxHp, position: { x: u.position.x, y: u.position.y }, zone: u.zone,
       ...(combat && { combat: { visibleEnemies: combat.visibleEnemies, nearbyAllies: combat.nearbyAllies, fallingBack: combat.fallingBack } }),
+      ...(u.flashesLeft !== undefined && { flashesLeft: u.flashesLeft }),
+      ...(u.smokesLeft !== undefined && { smokesLeft: u.smokesLeft }),
+      ...(u.blinded === true && { blinded: true }),
       grenadesLeft: u.grenadesLeft, alliesWithinBlastRadius: u.alliesWithinBlastRadius,
       grenadeOpportunity: opportunity ? { position: { x: opportunity.position.x, y: opportunity.position.y }, enemiesCaught: opportunity.enemiesCaught } : null,
       dodgingGrenadeId: u.dodgingGrenadeId,
@@ -74,9 +82,17 @@ export function parseOpponentSnapshot(value: any) {
       || value.team !== 'defend' || s.state !== 'planted'
       || !zones.includes(c.zone) || !Number.isInteger(c.ready) || !finite(c.ready, 0, squad.length)
       || !Number.isInteger(c.required) || !finite(c.required, 1, squad.length))) bad();
+  // Smoke clouds are physical and visible to both sides, so they are terrain the commander
+  // has to plan around rather than intelligence it should not have.
+  const clouds = (value.smokeClouds ?? []).map((c2: any) => {
+    if (!c2 || !point(c2.position) || !finite(c2.radius, 0, 12)) bad();
+    return { position: { x: c2.position.x, y: c2.position.y }, radius: c2.radius };
+  });
   return {
     mapId: map.id,
     team: value.team, time: value.time, secondsLeft: value.secondsLeft, squad, contacts, grenades,
+    ...(value.utility === true && { utility: true }),
+    ...(clouds.length && { smokeClouds: clouds }),
     ...(c && { coordination: { phase: c.phase, site: c.site, zone: c.zone, ready: c.ready, required: c.required } }),
     spike: s.state === 'planted'
       ? { state: 'planted', site: s.site, position: { x: s.position.x, y: s.position.y }, secondsLeft: s.secondsLeft }
@@ -126,6 +142,32 @@ order after the blast. These immediate reflexes override every order, including 
 Preserve useful objectives during a brief dodge; coordinate support and the next safe approach.
 Do not keep a regroup or hold objective on a currently threatened zone when a nearby safe route
 preserves the objective. Grenade throwing and dodging are automatic, not commander action names.`;
+
+// Only sent when the match has the rest of the kit. Everything here is thrown by rule, the
+// same way the grenade is, so these are facts to plan around rather than actions to name.
+const UTILITY_INSTRUCTIONS = `This match also has flashes and smokes. Each unit starts with one of
+each; flashesLeft and smokesLeft report what it still holds, and enemy supplies are unknown.
+Both are thrown automatically by game code, never as commander action names.
+A flash blinds everyone who can see it go off, both squads, for up to a few seconds. Blindness is
+total: a blinded unit has no targets and cannot shoot at all. Walls and smoke both stop it
+completely, and facing away from it costs an enemy most of its effect. A blinded field on one of
+your units means it currently cannot see. Blinded enemies are the moment to take ground or close
+distance, not a reason to hold.
+A smoke blocks sight both ways and nothing else: bullets and grenades pass straight through it, so
+never treat a cloud as cover. smokeClouds lists the clouds standing right now, with their radius.
+A cloud across a sightline removes that angle from the fight for about fifteen seconds; expect to
+lose vision of contacts behind one, and expect the attackers to cross ground you can no longer watch.
+Your bots throw a flash when enemies are held at ten metres or more, and a smoke when they are
+outnumbered or hurt across open ground.`;
+
+// Sent always: the vision cone changes what a flank is worth, and the commander plans flanks.
+const VISION_INSTRUCTIONS = `Everyone, on both sides, only sees what is in front of them: roughly a
+200-degree cone, so there is a real arc behind each unit where nothing is seen at all. Sightings
+behind a unit do not exist until it turns. Being shot from outside its cone turns a unit toward the
+shot, which costs it the time the turn takes. This is what makes flank and rotate worth ordering:
+an approach that arrives outside the defenders' facing is worth more than a shorter one that walks
+into it. Your bots also take a knife to any enemy they find within six metres that cannot see them,
+which kills outright from behind; that is automatic and is not a commander action.`;
 
 const DEFEND_INSTRUCTIONS = `You command the DEFENDER bots in a fictional tactical game of Spike Rush.
 The human commands the attacking squad. Win by preventing a plant until time runs out,
@@ -254,6 +296,8 @@ export async function createOpponentPlan(input: unknown, {
   const reasoningEffort = /^gpt-[56](?:[.-]|$)/.test(model) ? 'low' as const : undefined;
   const schema = planSchema(snapshot);
   const instructions = `${snapshot.team === 'attack' ? ATTACK_INSTRUCTIONS : DEFEND_INSTRUCTIONS}\n\n${GRENADE_INSTRUCTIONS}
+${(snapshot as any).utility ? `\n${UTILITY_INSTRUCTIONS}\n` : ''}
+${VISION_INSTRUCTIONS}
 Human agents start with ${MAX_HP} HP (${Math.ceil(MAX_HP / RIFLE.damage)} hits to kill). Your Hard bots start with
 ${HARD_BOT.hp} HP (${Math.ceil(HARD_BOT.hp / RIFLE.damage)} hits to kill); each unit's maxHp is supplied. Rifles deal ${RIFLE.damage} damage.
 Your bots have ${HARD_BOT.accuracy} base accuracy versus the human squad's ${RIFLE.accuracy}, before range/movement penalties.
