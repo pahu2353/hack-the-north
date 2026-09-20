@@ -295,6 +295,7 @@ function makeUnit(game, props) {
     repositionPoint: null,
     peek: null,
     peekPoint: null,
+    sneakPoint: null,
     settleAt: 0,
     stats: { kills: 0, deaths: 0, damage: 0 },
     grenades: GRENADE.carried,
@@ -369,7 +370,12 @@ export function relativePoint(game, u, place) {
   if (place === 'back') return stepFrom(game, u, u.facing + Math.PI, NUDGE_METRES);
   if (place === 'spike') {
     const s = game.spike;
-    if (s.state === 'planted' || s.state === 'dropped') return { x: s.x, y: s.y };
+    if (s.state === 'planted') return { x: s.x, y: s.y };
+    // Only the attackers know where an unplanted spike is. Sending a defender "to the
+    // spike" before it is down would walk them straight to the carrier, which is a
+    // sighting they have not earned.
+    if (u.team !== 'attack') return null;
+    if (s.state === 'dropped') return { x: s.x, y: s.y };
     const carrier = unitById(game, s.carrierId);
     return carrier ? { x: carrier.x, y: carrier.y } : null;
   }
@@ -709,17 +715,23 @@ function controlAgent(game, u, dt) {
       break;
     }
     case 'knife': {
-      // Close the distance and swing. The target is whoever is nearest, seen or last known:
-      // a knife order is about going and finding someone, not about a firefight.
+      // Knifing is an approach, not a chase. Running at someone who can see you coming is
+      // how you die holding a knife, so the last stretch is made out of their view: if
+      // they are looking at you, close on a spot outside their cone instead and let the
+      // corner do the work.
       setWeapon(u, 'knife');
       const mark = focus ?? u.visible[0] ?? null;
       if (!mark) { dest = objective; break; }
-      dest = { x: mark.x, y: mark.y };
-      if (dist(u, mark) <= KNIFE.range + mark.r) {
+      const reach = KNIFE.range + mark.r;
+      if (dist(u, mark) <= reach) {
         dest = null;
         // Only swing once lined up, so the arc is not wasted on someone off to the side.
         if (angleDiff(u.facing, angleTo(u, mark)) < KNIFE.arc) slash(game, u);
+        break;
       }
+      dest = inView(mark, u) ? (u.sneakPoint ??= blindSideOf(game, u, mark)) ?? mark : mark;
+      // The spot is only good while they are still looking the same way.
+      if (u.sneakPoint && (!inView(mark, u) || dist(u, u.sneakPoint) < 1)) u.sneakPoint = null;
       break;
     }
     case 'peek': {
@@ -766,6 +778,7 @@ function controlAgent(game, u, dt) {
     if (nearest === u) dest = { x: spike.x, y: spike.y };
   }
   if (u.action !== 'peek') { u.peek = null; u.peekPoint = null; }
+  if (u.action !== 'knife') u.sneakPoint = null;
   // Two different things can put a knife in someone's hand. An order to knife somebody is
   // the commander's and it stands until the commander takes it back. Jev choosing to rush
   // the last two metres with one is the agent's own call, and it lasts exactly as long as
@@ -784,11 +797,32 @@ function controlAgent(game, u, dt) {
   if (focus) shoot(game, u, focus);
 }
 
+// A way round to someone's blind side: a spot at knifing distance that sits outside the
+// cone they are currently looking down, preferring the one that is least far out of the way.
+function blindSideOf(game, u, mark) {
+  const g = gridFor(game);
+  const behind = mark.facing + Math.PI;
+  let best = null;
+  for (const offset of [0, 0.5, -0.5, 0.9, -0.9]) {
+    const a = behind + offset;
+    const p = { x: mark.x + Math.cos(a) * 2, y: mark.y + Math.sin(a) * 2 };
+    if (p.x < 1 || p.y < 1 || p.x > game.map.width - 1 || p.y > game.map.height - 1) continue;
+    if (blockedAt(game.map, p.x, p.y, 0.5) || !walkableLine(g, u, p)) continue;
+    if (inView(mark, p)) continue; // still in front of them: no good
+    if (!best || dist(u, p) < dist(u, best)) best = p;
+  }
+  return best;
+}
+
 // Where a peek steps out to: a couple of metres sideways, across the angle rather than into
 // it, so the agent shows itself briefly and can step straight back.
 function peekPoint(game, u, focus) {
   const g = gridFor(game);
-  const bearing = focus ? angleTo(u, focus) : u.holdBearing ?? u.facing;
+  // "Peek the corner" names the thing to look round, so that is the direction leaned across.
+  // Otherwise it is whatever is in sight, and failing that the angle being held.
+  const named = u.order.type === 'peek' && u.order.point && dist(u, u.order.point) > 1
+    ? angleTo(u, u.order.point) : null;
+  const bearing = named ?? (focus ? angleTo(u, focus) : u.holdBearing ?? u.facing);
   for (const side of [1, -1]) {
     for (const reach of [2.4, 1.6]) {
       const p = { x: u.x + Math.cos(bearing + side * Math.PI / 2) * reach, y: u.y + Math.sin(bearing + side * Math.PI / 2) * reach };
@@ -1143,7 +1177,12 @@ function aimAgent(game, u, focus, dt) {
   // were watching, because everything else assumes you can see what is happening.
   if (!focus && game.time < (u.alertUntil ?? 0) && u.alertBearing !== null) {
     u.facing = turnToward(u.facing, u.alertBearing, dt);
-    if (angleDiff(u.facing, u.alertBearing) < 0.05) u.alertUntil = 0;
+    if (angleDiff(u.facing, u.alertBearing) < 0.05) {
+      // Having turned and found nothing, keep watching the way it came from. Snapping back
+      // to the angle you were holding is how an agent gets shot in the back twice.
+      u.holdBearing = u.alertBearing;
+      u.alertUntil = 0;
+    }
     return;
   }
   const want = gazeBearing(game, u, focus, dt);
@@ -1152,6 +1191,11 @@ function aimAgent(game, u, focus, dt) {
 
 function gazeBearing(game, u, focus, dt) {
   const fallback = u.holdBearing ?? null;
+  // An enemy you can actually see outranks an angle you were watching — watching it was
+  // only ever a guess about where one would appear, and now you know. Without this an
+  // agent holding an angle that gets attacked from anywhere else turns, sees them, turns
+  // back to the old angle, loses them, and does that forever.
+  if (focus && u.gaze !== 'watch_back') return angleTo(u, focus);
   switch (u.gaze) {
     case 'on_threat': {
       const at = focus ?? (game.intel[u.team].size ? enemyContact(game, u.team) : null);
@@ -1280,6 +1324,58 @@ function pushOutOfRect(u, w) {
 
 // ---------- bots (scripted execution, with optional OpenAI objectives) ----------
 
+// Bots were handed a flash and a smoke the moment the kit was switched on and had no way
+// to use either, so the whole side of the map they play was quietly worse off than the
+// squad they play against. They use them by rule, the same way they use a grenade: one
+// throw, when the situation is the one the thing is for, never as a reflex to being seen.
+function botUtility(game, u) {
+  if (!game.utility || game.time < u.throwReadyAt) return;
+  const enemies = u.visible.filter(v => v.alive);
+  if (!enemies.length) return;
+  const nearest = Math.min(...enemies.map(e => dist(u, e)));
+  // A flash goes off past whoever is holding the angle, never in your own face, and only
+  // when it is worth more than the shot you are giving up to throw it.
+  if (u.flashes > 0 && nearest >= 10 && !enemies.some(e => blinded(game, e))) {
+    const spot = utilitySpot(game, u, 'flash');
+    if (spot && throwGrenade(game, u, spot, 'flash')) return;
+  }
+  // A smoke is for a fight you are losing across open ground: cut the line rather than
+  // keep trading through it.
+  if (u.smokes > 0 && (u.hp < u.maxHp * 0.6 || enemies.length > 1) && nearest >= 8) {
+    const spot = utilitySpot(game, u, 'smoke');
+    if (spot) throwGrenade(game, u, spot, 'smoke');
+  }
+}
+
+// The payoff for having a back: a bot that finds itself behind someone who cannot see it
+// takes the knife out and uses it. It only ever does this when it is already close and
+// already unseen, so it never trades a rifle it needed for a blade it did not.
+function botKnife(game, u, dt) {
+  // A withdrawal is a decision the commander made; stopping to stab someone on the way out
+  // is not a bot's call to overrule it with.
+  if (['retreat', 'regroup'].includes(u.botOrder?.action)) {
+    if (u.weapon === 'knife') setWeapon(u, 'rifle');
+    return false;
+  }
+  const mark = game.units.find(e => e.alive && e.team !== u.team
+    && dist(u, e) < 6 && !inView(e, u) && hasLineOfSight(game.map, u, e));
+  if (!mark) {
+    if (u.weapon === 'knife') setWeapon(u, 'rifle');
+    return false;
+  }
+  setWeapon(u, 'knife');
+  const reach = KNIFE.range + mark.r;
+  if (dist(u, mark) > reach) {
+    moveToward(game, u, { x: mark.x, y: mark.y }, dt);
+    turnBotToward(game, u, dt);
+    return true;
+  }
+  moveToward(game, u, null, dt);
+  u.facing = turnToward(u.facing, angleTo(u, mark), dt);
+  if (angleDiff(u.facing, angleTo(u, mark)) < KNIFE.arc) slash(game, u);
+  return true;
+}
+
 function controlBot(game, u, dt) {
   const targets = u.visible.filter(v => v.alive);
   // Finish exposed wounded enemies together instead of each bot duelling the nearest one.
@@ -1309,6 +1405,8 @@ function controlBot(game, u, dt) {
       throwGrenade(game, u, clump.spot);
     }
   }
+  botUtility(game, u);
+  if (botKnife(game, u, dt)) return;
   const planned = opponentDestination(game, u);
   if (planned && ['retreat', 'regroup'].includes(u.botOrder.action)) {
     // Spotting an enemy must not turn a withdrawal into another isolated fight.

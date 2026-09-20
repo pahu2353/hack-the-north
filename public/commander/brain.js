@@ -62,8 +62,6 @@ export function expandAgentInitials(text, roster) {
 // Ways of addressing the whole squad at once, and the two phrasings that instead mean
 // "all of you except whoever I just named", which only Jev can resolve against the clause
 // that named them.
-const SQUAD_ADDRESS = /\b(everyone|everybody|guys|all of you|y'?all|the team|the squad|all agents)\b/i;
-const ALL_BUT_ADDRESS = /\b(everyone|everybody)\s+else\b|\bthe\s+rest\b/i;
 
 function voicePaceMultiplier(context) {
   if (!context) return 1;
@@ -114,8 +112,10 @@ const SMOKE_ORDER = 'smoke / smoke off / smoke it / smoke the way in / help smok
   + 'block the sightline at the location, or "smoke here" / "smoke there" at the spot being pointed at';
 const PEEK_ORDER = 'peek: take a quick look and come straight back / jiggle peek / shoulder peek / '
   + 'bait a shot / check that angle without committing to it';
-const KNIFE_ORDER = 'knife: put the rifle away, run them down and stab them / go knife someone / '
-  + 'knife them / shank them / melee them. The knife stays out until you tell them otherwise.';
+const KNIFE_ORDER = 'knife: take the knife out. Any mention of the knife at all means this — '
+  + '"knife", "knife out", "get your knife out", "switch to knife", "melee", as well as '
+  + '"go knife them", "knife that guy", "shank him", "run them down with the knife". '
+  + 'The knife stays out until told otherwise. If they also said where or who, they go there too.';
 // The way back. A knife stays drawn until the commander takes it back, so there has to be
 // something for them to say.
 const RIFLE_ORDER = 'put the knife away and get the rifle back out / guns out / gun up / '
@@ -196,17 +196,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
   async function interpretCommand(game, team, { source, text, gesture, pointer, direction, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
-    // "Everyone push B", "guys hold mid". Otherwise Jev is asked once per agent whether the
-    // order is for them: five questions, and five chances to disagree with itself about a
-    // phrase that has one meaning. Nobody named and the squad addressed as a whole is not a
-    // judgement call, so it is settled here and those questions are never asked. Dead agents
-    // count as named: "Alpha and everyone push" is a mix, whether or not Alpha is still up.
     const roster = game.units.filter(u => u.team === team).map(u => u.name);
     // From here on the order says "Charlie", never "c": one spelling for the state Jev reads,
-    // the addressing test below, and the history a later "do the same" is resolved against.
+    // the addressing questions below, and the history a later "do the same" is resolved
+    // against. This is spelling, not judgement — who the order is for is Jev's to decide.
     const said = expandAgentInitials(text ?? '', roster);
-    const namesSomeone = roster.some(name => new RegExp(`\\b${name}\\b`, 'i').test(said));
-    const wholeSquad = !only && !namesSomeone && SQUAD_ADDRESS.test(said) && !ALL_BUT_ADDRESS.test(said);
     const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
     commandSequence = Math.max(commandSequence, commandId);
     const previousCommands = commandHistory.get(game)?.[team] ?? [];
@@ -257,7 +251,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const questions = {};
     for (const { name } of squad) {
       const key = name.toLowerCase();
-      if (!only && !wholeSquad) questions[`${key}_addressed`] = {
+      if (!only) questions[`${key}_addressed`] = {
         type: 'boolean',
         // Wording picked by measurement: it handles orders that give different jobs to
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
@@ -299,6 +293,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
+    // "Everyone push B" has one meaning, and asking five agents separately whether it is for
+    // them is five chances to disagree and mobilise three of five. So it is asked once, as
+    // its own question, and its answer overrides the individual ones. This used to be a list
+    // of words matched against the text; a list of words can only ever contain the phrasings
+    // somebody thought of in advance, and deciding what a sentence means is Jev's job.
+    questions.addresses_everyone = {
+      type: 'boolean',
+      instructions: `Is this order given to the whole squad at once rather than to particular agents? Yes when it speaks to all of them — "everyone push B", "guys hold mid", "all of you", "y'all", "the team", "squad on me" — and yes when it names nobody at all. No when it names or initials any agent, and no for "everyone else" or "the rest", which mean everyone except whoever was just named.`,
+    };
     // One smoke is a smoke; five smokes on one doorway is the squad's whole round spent at
     // once. A bare "smoke main" is one agent doing it, and only a command that actually
     // asks for more gets more. Score rather than a yes/no, because "three people" is a
@@ -380,6 +383,9 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     // Jev occasionally 500s on a question with no clear winner, so give it one more go.
     const result = await ask(state, questions, 2).catch(() => ask(state, questions, 2));
     const isOrder = result.answers.is_order.probability;
+    // One squad-level answer, and it wins: if the order was for all of them it was for this
+    // one, whatever its own question happened to say.
+    const wholeSquad = !only && (result.answers.addresses_everyone?.probability ?? 0) > 0.5;
     const ux = voiceContext ? {
       urgency: result.answers.command_urgency?.choice ?? 'normal',
       certainty: result.answers.commander_certainty?.choice ?? 'normal',
@@ -400,7 +406,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
-      const addressed = only || wholeSquad ? 1 : a[`${key}_addressed`].probability;
+      const addressed = only || wholeSquad ? 1 : a[`${key}_addressed`]?.probability ?? 0;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
       const skipReason = addressed < 0.5 ? 'not addressed'
@@ -435,8 +441,20 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         } else {
           point = zoneByName(game.map, target.choice).center;
         }
-        // "Guns out" is not somewhere to be. It changes what is in their hands and leaves
-        // the job they are already doing exactly as it was.
+        // "Knife out" with nowhere named is a weapon switch and nothing else: it must not
+        // silently send them somewhere. With a place or a target named it is both.
+        if (order.choice === 'knife' && target.choice === 'current') {
+          unit.knifeOrdered = true;
+          setWeapon(unit, 'knife');
+          lastAppliedCommand.set(unit, commandId);
+          return {
+            name: unit.name, addressed, applied: true, order: order.choice,
+            orderP: order.probabilities?.[order.choice] ?? 1,
+            target: 'knife out', targetP: 1,
+          };
+        }
+        // "Guns out" is not somewhere to be either: it changes what is in their hands and
+        // leaves the job they are already doing exactly as it was.
         if (order.choice === 'rifle') {
           unit.knifeOrdered = false;
           setWeapon(unit, 'rifle');

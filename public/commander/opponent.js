@@ -1,6 +1,6 @@
 // OpenAI commands the opposing squad; ordinary game code executes these bounded orders.
 // This module has no DOM or Jev dependency so either renderer can use it.
-import { GRENADE, grenadeSpot, incomingGrenade, roundClock, ROUND_SECONDS } from './sim.js';
+import { GRENADE, blinded, grenadeSpot, incomingGrenade, roundClock, ROUND_SECONDS } from './sim.js';
 import { buildGrid, dist, findPath, hasLineOfSight, nearestOpenPoint, zoneAt, zoneByName } from './world.js';
 
 export const OPPONENT_ACTIONS = ['hold', 'rotate', 'flank', 'retreat', 'regroup', 'retake'];
@@ -37,6 +37,7 @@ export function opponentSnapshot(game) {
     mapId: game.map.id,
     time: Math.round(game.time * 10) / 10,
     team,
+    utility: Boolean(game.utility),
     secondsLeft: Math.max(0, Math.round(ROUND_SECONDS - roundClock(game))),
     squad: bots.map(u => {
       const target = u.grenades > 0 ? grenadeSpot(game, u) : null;
@@ -46,6 +47,10 @@ export function opponentSnapshot(game) {
         id: u.id, name: u.name, hp: Math.round(u.hp), maxHp: u.maxHp, position: position(u), zone: zoneAt(game.map, u).name,
         combat: defenderCombat(game, u),
         grenadesLeft: u.grenades,
+        // The rest of the kit, when the match has it. Bots throw these by rule, like the
+        // grenade, but the commander still has to be able to see who is out of what.
+        ...(game.utility && { flashesLeft: u.flashes, smokesLeft: u.smokes }),
+        ...(blinded(game, u) && { blinded: true }),
         alliesWithinBlastRadius: bots.filter(m => m !== u && dist(u, m) <= GRENADE.radius
           && hasLineOfSight(game.map, u, m)).length,
         grenadeOpportunity: target?.caught >= 2 ? { position: position(target.spot), enemiesCaught: target.caught } : null,
@@ -53,6 +58,12 @@ export function opponentSnapshot(game) {
         order: u.botOrder && u.botOrder.expiresAt > game.time
           ? { action: u.botOrder.action, zone: u.botOrder.zone } : null,
       };
+    }),
+    // Smoke is terrain while it lasts: it blocks sight both ways and nothing else.
+    ...(game.utility && {
+      smokeClouds: game.smokes
+        .filter(c => c.radius > 0.5)
+        .map(c => ({ position: position(c), radius: Math.round(c.radius * 10) / 10 })),
     }),
     // Matches the public grenade view: current positions only, never hidden throw targets.
     grenades: game.grenades.map(g => ({

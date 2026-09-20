@@ -165,7 +165,8 @@ test('two agents sent to one place are given different jobs', async () => {
   const brains = createBrains({
     evaluate: async (state, questions) => ({
       answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
-        if (q.type === 'boolean') return [id, { probability: id === 'is_order' ? 1 : 0 }];
+        // Everyone is addressed, and the order is a real one; every other yes/no is no.
+        if (q.type === 'boolean') return [id, { probability: ['is_order', 'addresses_everyone'].includes(id) ? 1 : 0 }];
         const keys = Object.keys(q.criteria);
         const pick = id.endsWith('_order') ? 'push' : id.endsWith('_target') ? 'B Site' : keys[0];
         return [id, { choice: keys.includes(pick) ? pick : keys[0], probabilities: { [pick]: 1 } }];

@@ -234,7 +234,7 @@ test('a squad told to smoke one place spends one smoke, not five', async () => {
   const brains = createBrains({
     evaluate: async (state, questions) => ({
       answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
-        if (q.type === 'boolean') return [id, { probability: id === 'is_order' ? 1 : 0 }];
+        if (q.type === 'boolean') return [id, { probability: ['is_order', 'addresses_everyone'].includes(id) ? 1 : 0 }];
         const keys = Object.keys(q.criteria);
         const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Mid' : keys[0];
         return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
@@ -277,7 +277,7 @@ async function smokeOrder({ headcount = 0, stock = 1 } = {}) {
     evaluate: async (state, questions) => ({
       answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
         // Every agent is addressed and it is a real order; everything else answers no.
-        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id.endsWith('_addressed') ? 1 : 0 }];
+        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id === 'addresses_everyone' || id.endsWith('_addressed') ? 1 : 0 }];
         if (q.type === 'score') return [id, { score: headcount }];
         const keys = Object.keys(q.criteria);
         const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Mid' : keys[0];
@@ -321,7 +321,7 @@ test('whoever actually has one is the one who throws it', async () => {
   const brains = createBrains({
     evaluate: async (state, questions) => ({
       answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
-        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id.endsWith('_addressed') ? 1 : 0 }];
+        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id === 'addresses_everyone' || id.endsWith('_addressed') ? 1 : 0 }];
         if (q.type === 'score') return [id, { score: 0 }];
         const keys = Object.keys(q.criteria);
         const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Attacker Spawn' : keys[0];

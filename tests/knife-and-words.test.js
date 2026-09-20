@@ -235,8 +235,16 @@ test('being shot from behind turns you toward it, and only then can you see', ()
   assert.equal(a.visible.length, 0);
 
   // Take a hit from behind: no order, nothing seen, but now something to turn toward.
+  // Rifle fire is a coin flip per shot, so the roll is pinned — otherwise this fails for
+  // nobody's reason about once in a hundred runs.
   const before = a.facing;
-  for (let f = 0; f < 60; f++) stepGame(game, STEP);
+  const realRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    for (let f = 0; f < 60; f++) stepGame(game, STEP);
+  } finally {
+    Math.random = realRandom;
+  }
   assert.ok(a.hp < 150, 'they are being shot');
   assert.notEqual(a.facing, before, 'and they turn toward it');
   assert.ok(a.visible.includes(d), 'having turned, they can see who it was');
