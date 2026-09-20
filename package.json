@@ -25,6 +25,7 @@
   "homepage": "https://github.com/pahu2353/hack-the-north#readme",
   "dependencies": {
     "ai": "^7.0.107",
+    "three": "^0.186.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {

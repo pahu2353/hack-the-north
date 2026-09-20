@@ -30,7 +30,9 @@ export const flipPoint = (map, p) => ({ x: map.width - p.x, y: map.height - p.y 
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
-  const map = MAPS.tactical;
+  // The snapshot says which map it belongs to, so one renderer serves any of them and the
+  // minimap can never be drawing a different layout from the one being played.
+  let map = MAPS.tactical;
   let view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
   let flip = false; // whose way up the last frame was drawn, so clicks land on the right spot
 
@@ -62,6 +64,11 @@ export function createRenderer(canvas) {
   // positions: optional Map of unit id → smoothed {x, y} (multiplayer interpolation).
   // focusId: the agent being watched, highlighted with a wide view cone. mini: minimap mode.
   function draw(teamView, { pointer, positions, focusId, mini } = {}) {
+    const next = MAPS[teamView?.mapId] ?? map;
+    if (next !== map) {
+      map = next;
+      resize();
+    }
     const { dpr } = view;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -104,7 +111,7 @@ export function createRenderer(canvas) {
     ctx.fillStyle = theme.zone;
     ctx.font = `600 ${12 * px}px system-ui, sans-serif`;
     for (const z of mini ? [] : map.zones) {
-      label(z.name.toUpperCase(), z.center.x, z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2);
+      label(z.name.toUpperCase(), z.center.x, z.rect.h <= 6 ? z.center.y : z.rect.y + 2.2);
     }
     if (!teamView) return;
 
