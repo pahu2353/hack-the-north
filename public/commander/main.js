@@ -20,6 +20,9 @@ const $ = id => document.getElementById(id);
 // here too, now that the only way to give those orders is to say them.
 const ORDER_TERMS = ['spike', 'flank', 'regroup', 'rotate', 'push', 'hold', 'fall back', 'split',
   'grenade', 'nade', 'camp', 'lurk', 'peek'];
+// Ways of addressing the whole squad. Keyterms as much as the callouts are: "everyone" heard
+// as "every one", or "guys" dropped as filler, turns a squad order into chatter.
+const SQUAD_TERMS = ['everyone', 'everybody', 'guys'];
 // Whichever map is being played. The view carries its id, so zone lookups, callouts and the
 // hand-to-map mapping all follow the match instead of assuming the default layout.
 const currentMap = () => MAPS[view?.mapId] ?? MAPS.tactical;
@@ -27,7 +30,7 @@ const currentMap = () => MAPS[view?.mapId] ?? MAPS.tactical;
 const keytermsFor = team => [
   ...TEAMS[team].names,
   ...currentMap().zones.map(z => z.name),
-  ...ORDER_TERMS, team === 'attack' ? 'plant' : 'defuse',
+  ...ORDER_TERMS, ...SQUAD_TERMS, team === 'attack' ? 'plant' : 'defuse',
 ];
 
 // What each hand signal says. The words go to Jev like any other order.

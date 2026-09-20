@@ -10,6 +10,12 @@ import { dist, zoneAt, zoneByName } from './world.js';
 const THINK_MS = 450;
 const VOICE_PACE = { mild: 1.08, strong: 1.18 };
 
+// Ways of addressing the whole squad at once, and the two phrasings that instead mean
+// "all of you except whoever I just named", which only Jev can resolve against the clause
+// that named them.
+const SQUAD_ADDRESS = /\b(everyone|everybody|guys|all of you|y'?all|the team|the squad|all agents)\b/i;
+const ALL_BUT_ADDRESS = /\b(everyone|everybody)\s+else\b|\bthe\s+rest\b/i;
+
 function voicePaceMultiplier(context) {
   if (!context) return 1;
   const volume = context.volumeLevel === 'very_loud' ? VOICE_PACE.strong
@@ -102,6 +108,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
   async function interpretCommand(game, team, { source, text, gesture, pointer, voiceContext, only, seq }) {
     const squad = aliveTeam(game, team).filter(u => !only || u.name === only);
     if (!squad.length) return { plan: [], latency: 0, tokens: 0 };
+    // "Everyone push B", "guys hold mid". Otherwise Jev is asked once per agent whether the
+    // order is for them: five questions, and five chances to disagree with itself about a
+    // phrase that has one meaning. Nobody named and the squad addressed as a whole is not a
+    // judgement call, so it is settled here and those questions are never asked. Dead agents
+    // count as named: "Alpha and everyone push" is a mix, whether or not Alpha is still up.
+    const roster = game.units.filter(u => u.team === team).map(u => u.name);
+    const said = text ?? '';
+    const namesSomeone = roster.some(name => new RegExp(`\\b${name}\\b`, 'i').test(said));
+    const wholeSquad = !only && !namesSomeone && SQUAD_ADDRESS.test(said) && !ALL_BUT_ADDRESS.test(said);
     const commandId = Number.isSafeInteger(seq) && seq > 0 ? seq : commandSequence + 1;
     commandSequence = Math.max(commandSequence, commandId);
     const previousCommands = commandHistory.get(game)?.[team] ?? [];
@@ -126,11 +141,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const questions = {};
     for (const { name } of squad) {
       const key = name.toLowerCase();
-      if (!only) questions[`${key}_addressed`] = {
+      if (!only && !wholeSquad) questions[`${key}_addressed`] = {
         type: 'boolean',
         // Wording picked by measurement: it handles orders that give different jobs to
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
-        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, or if it says "everyone else" / "the rest".`,
+        instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, if it addresses the whole squad ("everyone", "guys", "all of you"), or if it says "everyone else" / "the rest".`,
       };
       // Both questions are about what the commander JUST said. current_orders is in the state
       // so a follow-up can be resolved, but pointing the questions at it made Jev answer with
@@ -225,7 +240,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
-      const addressed = only ? 1 : a[`${key}_addressed`].probability;
+      const addressed = only || wholeSquad ? 1 : a[`${key}_addressed`].probability;
       const order = a[`${key}_order`];
       const target = a[`${key}_target`];
       const skipReason = addressed < 0.5 ? 'not addressed'
