@@ -79,14 +79,7 @@
     text-transform: none; letter-spacing: 0;
   }
 
-  .badge {
-    font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.07em; text-transform: uppercase; padding: 4px 8px;
-    border: 1px solid var(--border); color: var(--ink-2);
-  }
-  .badge.attack { border-color: var(--squad); color: var(--squad); }
-  .badge.defend { border-color: var(--gold); color: var(--gold); }
   .clock { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 18px; min-width: 52px; text-align: center; }
-  .card-head .badge { padding: 2px 6px; }
 
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
   .arena { position: relative; min-height: 0; }
@@ -296,7 +289,6 @@
   .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
   /* The transcript and its voice summary are kept for the code that writes them, but the order
      log says the same thing a moment later, so they stay out of the panel. */
-  .caption, .voice-summary { display: none; }
   /* Hold-to-talk bar: only shown in that mode, since hands-free needs no button. */
   .cam[hidden] { display: none; }
 
@@ -344,6 +336,12 @@
   .decision .order { display: flex; justify-content: space-between; gap: 6px; font-size: 10.5px; line-height: 1.25; color: var(--muted); }
   .decision .order:empty { display: none; }
   .decision .nade { flex: none; }
+  .decision .nade:empty, .decision .order:has(.ord:empty) { display: none; }
+  /* Long callouts truncate rather than pushing the source or the grenade off the card. */
+  .decision .act, .decision .ord { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Everything past the fifth option, folded together so the bar stays readable however many
+     actions Jev is choosing between. */
+  .spread i.rest { background: #141b22; }
   .decision .doing .src { flex: none; }
   .decision .p { font: 700 11px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); }
   /* The whole distribution in one bar: the chosen option lit, the rest of the field behind it.
