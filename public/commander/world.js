@@ -49,12 +49,13 @@ export const MAPS = {
       Mid: { flank: ['A Link', 'B Link'] },
     },
     spawns: {
-      attack: [{ x: 36, y: 51 }, { x: 40, y: 52 }, { x: 44, y: 51 }, { x: 40, y: 48 }],
+      attack: [{ x: 34, y: 51 }, { x: 38, y: 52 }, { x: 42, y: 52 }, { x: 46, y: 51 }, { x: 40, y: 48 }],
       // Defenders start on their posts. Bot rotators move to whichever site a callout threatens.
       defend: [
         { x: 10, y: 8, rotate: false },
-        { x: 20, y: 17, rotate: true },
-        { x: 40, y: 17, rotate: true },
+        { x: 20, y: 16, rotate: true },
+        { x: 40, y: 16, rotate: true },
+        { x: 60, y: 16, rotate: true },
         { x: 70, y: 8, rotate: false },
       ],
     },

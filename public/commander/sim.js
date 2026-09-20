@@ -1,4 +1,4 @@
-// Spike Rush simulation: attackers vs defenders, four each. A team is either commanded by a
+// Spike Rush simulation: attackers vs defenders, five each. A team is either commanded by a
 // player (agents steered by Jev) or, for defenders in bot mode, scripted bots. Runs in the
 // browser for bot games and on the server for multiplayer.
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
@@ -8,8 +8,8 @@ import {
 } from './world.js';
 
 export const TEAMS = {
-  attack: { label: 'Attackers', names: ['Alpha', 'Bravo', 'Charlie', 'Delta'] },
-  defend: { label: 'Defenders', names: ['Echo', 'Foxtrot', 'Golf', 'Hotel'] },
+  attack: { label: 'Attackers', names: ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo'] },
+  defend: { label: 'Defenders', names: ['Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett'] },
 };
 export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 
@@ -17,8 +17,8 @@ export const otherTeam = team => (team === 'attack' ? 'defend' : 'attack');
 // the first-person view and their card. Always from the viewer's side: yours blue, theirs red.
 // Four shades of one hue per side. They stay light enough to read as text on the dark panel
 // and to take dark lettering inside a filled chip.
-export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd'];
-export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37'];
+export const OWN_COLORS = ['#d3e8ff', '#96c6ff', '#59a0f7', '#3a7fdd', '#2b62b4'];
+export const ENEMY_COLORS = ['#ffd2cc', '#ffa79c', '#f4705f', '#dc4a37', '#b23524'];
 
 // Rifles are deliberately weak: four hits to kill, and misses are common. Fights last long
 // enough that positioning and grenades decide them rather than whoever fires first.
@@ -27,6 +27,14 @@ const SIGHT = 45;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
 export const ROUND_SECONDS = 100;
+// Ten seconds to place the squad before the round starts. You can move, but not past your
+// own third of the map, so nobody can be standing on the enemy's site when it begins.
+export const PREP_SECONDS = 10;
+export const PREP_SHARE = 0.3;
+export const preparing = game => game.time < (game.liveAt ?? 0);
+export const roundClock = game => Math.max(0, game.time - (game.liveAt ?? 0));
+// The line a team may not cross during prep (attackers hold the high-y end of the map).
+export const prepLine = (map, team) => (team === 'attack' ? map.height * (1 - PREP_SHARE) : map.height * PREP_SHARE);
 const SPIKE_SECONDS = 35;
 const ROTATE_SPOTS = [{ x: 16, y: 10 }, { x: 64, y: 10 }];
 // A fresh order is carried out first and argued with later: for this long the agent does what
@@ -40,18 +48,86 @@ export const GRENADE = {
 };
 // Agents sent to the same zone each take their own spot around its centre; if they all aimed
 // for the same point they'd shove each other forever (and a carrier that never stops can't plant).
-const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 0, y: 2.4 }];
+const SLOTS = [{ x: 0, y: 0 }, { x: 2.2, y: 0.6 }, { x: -2.2, y: 0.6 }, { x: 1.1, y: 2.4 }, { x: -1.1, y: 2.4 }];
 
 // defenders selects bot mode or multiplayer; playerTeam chooses the human's side in bot mode.
-export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack' } = {}) {
+// A match is a best of three. It keeps the score and every agent's totals, so a round can
+// end and the next one starts with fresh bodies but the same scorecard.
+export function createMatch({ bestOf = 3, playerTeam = 'attack' } = {}) {
+  return {
+    bestOf,
+    needed: Math.floor(bestOf / 2) + 1,
+    playerTeam,
+    score: { attack: 0, defend: 0 },
+    rounds: [],
+    stats: {},
+    over: false,
+    winner: null,
+  };
+}
+
+// Totals for one agent, created the first time they appear.
+function matchStats(match, unit) {
+  match.stats[unit.name] ??= { name: unit.name, team: unit.team, slot: unit.slot ?? 0, kills: 0, deaths: 0, damage: 0 };
+  return match.stats[unit.name];
+}
+
+// The scoreboard as it stands right now: finished rounds plus the round in progress.
+export function liveScorecard(game, team) {
+  const rows = new Map(scorecard(game.match, team).map(row => [row.name, row]));
+  for (const u of teamUnits(game, team)) {
+    const row = rows.get(u.name) ?? { name: u.name, team, slot: u.slot ?? 0, kills: 0, deaths: 0, damage: 0 };
+    if (!game.roundRecorded) {
+      row.kills += u.stats.kills;
+      row.deaths += u.stats.deaths;
+      row.damage += Math.round(u.stats.damage);
+    }
+    row.alive = u.alive;
+    rows.set(u.name, row);
+  }
+  return [...rows.values()].sort((a, b) => a.slot - b.slot);
+}
+
+export function scorecard(match, team) {
+  return Object.values(match.stats)
+    .filter(row => row.team === team)
+    .sort((a, b) => a.slot - b.slot)
+    .map(row => ({ ...row }));
+}
+
+// Fold a finished round into the match: the score, and each agent's kills, deaths and damage.
+function finishRound(game) {
+  const match = game.match;
+  if (!match || game.roundRecorded) return;
+  game.roundRecorded = true;
+  for (const u of game.units) {
+    const row = matchStats(match, u);
+    row.kills += u.stats.kills;
+    row.deaths += u.stats.deaths;
+    row.damage += Math.round(u.stats.damage);
+  }
+  match.score[game.result.winner]++;
+  match.rounds.push({ winner: game.result.winner, reason: game.result.reason, seconds: Math.round(game.result.time) });
+  if (match.score[game.result.winner] >= match.needed) {
+    match.over = true;
+    match.winner = game.result.winner;
+  }
+}
+
+// prep: start with the ten-second setup phase. Real rounds ask for it; tests that set up a
+// situation and step a second or two start live.
+export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false } = {}) {
   const map = MAPS.tactical;
   const game = {
     map,
     defenders,
+    match: match ?? createMatch({ playerTeam }),
+    roundRecorded: false,
     botTeam: defenders === 'bots' ? otherTeam(playerTeam) : null,
     opponent: defenders === 'bots' ? opponent : 'scripted',
     grids: new Map(),
     time: 0,
+    liveAt: prep ? PREP_SECONDS : 0, // when the round itself starts
     units: [],
     effects: [],
     feed: [],
@@ -100,6 +176,7 @@ function makeUnit(game, props) {
     targetId: null,
     lastShotAt: -Infinity,
     stillSince: 0,
+    stats: { kills: 0, deaths: 0, damage: 0 },
     grenades: GRENADE.carried,
     throwReadyAt: 0,
     ...props,
@@ -199,6 +276,7 @@ export function stepGame(game, dt) {
     else controlAgent(game, u, dt);
   }
   resolveCollisions(game);
+  if (preparing(game)) holdBehindPrepLine(game);
   updateGrenades(game);
   updateSpike(game, dt);
   game.effects = game.effects.filter(e => (e.ttl -= dt) > 0);
@@ -326,7 +404,7 @@ function findCover(game, u) {
 }
 
 function shoot(game, u, target) {
-  if (u.cooldown > 0 || !target.alive) return;
+  if (u.cooldown > 0 || !target.alive || preparing(game)) return;
   if (game.time - (u.seen.get(target.id) ?? game.time) < u.reaction) return;
   const d = dist(u, target);
   if (d > RIFLE.range) return;
@@ -350,12 +428,15 @@ function shoot(game, u, target) {
 
 function damage(game, target, amount, source) {
   if (!target.alive) return;
+  source.stats && (source.stats.damage += Math.min(amount, target.hp));
   target.hp -= amount;
   target.lastHitAt = game.time;
   if (target.hp > 0) return;
   target.hp = 0;
   target.alive = false;
   target.moving = false;
+  target.stats.deaths++;
+  if (source.stats && source.team !== target.team) source.stats.kills++;
   game.effects.push({ kind: 'death', x: target.x, y: target.y, r: target.r, team: target.team, ttl: 8 });
   game.knownDown[source.team].add(target.id); // you know the ones you killed
   pushFeed(game, `${source.name} eliminated ${target.name}`, source.team);
@@ -402,6 +483,19 @@ function step(game, u, dest, dt) {
   u.x += Math.cos(heading) * distance;
   u.y += Math.sin(heading) * distance;
   u.moving = distance > 0.001;
+}
+
+// During prep a squad may walk around its own third of the map, and no further.
+function holdBehindPrepLine(game) {
+  for (const u of game.units) {
+    if (!u.alive) continue;
+    const line = prepLine(game.map, u.team);
+    if (u.team === 'attack' ? u.y < line : u.y > line) {
+      u.y = line + (u.team === 'attack' ? u.r : -u.r);
+      u.path = [];
+      u.pathGoal = null;
+    }
+  }
 }
 
 function resolveCollisions(game) {
@@ -573,7 +667,7 @@ export function grenadeSpot(game, u, memory = 2) {
 }
 
 export function throwGrenade(game, u, point) {
-  if (u.grenades < 1 || game.time < u.throwReadyAt) return false;
+  if (u.grenades < 1 || game.time < u.throwReadyAt || preparing(game)) return false;
   if (dist(u, point) > GRENADE.range || !hasLineOfSight(game.map, u, point)) return false;
   u.grenades--;
   u.throwReadyAt = game.time + GRENADE.cooldown;
@@ -670,20 +764,28 @@ function updateSpike(game, dt) {
 function checkResult(game) {
   const spike = game.spike;
   let result = null;
-  if (!aliveTeam(game, 'attack').length && spike.state !== 'planted') result = { winner: 'defend', reason: 'Attackers eliminated' };
+  if (spike.state === 'planted' && !aliveTeam(game, 'attack').length) {
+    // Nobody is left to defend it, but the spike is already ticking: the plant wins the round.
+    result = { winner: 'attack', reason: `Spike stands on ${spike.site}` };
+  } else if (!aliveTeam(game, 'attack').length) result = { winner: 'defend', reason: 'Attackers eliminated' };
   else if (!aliveTeam(game, 'defend').length) result = { winner: 'attack', reason: 'Defenders eliminated' };
   else if (spike.state === 'defused') result = { winner: 'defend', reason: 'The spike was defused' };
   else if (spike.state === 'planted' && spike.timer <= 0) result = { winner: 'attack', reason: `Spike detonated on ${spike.site}` };
-  else if (spike.state !== 'planted' && game.time >= ROUND_SECONDS) result = { winner: 'defend', reason: 'Time ran out before the plant' };
-  if (result) game.result = { ...result, time: game.time };
+  else if (spike.state !== 'planted' && roundClock(game) >= ROUND_SECONDS) result = { winner: 'defend', reason: 'Time ran out before the plant' };
+  if (result) {
+    game.result = { ...result, time: game.time };
+    finishRound(game);
+  }
 }
 
 export function roundStatus(game, team) {
   const spike = game.spike;
+  if (preparing(game)) return { clock: game.liveAt - game.time, label: 'Get into position', prep: true };
   if (spike.state === 'planted') return { clock: spike.timer, label: `Spike planted on ${spike.site}` };
-  if (team === 'defend') return { clock: ROUND_SECONDS - game.time, label: 'Stop the plant' };
-  if (spike.state === 'dropped') return { clock: ROUND_SECONDS - game.time, label: 'Spike dropped' };
-  return { clock: ROUND_SECONDS - game.time, label: `Spike: ${unitById(game, spike.carrierId)?.name}` };
+  const left = ROUND_SECONDS - roundClock(game);
+  if (team === 'defend') return { clock: left, label: 'Stop the plant' };
+  if (spike.state === 'dropped') return { clock: left, label: 'Spike dropped' };
+  return { clock: left, label: `Spike: ${unitById(game, spike.carrierId)?.name}` };
 }
 
 // What an agent is doing right now, in words. Takes a unit from a teamView.
@@ -749,6 +851,18 @@ export function teamView(game, team) {
     time: game.time,
     result: game.result,
     status: roundStatus(game, team),
+    prep: preparing(game) ? { line: prepLine(game.map, team), secondsLeft: game.liveAt - game.time } : null,
+    match: {
+      bestOf: game.match.bestOf,
+      needed: game.match.needed,
+      round: game.match.rounds.length + (game.result ? 0 : 1),
+      score: { ...game.match.score },
+      over: game.match.over,
+      winner: game.match.winner,
+      rounds: game.match.rounds.map(r => ({ ...r })),
+      // Totals so far, plus what has happened in the round being played.
+      scoreboard: Object.fromEntries(['attack', 'defend'].map(side => [side, liveScorecard(game, side)])),
+    },
     units,
     ghosts,
     effects: game.effects.map(e => ({ ...e })),

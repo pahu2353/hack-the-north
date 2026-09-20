@@ -16,13 +16,13 @@ function retakeGame() {
   return game;
 }
 
-test('retake waits for three of four bots, releases them together, and survives plan renewals', () => {
+test('retake waits for most of the bots, releases them together, and survives plan renewals', () => {
   const game = retakeGame();
   const squad = bots(game);
   applyOpponentPlan(game, retakePlan(game));
   const group = game.botRetake;
   assert.equal(group.phase, 'gathering');
-  assert.equal(group.required, 3);
+  assert.equal(group.required, 4);
   Object.assign(squad[0], group.spots[squad[0].id]);
   updateOpponentTactics(game);
   assert.equal(group.ready, 1);
@@ -30,10 +30,10 @@ test('retake waits for three of four bots, releases them together, and survives 
   assert.notDeepEqual(opponentDestination(game, squad[0]), { x: 67, y: 14 });
   applyOpponentPlan(game, retakePlan(game));
   assert.equal(game.botRetake, group);
-  for (const u of squad.slice(1, 3)) Object.assign(u, group.spots[u.id]);
+  for (const u of squad.slice(1, 4)) Object.assign(u, group.spots[u.id]);
   updateOpponentTactics(game);
   assert.equal(group.phase, 'pushing');
-  assert.equal(group.ready, 3);
+  assert.equal(group.ready, 4);
   for (const u of squad) assert.deepEqual(opponentDestination(game, u), { x: 67, y: 14 });
   applyOpponentPlan(game, retakePlan(game));
   assert.equal(game.botRetake, group);
@@ -105,9 +105,9 @@ test('expired retake orders clear the rally and use the fallback controller', ()
 test('defending against bots swaps ownership, names, fog of war, and spike knowledge', () => {
   const game = createGame({ playerTeam: 'defend', opponent: 'openai' });
   assert.equal(game.botTeam, 'attack');
-  assert.deepEqual(game.units.filter(u => u.kind === 'agent').map(u => u.name), ['Echo', 'Foxtrot', 'Golf', 'Hotel']);
+  assert.deepEqual(game.units.filter(u => u.kind === 'agent').map(u => u.name), ['Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett']);
   assert(bots(game).every(u => u.team === 'attack'));
-  const human = game.units.find(u => u.name === 'Echo');
+  const human = game.units.find(u => u.name === 'Foxtrot');
   human.order = { type: 'secret order', zone: 'A Site' };
   game.intel.attack.set(human.id, { x: 12, y: 18, t: 0 });
   const snapshot = parseOpponentSnapshot(opponentSnapshot(game));
@@ -116,7 +116,7 @@ test('defending against bots swaps ownership, names, fog of war, and spike knowl
   assert.equal(snapshot.spike.carrierId, bots(game)[0].id);
   assert.deepEqual(snapshot.contacts[0].position, { x: 12, y: 18 });
   assert(!JSON.stringify(snapshot).includes('secret order'));
-  assert(!JSON.stringify(snapshot).includes('Echo'));
+  assert(!JSON.stringify(snapshot).includes('Foxtrot'));
   assert.deepEqual(teamView(game, 'defend').spike, { state: 'unknown' });
 });
 

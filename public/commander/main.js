@@ -1,4 +1,4 @@
-// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → four agents.
+// Commander (Spike Rush): voice, hand signals, and typed orders → Jev → five agents.
 // Vs Bots runs the whole match in this tab. Multiplayer connects to a room on the server,
 // which runs the match and streams this player their team's view.
 import { createBrains } from './brain.js';
@@ -6,8 +6,8 @@ import { createOpponentCommander } from './opponent.js';
 import { createCamera, createPovRenderer } from './pov.js';
 import { SIGNALS, POINTER_ACTIVE_MS, POINTER_ORDER_TTL_MS, cameraToMapPoint,
   createGestures, reliableGestureForSpeech } from './gestures.js';
-import { createRenderer } from './render.js';
-import { OWN_COLORS, TEAMS, actionLabel, createGame, otherTeam, stepGame, teamView } from './sim.js';
+import { createRenderer, flipPoint, flippedFor } from './render.js';
+import { ENEMY_COLORS, OWN_COLORS, TEAMS, actionLabel, createGame, createMatch, otherTeam, stepGame, teamView } from './sim.js';
 import { createVoice } from './voice.js';
 import { MAPS, zoneAt } from './world.js';
 
@@ -21,14 +21,16 @@ const keytermsFor = team => [...TEAMS[team].names, ...ZONE_TERMS, team === 'atta
 // What each hand signal says. The words go to Jev like any other order.
 function signalOrder(name, team, pointed) {
   const attack = team === 'attack';
-  const [a, b, c, d] = TEAMS[team].names;
+  const [a, b, c, d, e] = TEAMS[team].names;
   const carrier = view?.units.find(u => u.carrying)?.name ?? a;
   const orders = {
     Thumb_Up: pointed ? 'Everyone push there!' : 'Everyone push forward!',
     Open_Palm: 'Everyone hold your positions!',
     Closed_Fist: 'Everyone regroup!',
     Thumb_Down: attack ? 'Everyone fall back to spawn!' : 'Everyone fall back to Defender Spawn!',
-    Victory: attack ? `${a} and ${b} push A Site. ${c} and ${d} push B Site.` : `${a} and ${b} hold A Site. ${c} and ${d} hold B Site.`,
+    Victory: attack
+      ? `${a}, ${b} and ${c} push A Site. ${d} and ${e} push B Site.`
+      : `${a}, ${b} and ${c} hold A Site. ${d} and ${e} hold B Site.`,
     ILoveYou: attack
       ? `${carrier}, plant the spike${pointed ? ' there' : ' on B Site'}. Everyone else push with them.`
       : 'Everyone retake the site and defuse the spike!',
@@ -207,8 +209,11 @@ $('joinForm').onsubmit = e => {
   if (code) connectOnline(code);
 };
 $('again').onclick = () => {
-  if (session?.kind === 'bots') startBotGame(botOpponent);
-  else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
+  // Mid-match it starts the next round of the same best-of-three; afterwards, a new match.
+  if (session?.kind === 'bots') {
+    if (game?.match && !game.match.over) startBotRound(game.match);
+    else startBotGame(botOpponent);
+  } else if (online?.host && opponentPresent()) online.ws.send(JSON.stringify({ type: 'start' }));
   else if (online) showScreen('screenLobby');
 };
 const opponentPresent = () => Boolean(online?.players?.attack && online?.players?.defend);
@@ -283,11 +288,17 @@ function startBotGame(opponent = botOpponent, playerTeam = botSide) {
   leaveOnline();
   botOpponent = opponent;
   botSide = playerTeam;
-  opponentCommander.reset();
   session = { kind: 'bots', team: playerTeam };
-  game = createGame({ defenders: 'bots', opponent, playerTeam });
   brains = createBrains();
-  view = teamView(game, playerTeam);
+  startBotRound(createMatch({ playerTeam }));
+}
+
+// Each round of the match is a fresh game that keeps the match's score and scorecard. The
+// brains carry over: their Jev counters are for the whole match.
+function startBotRound(match) {
+  opponentCommander.reset();
+  game = createGame({ defenders: 'bots', opponent: botOpponent, playerTeam: session.team, match, prep: true });
+  view = teamView(game, session.team);
   beginMatch();
 }
 
@@ -457,17 +468,65 @@ function beginMatch() {
 function showResult() {
   resetSpeech();
   resultShown = true;
+  const match = view.match;
   const won = view.result.winner === session.team;
-  $('resultTitle').textContent = won ? 'Victory' : 'Defeat';
+  const decided = match?.over ?? true;
+  $('resultTitle').textContent = decided ? (won ? 'Victory' : 'Defeat') : won ? 'Round won' : 'Round lost';
   $('resultTitle').className = won ? 'win' : 'lose';
   $('resultText').textContent = view.result.reason;
+  renderMatchScore(match);
+  renderScoreboard(match);
   updateResultActions();
   showScreen('screenResult');
 }
 
+// Rounds won, yours first.
+function renderMatchScore(match) {
+  $('matchScore').hidden = !match;
+  if (!match) return;
+  $('matchScore').replaceChildren(
+    el('span', { className: 'own', textContent: String(match.score[session.team]) }),
+    el('span', { className: 'of', textContent: match.over ? `best of ${match.bestOf}` : `first to ${match.needed}` }),
+    el('span', { className: 'them', textContent: String(match.score[otherTeam(session.team)]) }),
+  );
+}
+
+// Kills, deaths and damage for every agent, totalled over the rounds played so far.
+const SCORE_COLUMNS = [['K', r => r.kills], ['D', r => r.deaths], ['DMG', r => r.damage]];
+
+function renderScoreboard(match) {
+  $('scoreboard').hidden = !match;
+  if (!match) return;
+  $('scoreboard').replaceChildren(...[session.team, otherTeam(session.team)]
+    .map(team => scoreTable(match.scoreboard?.[team] ?? [], team)));
+}
+
+function scoreTable(rows, team) {
+  const mine = team === session.team;
+  const colors = mine ? OWN_COLORS : ENEMY_COLORS;
+  return el('table', {}, [
+    el('caption', { className: mine ? 'own' : 'them', textContent: mine ? 'Your squad' : TEAMS[team].label }),
+    el('thead', {}, [el('tr', {}, [
+      el('th', { textContent: 'Agent' }),
+      ...SCORE_COLUMNS.map(([head]) => el('th', { textContent: head })),
+    ])]),
+    el('tbody', {}, rows.map(row => el('tr', {}, [
+      el('td', { className: 'agent', style: `--agent:${colors[row.slot % colors.length]}` }, [
+        el('i'), row.name,
+      ]),
+      ...SCORE_COLUMNS.map(([, value]) => el('td', { textContent: String(value(row)) })),
+    ]))),
+  ]);
+}
+
 function updateResultActions() {
-  $('swapSides').hidden = session.kind !== 'online' || !online?.host || !opponentPresent();
-  if (session.kind === 'bots') {
+  const between = Boolean(view?.match && !view.match.over); // the match goes on: this was only a round
+  $('swapSides').hidden = between || session.kind !== 'online' || !online?.host || !opponentPresent();
+  if (between && (session.kind === 'bots' || opponentPresent())) {
+    $('again').hidden = session.kind !== 'bots';
+    $('again').textContent = 'Next round';
+    setStatus('resultStatus', session.kind === 'bots' ? '' : 'The next round starts in a moment…');
+  } else if (session.kind === 'bots') {
     $('again').hidden = false;
     $('again').textContent = 'Play again';
     setStatus('resultStatus', '');
@@ -835,6 +894,8 @@ function updateTeamUi() {
     $('opponentCard').hidden = true;
     $('squad').replaceChildren();
     $('scoreClock').textContent = '–';
+    $('ownScore').textContent = '0';
+    $('enemyScore').textContent = '0';
     $('roundLabel').textContent = '';
     $('jevStats').textContent = '—';
   }
@@ -976,7 +1037,14 @@ function updateHud() {
   if (!session || !view) return;
   const seconds = Math.max(0, Math.ceil(view.status.clock));
   $('scoreClock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-  $('roundLabel').textContent = view.status.label;
+  $('scoreClock').classList.toggle('prep', Boolean(view.status.prep));
+  $('roundLabel').textContent = view.match
+    ? `Round ${view.match.round} · ${view.status.label}`
+    : view.status.label;
+  if (view.match) {
+    $('ownScore').textContent = String(view.match.score[session.team]);
+    $('enemyScore').textContent = String(view.match.score[otherTeam(session.team)]);
+  }
   updateOpponentHud();
 
   const s = session.kind === 'bots' ? brains.summary() : online?.jev;
@@ -1213,7 +1281,9 @@ async function startCamera() {
       onPointer: p => {
         if (!p || is3d || !matchActive()) return;
         // Use the middle of the camera frame so you don't have to reach the edges.
-        pointer = { ...cameraToMapPoint(p, MAPS.tactical), at: performance.now() };
+        const spot = cameraToMapPoint(p, MAPS.tactical);
+        // The defending map is turned around, so pointing “up there” means up the screen.
+        pointer = { ...(flippedFor(session?.team) ? flipPoint(MAPS.tactical, spot) : spot), at: performance.now() };
       },
       onSignal: handleSignal,
       onSwipe: dir => {

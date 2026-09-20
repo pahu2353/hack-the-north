@@ -4,7 +4,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { TEAMS, createGame, otherTeam, stepGame, teamView } from './public/commander/sim.js';
+import { TEAMS, createGame, createMatch, otherTeam, stepGame, teamView } from './public/commander/sim.js';
 import { createBrains } from './public/commander/brain.js';
 
 type Team = 'attack' | 'defend';
@@ -16,8 +16,10 @@ type Room = {
   host: WebSocket;
   players: Partial<Record<Team, WebSocket>>;
   game: any;
+  match: any;
   brains: Record<Team, Brains>;
   loop: ReturnType<typeof setInterval> | null;
+  next: ReturnType<typeof setTimeout> | null; // the break before the next round of the match
 };
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O or 1/I/L to misread
@@ -25,6 +27,7 @@ const MAX_ROOMS = 20; // every running match spends Jev calls
 const STEP = 1 / 60;
 const SNAPSHOT_MS = 50;
 const THINK_MS = 600; // a bit slower than bot games: two squads share the Jev rate limit
+const BREAK_MS = 7000; // time to read the scoreboard between rounds
 const TEAM_LIST: Team[] = ['attack', 'defend'];
 
 export function createRooms(evaluate: Evaluate) {
@@ -45,7 +48,10 @@ export function createRooms(evaluate: Evaluate) {
     let code: string;
     do code = randomCode();
     while (rooms.has(code));
-    const room: Room = { code, host: ws, players: {}, game: null, brains: { attack: newBrains(), defend: newBrains() }, loop: null };
+    const room: Room = {
+      code, host: ws, players: {}, game: null, match: null, loop: null, next: null,
+      brains: { attack: newBrains(), defend: newBrains() },
+    };
     rooms.set(code, room);
     seat(room, 'attack', ws);
   }
@@ -73,7 +79,7 @@ export function createRooms(evaluate: Evaluate) {
       const currentTeam = TEAM_LIST.find(side => room.players[side] === ws);
       if (!currentTeam) return;
       if (message.type === 'start' && ws === room.host && room.players.attack && room.players.defend
-          && (!room.game || room.game.result)) startMatch(room);
+          && (!room.game || (room.game.result && (!room.match || room.match.over)))) startMatch(room);
       else if (message.type === 'side' && ws === room.host) chooseSide(room, message.team);
       else if (message.type === 'command') command(room, currentTeam, message);
     });
@@ -89,15 +95,24 @@ export function createRooms(evaluate: Evaluate) {
     const other = room.players[team];
     room.players = { [team]: room.host, ...(other && { [otherTeam(team)]: other }) };
     room.game = null;
+    room.match = null;
     for (const side of TEAM_LIST) send(room.players[side], { type: 'sides', team: side });
     broadcastLobby(room);
   }
 
   function startMatch(room: Room) {
     stopLoop(room);
-    const game = createGame({ defenders: 'players' });
-    room.game = game;
+    room.match = createMatch({});
     room.brains = { attack: newBrains(), defend: newBrains() };
+    startRound(room);
+  }
+
+  // One round of the match. The score and everyone's totals live on room.match, so the next
+  // round starts with fresh bodies and the same scorecard.
+  function startRound(room: Room) {
+    stopLoop(room);
+    const game = createGame({ defenders: 'players', match: room.match, prep: true });
+    room.game = game;
     broadcast(room, { type: 'started' });
     let last = performance.now();
     let accumulator = 0;
@@ -117,7 +132,13 @@ export function createRooms(evaluate: Evaluate) {
           send(room.players[team], { type: 'state', view: teamView(game, team), jev: room.brains[team].summary() });
         }
       }
-      if (game.result) stopLoop(room);
+      if (game.result) {
+        stopLoop(room);
+        // Both commanders read the scoreboard, then the next round starts by itself.
+        if (!room.match.over && room.players.attack && room.players.defend) {
+          room.next = setTimeout(() => startRound(room), BREAK_MS);
+        }
+      }
     }, 16);
   }
 
@@ -180,6 +201,9 @@ export function createRooms(evaluate: Evaluate) {
   function leave(room: Room, team: Team, ws: WebSocket) {
     if (room.players[team] !== ws) return;
     delete room.players[team];
+    // Nobody to play the next round against.
+    if (room.next) clearTimeout(room.next);
+    room.next = null;
     const other = room.players[otherTeam(team) as Team];
     const game = room.game;
     if (game && !game.result) {
@@ -211,7 +235,9 @@ export function createRooms(evaluate: Evaluate) {
 
   function stopLoop(room: Room) {
     if (room.loop) clearInterval(room.loop);
+    if (room.next) clearTimeout(room.next);
     room.loop = null;
+    room.next = null;
   }
 
   return { handleUpgrade, get roomCount() { return rooms.size; } };

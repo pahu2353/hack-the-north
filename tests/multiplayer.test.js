@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { createRooms } from '../multiplayer.ts';
+import { prepLine } from '../public/commander/sim.js';
+import { MAPS } from '../public/commander/world.js';
 
 async function multiplayer(t) {
   const calls = [];
@@ -74,13 +76,13 @@ test('a defending host owns start controls; guest commands and forfeits follow t
   const guestView = (await guest.take(m => m.type === 'state')).view;
   assert.equal(hostView.team, 'defend');
   assert.equal(guestView.team, 'attack');
-  assert.deepEqual(hostView.units.filter(u => u.team === 'defend').map(u => u.name), ['Echo', 'Foxtrot', 'Golf', 'Hotel']);
+  assert.deepEqual(hostView.units.filter(u => u.team === 'defend').map(u => u.name), ['Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett']);
   host.send({ type: 'side', team: 'attack' }); // cannot change a live match
   host.send({ type: 'start' }); // cannot restart a live match either
-  host.send({ type: 'command', id: 2, only: 'Echo', text: 'Hold' });
+  host.send({ type: 'command', id: 2, only: 'Foxtrot', text: 'Hold' });
   await host.take(m => m.type === 'plan' && m.id === 2);
   assert(!host.messages.some(m => m.type === 'sides' || m.type === 'started'));
-  assert(calls.some(s => s.talking_to === 'Echo' && Object.keys(s.squad).join() === 'Echo'));
+  assert(calls.some(s => s.talking_to === 'Foxtrot' && Object.keys(s.squad).join() === 'Foxtrot'));
   guest.send({ type: 'command', id: 3, only: 'Alpha', text: 'Hold' });
   await guest.take(m => m.type === 'plan' && m.id === 3);
   assert(calls.some(s => s.talking_to === 'Alpha'));
@@ -111,4 +113,23 @@ test('both clients update when sides swap, and a swapped host can start a rematc
   host.ws.close();
   assert.match((await replacement.take(m => m.type === 'closed')).reason, /host left/);
   assert.equal((await replacement.take(m => m.type === 'state' && m.view.result)).view.result.winner, 'defend');
+});
+
+test('a match runs in rounds: each one starts in setup and carries the score to both commanders', async t => {
+  const { connect } = await multiplayer(t);
+  const host = await connect();
+  const guest = await connect(host.joined.code);
+  host.send({ type: 'start' });
+  await host.take(m => m.type === 'started');
+  const attackers = (await host.take(m => m.type === 'state')).view;
+  const defenders = (await guest.take(m => m.type === 'state')).view;
+  assert.equal(attackers.status.prep, true);
+  assert.equal(attackers.match.round, 1);
+  assert.equal(attackers.match.bestOf, 3);
+  assert.deepEqual(attackers.match.score, { attack: 0, defend: 0 });
+  // Each side is held in its own third of the map while the clock runs down.
+  assert.equal(attackers.prep.line, prepLine(MAPS.tactical, 'attack'));
+  assert.equal(defenders.prep.line, prepLine(MAPS.tactical, 'defend'));
+  assert.equal(defenders.match.scoreboard.defend.length, 5);
+  assert.equal(defenders.match.scoreboard.attack[0].kills, 0);
 });

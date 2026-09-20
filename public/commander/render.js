@@ -16,10 +16,16 @@ export function fade(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+// Attackers spawn at the bottom of the map, defenders at the top. Whichever side you command,
+// you should be looking up the map at the enemy, so the defending view is turned around.
+export const flippedFor = team => team === 'defend';
+export const flipPoint = (map, p) => ({ x: map.width - p.x, y: map.height - p.y });
+
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
   const map = MAPS.tactical;
   let view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
+  let flip = false; // whose way up the last frame was drawn, so clicks land on the right spot
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
@@ -32,7 +38,18 @@ export function createRenderer(canvas) {
 
   function toWorld(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
-    return { x: (clientX - r.left - view.ox) / view.scale, y: (clientY - r.top - view.oy) / view.scale };
+    const p = { x: (clientX - r.left - view.ox) / view.scale, y: (clientY - r.top - view.oy) / view.scale };
+    return flip ? flipPoint(map, p) : p;
+  }
+
+  // Writing on a turned-around map: the words stay the right way up.
+  function label(text, x, y, stroke = false) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (flip) ctx.rotate(Math.PI);
+    if (stroke) ctx.strokeText(text, 0, 0);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
   }
 
   // positions: optional Map of unit id → smoothed {x, y} (multiplayer interpolation).
@@ -42,6 +59,12 @@ export function createRenderer(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
+    flip = flippedFor(teamView?.team);
+    if (flip) {
+      ctx.translate(map.width / 2, map.height / 2);
+      ctx.rotate(Math.PI);
+      ctx.translate(-map.width / 2, -map.height / 2);
+    }
     const px = 1 / s; // one screen pixel in world units
 
     ctx.fillStyle = THEME.floor;
@@ -54,7 +77,7 @@ export function createRenderer(canvas) {
       ctx.fillRect(z.rect.x, z.rect.y, z.rect.w, z.rect.h);
       ctx.fillStyle = THEME.siteLetter;
       ctx.font = '700 7px system-ui, sans-serif';
-      ctx.fillText(z.name[0], z.center.x, z.center.y - 3);
+      label(z.name[0], z.center.x, z.center.y - 3);
     }
     for (const w of map.walls) {
       ctx.fillStyle = THEME.wall;
@@ -66,7 +89,7 @@ export function createRenderer(canvas) {
     ctx.fillStyle = THEME.zone;
     ctx.font = `600 ${12 * px}px system-ui, sans-serif`;
     for (const z of mini ? [] : map.zones) {
-      ctx.fillText(z.name.toUpperCase(), z.center.x, z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2);
+      label(z.name.toUpperCase(), z.center.x, z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2);
     }
     if (!teamView) return;
 
@@ -88,6 +111,7 @@ export function createRenderer(canvas) {
       ctx.setLineDash([]);
     }
 
+    if (teamView.prep) drawPrepLine(teamView.prep, teamView.team, px);
     for (const g of teamView.grenades ?? []) drawGrenade(g, teamView.team, px);
     drawSpike(teamView.spike, teamView.time, px);
     for (const e of teamView.effects) drawEffect(e, teamView.team, px);
@@ -98,6 +122,26 @@ export function createRenderer(canvas) {
     // Names last, so no dot is drawn over them. The minimap is too small to label.
     if (!mini) drawNames(own.filter(u => u.alive).map(u => ({ ...u, ...at(u) })), px);
     if (pointer) drawPointer(pointer, px);
+  }
+
+  // Setup time: the far side of the map is shaded and the line you may not cross is drawn
+  // across it, with the seconds left until it opens.
+  function drawPrepLine(prep, team, px) {
+    const { line } = prep;
+    ctx.fillStyle = 'rgba(255, 210, 74, 0.05)';
+    if (team === 'attack') ctx.fillRect(0, 0, map.width, line);
+    else ctx.fillRect(0, line, map.width, map.height - line);
+    ctx.strokeStyle = 'rgba(255, 210, 74, 0.55)';
+    ctx.lineWidth = 2 * px;
+    ctx.setLineDash([2, 1.6]);
+    ctx.beginPath();
+    ctx.moveTo(0, line);
+    ctx.lineTo(map.width, line);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = POINTER;
+    ctx.font = `800 ${12 * px}px system-ui, sans-serif`;
+    label(`${Math.ceil(prep.secondsLeft)}s · hold this side`, map.width / 2, line + (team === 'attack' ? 2.6 : -2.6));
   }
 
   // In the air it's a small dark ball; on the ground, a shrinking ring shows the blast
@@ -172,7 +216,7 @@ export function createRenderer(canvas) {
 
     ctx.fillStyle = '#0b0d11';
     ctx.font = `800 ${11 * px}px system-ui, sans-serif`;
-    ctx.fillText(/^E\d/.test(u.name) ? u.name.slice(1) : u.name[0], u.x, u.y + 0.5 * px);
+    label(/^E\d/.test(u.name) ? u.name.slice(1) : u.name[0], u.x, u.y + 0.5 * px);
     if (!own) return;
 
     if (u.carrying) {
@@ -191,9 +235,8 @@ export function createRenderer(canvas) {
     for (const u of units) {
       const y = u.y + u.r + 1.35;
       ctx.strokeStyle = 'rgba(8, 10, 14, 0.9)';
-      ctx.strokeText(u.name, u.x, y);
       ctx.fillStyle = u.color ?? OWN;
-      ctx.fillText(u.name, u.x, y);
+      label(u.name, u.x, y, true);
     }
   }
 
@@ -266,7 +309,7 @@ export function createRenderer(canvas) {
     ctx.stroke();
     ctx.fillStyle = POINTER;
     ctx.font = `700 ${12 * px}px system-ui, sans-serif`;
-    ctx.fillText(zoneAt(map, p).name, p.x, p.y - 3.4);
+    label(zoneAt(map, p).name, p.x, p.y - 3.4);
     ctx.globalAlpha = 1;
   }
 

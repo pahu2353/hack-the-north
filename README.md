@@ -2,7 +2,7 @@
 
 Experiments with [Jev](https://vercel.com/ai-gateway/models/jev), TypeSafe AI's evaluation model on Vercel AI Gateway:
 
-- **Commander**: command a squad of four AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
+- **Commander**: command a squad of five AI agents with your voice, hand signals, and text. Jev turns each order into per-agent plans and drives every agent's split-second decisions.
 - **Jev visualizer**: a playground for Jev's typed questions and probability answers.
 
 ## What is Jev?
@@ -56,7 +56,9 @@ Pricing is $0.042 per 1M input tokens, with no charge for output. A request can 
 npm run dev    # then open http://localhost:3000/commander/ in Chrome
 ```
 
-A Valorant-style round (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your four agents. Attackers (Alpha, Bravo, Charlie, Delta) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders. Defenders (Echo, Foxtrot, Golf, Hotel) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers. Standing still makes shots far more accurate, so good fight-or-move decisions matter.
+A Valorant-style match (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your five agents. Attackers (Alpha, Bravo, Charlie, Delta, Echo) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders — a planted spike wins the round even if every attacker dies. Defenders (Foxtrot, Golf, Hotel, India, Juliett) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers before the plant. Standing still makes shots far more accurate, so good fight-or-move decisions matter.
+
+**A match is a best of three.** Each round opens with **ten seconds of setup**: you can move and give orders, but neither squad may cross into more than its own third of the map (a dashed line shows how far), and nobody can shoot or throw until the round goes live. Between rounds you get the score and a scoreboard of everyone's kills, deaths and damage for the match so far. The map is always drawn with your own side at the bottom, so commanding the defence turns it around.
 
 **Everyone carries one grenade**, which is what stops a squad from simply walking around as one clump. A throw covers 6m and costs 85 health at the centre, so it nearly kills a whole stack at once. It lands, waits a second and a half (a red ring shows the blast and the time left), then goes off, and walls block it. Jev throws one when it sees enemies bunched together, and scatters out of one that lands nearby: an agent that reacts escapes untouched, while one that ignores it loses most of its health. Rifles are deliberately weak to match (four hits to kill, and plenty of misses), so fights are decided by position and utility rather than by whoever shoots first. Against scripted bots, stacking wins 72% of rounds when the squad dodges grenades and 40% when it ignores them, against 85% for a squad that spreads out. You can also order one: "nade B site", or point at the map and say "grenade there". The 💣 on an agent's card means they still have theirs.
 
@@ -72,7 +74,7 @@ first-person view, with a minimap. Orders in first-person address only the watch
 
 1. One player clicks **Multiplayer → Create game** and gets a five-letter invite code and link. In the lobby, the host chooses **Attack** or **Defend**.
 2. The other player opens the link, or enters the code, and joins the opposite side. Changing the host's side updates both players before the match.
-3. The host clicks **Start match**. After a round, **Rematch** keeps the sides; **Swap sides for rematch** returns both players to the lobby with their sides reversed. Sides are locked during a match, and the room creator remains the host on either side.
+3. The host clicks **Start match**. Rounds of the best-of-three run one after another, with a short break on the scoreboard between them. Once the match is decided, **Rematch** keeps the sides; **Swap sides for rematch** returns both players to the lobby with their sides reversed. Sides are locked during a match, and the room creator remains the host on either side.
 
 The server runs the match, including both teams' Jev brains, and sends each player only what their own agents can see. Enemies show up in red while they're in sight, then fade to a dashed "last seen" marker. Your orders and Jev's decisions are never sent to your opponent. If a player leaves mid-round, the other wins by forfeit; if the host leaves, the room closes.
 
@@ -126,7 +128,7 @@ Hand tracking is MediaPipe's gesture recognizer running in the browser. Voice st
 
 **Legacy: Titan Siege.** The earlier Commander Erwin scenario (Levi, Mikasa, Hange, and Armin holding a gate against waves of titans) lives on as a standalone snapshot at `/legacy/erwin/` (`public/legacy/erwin/`).
 
-**Vs Bots: choose your side and opponent.** Attack with Alpha, Bravo, Charlie and Delta, or defend with Echo, Foxtrot, Golf and Hotel. The opposing bots are E1–E4. Rematches keep your selected side and opponent.
+**Vs Bots: choose your side and opponent.** Attack with Alpha, Bravo, Charlie, Delta and Echo, or defend with Foxtrot, Golf, Hotel, India and Juliett. The opposing bots are E1–E5. **Next round** plays on with the same score; after the match, a rematch keeps your selected side and opponent.
 
 - **Scripted bots** (no opponent API calls; your Jev squad still needs the Gateway key): defenders hold posts, rotate to callouts and retake; attackers push B, recover the spike and plant.
 - **OpenAI commander**: an OpenAI model plans for its side every few seconds from its squad's
@@ -163,7 +165,7 @@ Grenade events share the existing two-second minimum request interval, debounce 
 
 When OpenAI orders at least two defenders to retake, they assemble at their site's Link or rear
 hallway, favoring a route protected from recent sightings. Most of the assigned group must arrive
-(three of four bots) before they advance together. Waiting ends early if only one survives,
+(four of five bots) before they advance together. Waiting ends early if only one survives,
 a teammate is already defusing, or the remaining spike timer approaches travel time plus the
 six-second defuse and a two-second margin. Emergency cover reflexes still apply. The panel shows
 the rally location and ready count; OpenAI receives the current coordination phase. Renewed

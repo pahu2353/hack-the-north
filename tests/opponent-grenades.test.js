@@ -119,7 +119,7 @@ test('grenade input rejects malformed supplies, threats and duplicate IDs', () =
   for (const mutate of [
     s => { s.squad[0].grenadesLeft = 2; },
     s => { s.squad[0].grenadesLeft = 0.5; },
-    s => { s.squad[0].alliesWithinBlastRadius = 4; },
+    s => { s.squad[0].alliesWithinBlastRadius = s.squad.length; },
     s => { s.squad[0].grenadeOpportunity = { position: { x: 40, y: 46 }, enemiesCaught: 2 }; },
     s => { s.squad[0].dodgingGrenadeId = 99; },
     s => { s.grenades[0].team = s.team; },

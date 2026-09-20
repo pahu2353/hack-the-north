@@ -25,7 +25,7 @@ function commandHarness() {
   return { brains, reply };
 }
 
-for (const [team, firstName, secondName] of [['attack', 'Alpha', 'Bravo'], ['defend', 'Echo', 'Foxtrot']]) {
+for (const [team, firstName, secondName] of [['attack', 'Alpha', 'Bravo'], ['defend', 'Foxtrot', 'Golf']]) {
   test(`${team}: late squad order preserves a newer individual order, while still reaching other agents`, async () => {
     const game = createGame({ defenders: 'players' });
     const { brains, reply } = commandHarness();
