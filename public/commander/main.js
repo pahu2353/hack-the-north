@@ -485,7 +485,7 @@ function speculate(text) {
   const entry = guess?.entry ?? addLogEntry('voice', text, null, true);
   const g = { text, entry, promise: null, applied: false, stale: false, seq: ++commandSeq };
   guess = g;
-  setEntryText(entry, text, '⚡');
+  setEntryText(entry, text, true);
   g.promise = interpret({ text, seq: g.seq, only: commandTarget() })
     .then(result => {
       if (result.stale) return;
@@ -592,9 +592,18 @@ function addLogEntry(source, text, gesture, early = false) {
     el('div', { className: 'meta' }),
   ]);
   const log = $('log');
-  log.prepend(entry);
-  while (log.children.length > 30) log.lastChild.remove();
+  const following = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+  log.append(entry);
+  while (log.children.length > 30) log.firstChild.remove();
+  if (following) log.scrollTop = log.scrollHeight;
   return entry;
+}
+
+// Keep the newest entry in view as it fills in, unless you've scrolled back through the log.
+function followLog(entry) {
+  const log = $('log');
+  if (entry !== log.lastChild) return;
+  if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
 }
 
 function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, early = false) {
@@ -602,12 +611,14 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
     entry.classList.add('ignored');
+    followLog(entry);
     return;
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
       el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
     entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+    followLog(entry);
     entry.classList.add('ignored');
     return;
   }
@@ -627,6 +638,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale }, e
   });
   entry.querySelector('.plan').replaceChildren(...rows);
   entry.querySelector('.meta').textContent = `${early ? 'acting early · ' : ''}Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+  followLog(entry);
 }
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
