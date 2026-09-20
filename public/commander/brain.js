@@ -10,15 +10,16 @@ import { dist, zoneAt, zoneByName } from './world.js';
 const THINK_MS = 450;
 
 // The orchestrator question: with a hands-free mic, most of what Jev hears is not an order.
-// On labelled commands this scores chatter at 8-14% and real orders at 89-97%.
-const ORDER_GATE = {
+// Saying the quiet part out loud ("a plain statement is still an order") matters: without it,
+// "Alpha and Bravo hold B site" reads as a description of what they are doing and scores 23%.
+const orderGate = names => ({
   type: 'boolean',
-  instructions: 'Is the commander giving their squad an order, or just talking (thinking out loud, reacting to the game, chatting)?',
+  instructions: `The commander is speaking to their squad (${names.join(', ')}) during a match. Anything that tells one or more of them where to be or what to do is an order, even when it is phrased as a plain statement: "${names[0]} and ${names[1]} hold B site" is an order to hold B site, not a description. Is this an order, or is the commander just talking (reacting, asking, thinking out loud)?`,
   criteria: {
-    true: 'an order for the squad to carry out',
-    false: 'not an order: chatter, a question, a reaction, or thinking out loud',
+    true: 'an order: it tells at least one of them where to go, what to hold, or what to do',
+    false: 'not an order: a reaction, a question, or thinking out loud',
   },
-};
+});
 
 const ORDERS = {
   attack: {
@@ -110,7 +111,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[team] };
       questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
     }
-    questions.is_order = ORDER_GATE;
+    questions.is_order = orderGate(squad.map(u => u.name));
     const state = {
       commander_says: text,
       ...(only && { talking_to: only }),

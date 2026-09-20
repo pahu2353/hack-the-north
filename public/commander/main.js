@@ -781,6 +781,14 @@ function updateTeamUi() {
 let scorebarKey = '';
 
 function buildScorebar() {
+  // A multiplayer match starts before its first snapshot arrives, so there is nobody to show
+  // yet. updateScorebar builds the bar as soon as one does.
+  if (!view) {
+    scorebarKey = '';
+    $('squadBar').replaceChildren();
+    $('enemyBar').replaceChildren();
+    return;
+  }
   const portrait = (u, onclick) => {
     const node = el('button', {
       type: 'button', className: 'portrait', title: u.name, style: `--agent:${u.color}`, onclick,
