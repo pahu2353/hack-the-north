@@ -4,7 +4,7 @@
 //   2. update: every agent in contact runs its own decision loop (like Jev playing Doom):
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
-import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
+import { aliveTeam, grenadeSpot, incomingGrenade, obeying, orderAction, orderDestination, orderLabel, roundStatus, setOrder, unitById } from './sim.js';
 import { dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
@@ -118,8 +118,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         // different agents in one breath ("Charlie rush A, Alpha plant", "everyone else hold").
         instructions: `The commander may give different jobs to different agents in one breath. Does any part of this order apply to ${name}? Yes if ${name} is named in any clause, if no names appear at all, or if it says "everyone else" / "the rest".`,
       };
-      questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do?`, criteria: ORDERS[team] };
-      questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about?`, criteria: locations };
+      questions[`${key}_order`] = { type: 'choice', instructions: `What is ${name} ordered to do? Use current_orders and recent_commands to resolve follow-ups; the new command takes precedence.`, criteria: ORDERS[team] };
+      questions[`${key}_target`] = { type: 'choice', instructions: `Which location is ${name}'s order about? Use current_orders and recent_commands when the commander refers to an earlier assignment.`, criteria: locations };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
     if (voiceContext) {
@@ -151,6 +151,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       ...(gesture && { hand_signal: `${gesture.emoji} ${gesture.label}: ${gesture.meaning}` }),
       pointing_at: pointerZone ?? 'nothing',
       squad: Object.fromEntries(squad.map(u => [u.name, `in ${zoneAt(game.map, u).name}, ${Math.round(u.hp)}/${u.maxHp} HP`])),
+      current_orders: Object.fromEntries(aliveTeam(game, team).map(u => [u.name, orderLabel(u)])),
+      recent_commands: previousCommands.map(command => command.text),
       ...(voiceContext && {
         voice_context: {
           volume_level: voiceContext.volumeLevel,
@@ -168,12 +170,8 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
           seconds_remaining: Math.max(0, Math.round(status.clock)),
           status: status.label,
         },
-        recent_commands: previousCommands.slice(-3),
       }),
     };
-    const history = commandHistory.get(game) ?? {};
-    history[team] = [...previousCommands, text].slice(-3);
-    commandHistory.set(game, history);
 
     // Jev occasionally 500s on a question with no clear winner, so give it one more go.
     const result = await ask(state, questions, 2).catch(() => ask(state, questions, 2));
@@ -216,7 +214,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         }
         setOrder(game, unit, { type: order.choice, zone, point });
         lastAppliedCommand.set(unit, commandId);
-        unit.action = order.choice === 'hold' ? 'hold' : 'advance';
+        unit.action = orderAction(game, unit);
       }
       return {
         name: unit.name,
@@ -229,6 +227,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
+    if (plan.some(p => p.applied)) {
+      // Read the latest history after awaiting Jev: requests may complete out of order.
+      // Remember accepted commands in submission order, separately for each side and round.
+      const history = commandHistory.get(game) ?? {};
+      history[team] = [...(history[team] ?? []).filter(command => command.id !== commandId), { id: commandId, text }]
+        .sort((a, b) => a.id - b.id).slice(-3);
+      commandHistory.set(game, history);
+    }
     const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
     return { plan, isOrder, stale, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
   }
@@ -240,7 +246,6 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     aliveTeam(game, team).forEach((u, i) => {
       if (u.kind !== 'agent') return;
       u.brain ??= { pending: false, nextAt: now + (i * thinkMs) / 4 };
-      if (u.brain.pending) return;
       // A fresh order is carried out, not debated: the simulation is already doing exactly
       // what the commander said. The exception is a grenade about to go off, where standing
       // there to obey would just get them killed.
@@ -252,10 +257,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       const tick = agentTick(game, u);
       // Nothing to decide (no contact): follow the commander's order without a Jev call.
       if (!tick) {
-        if (!u.decision?.local) u.decision = { action: 'advance', probabilities: { advance: 1 }, local: true };
-        u.action = 'advance';
+        u.action = orderAction(game, u);
+        if (!u.decision?.local || u.decision.action !== u.action) {
+          u.decision = { action: u.action, probabilities: { [u.action]: 1 }, local: true };
+        }
         return;
       }
+      if (u.brain.pending) return;
       if (u.decision?.local) {
         u.action = 'fight'; // until Jev's first answer after contact arrives
         u.decision = null;
@@ -265,9 +273,10 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       u.brain.pending = true;
       u.brain.nextAt = now + thinkMs;
       const { state, questions, targets } = tick;
+      const order = u.order;
       ask(state, questions)
         .then(({ answers, latency }) => {
-          if (!u.alive || game.result) return;
+          if (!u.alive || game.result || u.order !== order) return;
           const { action, target } = answers;
           if (action.choice !== u.action) u.coverPoint = null;
           u.action = action.choice;
@@ -297,12 +306,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     }));
     const mates = aliveTeam(game, u.team).filter(m => m !== u);
     const fightingMate = mates.filter(m => m.visible.length).sort((a, b) => dist(u, a) - dist(u, b))[0];
-    if (!enemies.length && !fightingMate) return null;
+    const bomb = incomingGrenade(game, u);
+    if (!enemies.length && !fightingMate && !bomb) return null;
 
     const objective = orderDestination(game, u);
     const toObjective = Math.round(dist(u, objective));
     const clump = u.grenades > 0 ? grenadeSpot(game, u) : null;
-    const bomb = incomingGrenade(game, u);
     const state = {
       you: {
         name: u.name,
@@ -324,7 +333,7 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     };
     // Each option says when it applies: Jev follows these conditions closely (6/6 on labelled
     // situations). The one that carries out the commander's order says so.
-    const ordered = { hold: 'hold', grenade: 'nade' }[u.order.type] ?? 'advance';
+    const ordered = orderAction(game, u);
     const carriesOut = name => (name === ordered ? 'carry out your order: ' : '');
     const actions = {
       advance: `${carriesOut('advance')}keep moving to your ordered position (${u.order.zone}, ${toObjective}m away)`,

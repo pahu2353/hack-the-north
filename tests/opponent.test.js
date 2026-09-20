@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createOpponentPlan, mockOpponentPlan, parseOpponentSnapshot } from '../opponent.ts';
-import { createGame, setOrder, stepGame } from '../public/commander/sim.js';
+import { PREP_SECONDS, ROUND_SECONDS, createGame, setOrder, stepGame } from '../public/commander/sim.js';
 import {
   applyOpponentPlan, createOpponentCommander, defenderCombat, opponentDestination, opponentSnapshot,
   PLAN_LIFETIME, validateOpponentPlan,
@@ -16,6 +16,18 @@ const deferred = () => {
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
 };
+
+test('OpenAI gets the full live round time after setup, on either side', () => {
+  for (const playerTeam of ['attack', 'defend']) {
+    const game = createGame({ defenders: 'bots', opponent: 'openai', playerTeam, prep: true });
+    game.time = PREP_SECONDS - 1;
+    assert.equal(opponentSnapshot(game).secondsLeft, ROUND_SECONDS);
+    game.time = PREP_SECONDS;
+    assert.equal(opponentSnapshot(game).secondsLeft, ROUND_SECONDS);
+    game.time += 23;
+    assert.equal(opponentSnapshot(game).secondsLeft, ROUND_SECONDS - 23);
+  }
+});
 
 test('snapshot includes only defender knowledge and the public planted objective', () => {
   const game = makeGame();

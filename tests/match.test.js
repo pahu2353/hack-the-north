@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  PREP_SECONDS, aliveTeam, createGame, createMatch, preparing, prepLine, roundStatus,
+  PREP_SECONDS, aliveTeam, createGame, createMatch, forfeitMatch, preparing, prepLine, roundStatus,
   scorecard, setOrder, stepGame, teamUnits, teamView,
 } from '../public/commander/sim.js';
 import { flipPoint, flippedFor } from '../public/commander/render.js';
@@ -44,14 +44,76 @@ test('the round clock only starts once the setup phase ends', () => {
   assert.ok(roundStatus(game, 'defend').clock > 99, 'a full round is still to play');
 });
 
-test('a planted spike wins the round even when every attacker is dead', () => {
+function plantedAfterAttackersDie() {
   const game = createGame({ defenders: 'players' });
   Object.assign(game.spike, { state: 'planted', carrierId: null, site: 'B Site', x: 67, y: 14, timer: 30 });
+  for (const u of game.units) {
+    u.cooldown = 100;
+    setOrder(game, u, { type: 'hold', zone: 'current', point: { x: u.x, y: u.y } });
+  }
   for (const u of teamUnits(game, 'attack')) u.alive = false;
+  return game;
+}
+
+test('living defenders keep their chance to defuse after all attackers die; neither team scores early', () => {
+  const game = plantedAfterAttackersDie();
+  game.time = 110; // the pre-plant deadline must not end a planted round either
+  stepGame(game, 1 / 60);
+  assert.equal(game.result, null);
+  assert.equal(game.roundRecorded, false);
+  assert.equal(game.match.rounds.length, 0);
+  assert.equal(aliveTeam(game, 'attack').length, 0);
+  assert.equal(aliveTeam(game, 'defend').length, 5);
+  for (const team of ['attack', 'defend']) {
+    const view = teamView(game, team);
+    assert.equal(view.result, null);
+    assert.deepEqual(view.match.score, { attack: 0, defend: 0 });
+    assert(view.spike.timer > 29);
+  }
+});
+
+test('a surviving defender can complete the defuse after the attackers die, scoring exactly once', () => {
+  const game = plantedAfterAttackersDie();
+  const defuser = teamUnits(game, 'defend')[0];
+  Object.assign(defuser, { x: game.spike.x, y: game.spike.y });
+  setOrder(game, defuser, { type: 'hold', zone: 'B Site', point: { x: defuser.x, y: defuser.y } });
+  step(game, 5.8);
+  assert.equal(game.result, null);
+  assert.deepEqual(game.match.score, { attack: 0, defend: 0 });
+  step(game, 0.3);
+  assert.equal(game.spike.state, 'defused');
+  assert.equal(game.result.winner, 'defend');
+  assert.equal(game.result.reason, 'The spike was defused');
+  step(game, 1);
+  assert.deepEqual(game.match.score, { attack: 0, defend: 1 });
+  assert.equal(game.match.rounds.length, 1);
+  for (const team of ['attack', 'defend']) {
+    const view = teamView(game, team);
+    assert.equal(view.result.winner, 'defend');
+    assert.deepEqual(view.match.score, { attack: 0, defend: 1 });
+  }
+});
+
+test('the dead attacking squad wins only when the surviving defenders fail to stop detonation', () => {
+  const game = plantedAfterAttackersDie();
+  game.spike.timer = 0.2;
+  step(game, 0.1);
+  assert.equal(game.result, null);
+  step(game, 0.2);
+  assert.equal(game.result.winner, 'attack');
+  assert.match(game.result.reason, /Spike detonated on B Site/);
+  assert.deepEqual(game.match.score, { attack: 1, defend: 0 });
+});
+
+test('a planted spike wins immediately if both squads are wiped out and nobody can defuse', () => {
+  const game = plantedAfterAttackersDie();
+  for (const u of teamUnits(game, 'defend')) u.alive = false;
   stepGame(game, 1 / 60);
   assert.equal(game.result.winner, 'attack');
-  assert.match(game.result.reason, /Spike stands on B Site/);
+  assert.equal(game.result.reason, 'Defenders eliminated');
+  assert.deepEqual(game.match.score, { attack: 1, defend: 0 });
   assert.equal(aliveTeam(game, 'attack').length, 0);
+  assert.equal(aliveTeam(game, 'defend').length, 0);
 });
 
 test('an unplanted spike is lost with the last attacker', () => {
@@ -75,6 +137,49 @@ function playRound(match, loser) {
   stepGame(game, 1 / 60);
   return game;
 }
+
+test('forfeiting an active round records its score and stats once and ends the match', () => {
+  for (const winner of ['attack', 'defend']) {
+    const game = createGame({ defenders: 'players' });
+    teamUnits(game, winner)[0].stats.kills = 2;
+    forfeitMatch(game, winner, 'Won by forfeit');
+    assert.equal(game.result.winner, winner);
+    assert.equal(game.match.over, true);
+    assert.equal(game.match.winner, winner);
+    assert.equal(game.match.score[winner], 1);
+    assert.equal(game.match.rounds.length, 1);
+    assert.equal(scorecard(game.match, winner)[0].kills, 2);
+    forfeitMatch(game, winner, 'Second disconnect');
+    step(game, 1);
+    assert.equal(game.match.score[winner], 1);
+    assert.equal(scorecard(game.match, winner)[0].kills, 2);
+    assert.equal(teamView(game, winner).match.reason, 'Won by forfeit');
+  }
+});
+
+test('a forfeit between rounds preserves the last round and awards the match to the remaining player', () => {
+  const match = createMatch({});
+  const game = playRound(match, 'defend'); // attackers won round one, then their commander left
+  const completed = structuredClone({ score: match.score, rounds: match.rounds, stats: match.stats, result: game.result });
+  forfeitMatch(game, 'defend', 'Attackers left');
+  assert.deepEqual({ score: match.score, rounds: match.rounds, stats: match.stats, result: game.result }, completed);
+  for (const team of ['attack', 'defend']) {
+    const view = teamView(game, team);
+    assert.equal(view.match.over, true);
+    assert.equal(view.match.winner, 'defend');
+    assert.equal(view.match.reason, 'Attackers left');
+    assert.equal(view.result.winner, 'attack', 'the completed round keeps its own winner');
+  }
+});
+
+test('leaving after a decided match cannot change its winner', () => {
+  const match = createMatch({});
+  playRound(match, 'defend');
+  const game = playRound(match, 'defend');
+  const finished = structuredClone(match);
+  forfeitMatch(game, 'defend', 'Attackers left');
+  assert.deepEqual(match, finished);
+});
 
 test('a match is a best of three: the score and the scorecards carry across rounds', () => {
   const match = createMatch({ playerTeam: 'attack' });

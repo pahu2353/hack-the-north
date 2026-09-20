@@ -121,6 +121,19 @@ function finishRound(game) {
   }
 }
 
+// A disconnect ends the match, even between rounds. Record an unfinished round once;
+// a forfeit during the scoreboard must preserve the round that was already won.
+export function forfeitMatch(game, winner, reason) {
+  if (game.match.over) return;
+  if (!game.result) {
+    game.result = { winner, reason, time: game.time };
+    finishRound(game);
+  }
+  game.match.over = true;
+  game.match.winner = winner;
+  game.match.reason = reason;
+}
+
 // prep: start with the ten-second setup phase. Real rounds ask for it; tests that set up a
 // situation and step a second or two start live.
 export function createGame({ defenders = 'bots', opponent = 'scripted', playerTeam = 'attack', match = null, prep = false } = {}) {
@@ -247,7 +260,11 @@ export function setOrder(game, u, order) {
 }
 
 // What carrying out the current order looks like, as an action.
-const ORDER_ACTION = { hold: 'hold', grenade: 'nade' };
+export function orderAction(game, u) {
+  if (u.order.type === 'grenade') return 'nade';
+  if (u.order.type === 'hold' && dist(u, orderDestination(game, u)) <= 3) return 'hold';
+  return 'advance';
+}
 export const obeying = (game, u) => game.time < (u.obeyUntil ?? 0);
 
 export function orderLabel(u) {
@@ -317,7 +334,7 @@ function controlAgent(game, u, dt) {
   // Your order comes first: while it is fresh the agent simply carries it out. A grenade
   // about to go off is the one thing worth asking Jev about, so that decision is left alone.
   if (obeying(game, u) && !incomingGrenade(game, u)) {
-    u.action = ORDER_ACTION[u.order.type] ?? 'advance';
+    u.action = orderAction(game, u);
   }
   const objective = orderDestination(game, u);
   let dest = null;
@@ -838,12 +855,11 @@ function updateSpike(game, dt) {
 function checkResult(game) {
   const spike = game.spike;
   let result = null;
-  if (spike.state === 'planted' && !aliveTeam(game, 'attack').length) {
-    // Nobody is left to defend it, but the spike is already ticking: the plant wins the round.
-    result = { winner: 'attack', reason: `Spike stands on ${spike.site}` };
-  } else if (!aliveTeam(game, 'attack').length) result = { winner: 'defend', reason: 'Attackers eliminated' };
+  // After a plant, surviving defenders still have until detonation to defuse. Losing the
+  // attackers alone cannot end that round; losing both squads leaves nobody to defuse.
+  if (spike.state === 'defused') result = { winner: 'defend', reason: 'The spike was defused' };
+  else if (spike.state !== 'planted' && !aliveTeam(game, 'attack').length) result = { winner: 'defend', reason: 'Attackers eliminated' };
   else if (!aliveTeam(game, 'defend').length) result = { winner: 'attack', reason: 'Defenders eliminated' };
-  else if (spike.state === 'defused') result = { winner: 'defend', reason: 'The spike was defused' };
   else if (spike.state === 'planted' && spike.timer <= 0) result = { winner: 'attack', reason: `Spike detonated on ${spike.site}` };
   else if (spike.state !== 'planted' && roundClock(game) >= ROUND_SECONDS) result = { winner: 'defend', reason: 'Time ran out before the plant' };
   if (result) {
@@ -933,6 +949,7 @@ export function teamView(game, team) {
       score: { ...game.match.score },
       over: game.match.over,
       winner: game.match.winner,
+      reason: game.match.reason ?? null,
       rounds: game.match.rounds.map(r => ({ ...r })),
       // Totals so far, plus what has happened in the round being played.
       scoreboard: Object.fromEntries(['attack', 'defend'].map(side => [side, liveScorecard(game, side)])),
