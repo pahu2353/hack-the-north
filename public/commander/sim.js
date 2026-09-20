@@ -44,6 +44,23 @@ export const KNIFE = {
 export const WEAPONS = ['rifle', 'knife'];
 
 const SIGHT = 45;
+// You see what you are looking at. Until now an agent saw everything within 45 m in every
+// direction at once, which quietly made flanking pointless: there was no behind. The cone
+// is a little wider than the first-person camera, because peripheral vision is real, and
+// what falls outside it is genuinely invisible — not dimmed, not delayed.
+// Roughly human: about 100 degrees either side, so the cone is a touch over 200 degrees
+// wide. Wide enough that someone at your shoulder is seen and the squad does not play like
+// it is wearing a bucket; narrow enough that there is a real arc behind you where a flank
+// or a knife arrives unseen, which is the whole point of having a front at all.
+export const FOV = { half: 1.75 };
+// Being shot is how you find out about the half of the world you cannot see. It does not
+// show you anything by itself; it turns you, and then you see whatever is there.
+const ALERT_SECONDS = 2.5;
+// Where an agent is actually looking. In first person the commander's camera is the
+// agent's eyes, so vision follows the crosshair rather than the body: looking somewhere
+// and seeing somewhere else is the one thing a first-person view cannot do.
+export const lookBearing = (game, u) => manualAimFor(game, u)?.yaw ?? u.facing;
+export const inView = (u, other, bearing = u.facing) => angleDiff(bearing, angleTo(u, other)) <= FOV.half;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
 export const ROUND_SECONDS = 100;
@@ -266,6 +283,7 @@ function makeUnit(game, props) {
     stillSince: 0,
     pace: 'run',
     weapon: 'rifle',
+    knifeOrdered: false,
     lastSlashAt: -Infinity,
     gaze: 'travel',
     holdBearing: null,
@@ -283,6 +301,8 @@ function makeUnit(game, props) {
     flashes: game.utility ? FLASH.carried : 0,
     smokes: game.utility ? SMOKE.carried : 0,
     blindUntil: 0,
+    alertBearing: null,
+    alertUntil: 0,
     glare: 0,
     glareAt: -99,
     throwReadyAt: 0,
@@ -370,7 +390,10 @@ function stepFrom(game, u, bearing, metres) {
 // ---------- orders ----------
 
 export function setOrder(game, u, order) {
-  const o = { ...order, via: null, viaReached: false };
+  // `through` is the way the commander asked them to go — a named node, or several. The
+  // automatic detour below is the way the map suggests. Both end up in one route the agent
+  // walks in order, and what the commander actually said comes first.
+  const o = { ...order, route: [] };
   o.spread ??= 'normal';
   const zoneCenter = zoneByName(game.map, o.zone)?.center;
   // Slots only apply to a whole zone. A point the commander actually picked — by clicking or
@@ -393,11 +416,19 @@ export function setOrder(game, u, order) {
   } else if (['push', 'plant'].includes(o.type) && route?.push) {
     viaZone = zoneByName(game.map, route.push);
   }
-  // Only detour through the route when it's roughly on the way (routes are drawn for attackers).
-  if (viaZone && zoneAt(game.map, u) !== viaZone) {
+  // Only detour through the map's own route when it's roughly on the way (routes are drawn
+  // for attackers) and the commander has not already said which way to go.
+  const asked = (o.through ?? []).map(name => zoneByName(game.map, name)?.center).filter(Boolean);
+  if (!asked.length && viaZone && zoneAt(game.map, u) !== viaZone) {
     const detour = dist(u, viaZone.center) + dist(viaZone.center, o.point);
-    if (detour < dist(u, o.point) * maxDetour) o.via = viaZone.center;
+    if (detour < dist(u, o.point) * maxDetour) asked.push(viaZone.center);
   }
+  // Walk the named nodes nearest-first, so "mid to B through doors" is not a route that
+  // doubles back on itself when the nodes arrive in the order they were spoken.
+  o.route = asked
+    .filter(p => dist(u, p) > 3)
+    .map(p => ({ x: p.x, y: p.y }))
+    .sort((p, q) => dist(u, p) - dist(u, q));
   u.order = o;
   u.obeyUntil = game.time + OBEY_SECONDS;
   u.path = [];
@@ -411,7 +442,11 @@ export function setOrder(game, u, order) {
   u.repositionPoint = null;
   u.settleAt = 0;
   u.pace = o.pace ?? 'run';
-  if (o.type !== 'knife') setWeapon(u, 'rifle');
+  // A knife you were told to draw stays drawn. Only being told otherwise puts it away,
+  // which is what makes "rush them with the knife" an instruction rather than a suggestion
+  // the agent reconsiders a second later.
+  if (o.type === 'knife') u.knifeOrdered = true;
+  if (u.knifeOrdered) setWeapon(u, 'knife');
   if (o.role !== undefined) u.role = o.role;
   u.holdFire = u.role === 'lurk';
   // Look where you were sent, now, before a single step is taken. The order has visibly
@@ -526,9 +561,12 @@ export function orderDestination(game, u) {
   const o = u.order;
   if (o.type === 'regroup') return average(aliveTeam(game, u.team));
   if (o.type === 'defuse' && game.spike.state === 'planted') return { x: game.spike.x, y: game.spike.y };
-  if (o.via && !o.viaReached) {
-    if (dist(u, o.via) < 3) o.viaReached = true;
-    else return o.via;
+  // A route is walked node by node. "Mid to B through doors" is two places to be in order,
+  // not a destination with a hint attached, and the agent is not finished with the first
+  // one until it has actually been there.
+  while (o.route?.length) {
+    if (dist(u, o.route[0]) < 3) { o.route.shift(); continue; }
+    return o.route[0];
   }
   return o.point;
 }
@@ -591,6 +629,7 @@ function updateVision(game) {
   const living = game.units.filter(u => u.alive);
   for (const u of living) {
     const visible = [];
+    const look = lookBearing(game, u);
     // Blind is total: no targets, so no automatic fire and no crosshair assistance either,
     // and the sightings go stale rather than being remembered as current.
     if (blinded(game, u)) {
@@ -600,7 +639,7 @@ function updateVision(game) {
     }
     for (const other of living) {
       if (other.team === u.team) continue;
-      if (dist(u, other) <= SIGHT && canSee(game, u, other)) {
+      if (dist(u, other) <= SIGHT && inView(u, other, look) && canSee(game, u, other)) {
         visible.push(other);
         if (!u.seen.has(other.id)) u.seen.set(other.id, game.time);
       } else {
@@ -727,9 +766,11 @@ function controlAgent(game, u, dt) {
     if (nearest === u) dest = { x: spike.x, y: spike.y };
   }
   if (u.action !== 'peek') { u.peek = null; u.peekPoint = null; }
-  // The knife is only out while it is being used. Anything else hands the rifle back, so an
-  // agent never quietly keeps a knife into a gunfight it cannot win.
-  if (u.action !== 'knife' && orderUtility(u.order.type) !== 'knife' && u.order.type !== 'knife') setWeapon(u, 'rifle');
+  // Two different things can put a knife in someone's hand. An order to knife somebody is
+  // the commander's and it stands until the commander takes it back. Jev choosing to rush
+  // the last two metres with one is the agent's own call, and it lasts exactly as long as
+  // that call does, so nobody is left holding a knife in a gunfight they never chose.
+  if (!u.knifeOrdered && u.action !== 'knife') setWeapon(u, 'rifle');
   if (dest && dist(u, dest) < 0.8) dest = null;
   // Somewhere to be and told to stand still is a contradiction: the order wins, at the
   // careful pace. Code resolves it rather than letting a stuck agent look like a bug.
@@ -943,6 +984,12 @@ function damage(game, target, amount, source) {
   source.stats && (source.stats.damage += Math.min(amount, target.hp));
   target.hp -= amount;
   target.lastHitAt = game.time;
+  // Shot from somewhere you were not looking: you spin toward it. You still cannot see
+  // them until you have turned, which is the whole point — it costs you the time it costs.
+  if (!inView(target, source)) {
+    target.alertBearing = angleTo(target, source);
+    target.alertUntil = game.time + ALERT_SECONDS;
+  }
   if (target.hp > 0) return;
   target.hp = 0;
   target.alive = false;
@@ -970,6 +1017,13 @@ function moveToward(game, u, dest, dt) {
   const wasMoving = u.moving;
   step(game, u, dest, dt);
   if (wasMoving && !u.moving) u.stillSince = game.time;
+}
+
+// Bots look where they are going. Agents do not — they have a gaze channel and aimAgent
+// owns their angle — so this is called only from the bot loop.
+function turnBotToward(game, u, dt) {
+  if (game.time - u.lastShotAt <= 0.4 || !u.moving || u.travelHeading === undefined) return;
+  u.facing = turnToward(u.facing, u.travelHeading, dt);
 }
 
 function step(game, u, dest, dt) {
@@ -1003,12 +1057,10 @@ function step(game, u, dest, dt) {
     return;
   }
   const heading = angleTo(u, waypoint);
+  // Where the feet are going. Facing is not written here: exactly one thing per frame may
+  // turn a unit, or the bounded turn rate is not a bound at all. For agents that is
+  // aimAgent; for bots it is turnBotToward, called straight after this.
   u.travelHeading = heading;
-  // Facing follows the feet only while the agent is travelling with its eyes forward. Any
-  // other gaze means the two have deliberately come apart, and aimAgent owns the angle.
-  if (game.time - u.lastShotAt > 0.4 && u.gaze === 'travel' && game.time >= (u.ackUntil ?? 0)) {
-    u.facing = turnToward(u.facing, heading, dt);
-  }
   const distance = Math.min(paceSpeed(u) * dt, dist(u, waypoint));
   const moved = advance(game, u, heading, distance);
   u.moving = moved > 0.001;
@@ -1087,6 +1139,13 @@ function aimAgent(game, u, focus, dt) {
     u.facing = turnToward(u.facing, orderBearing(game, u), dt);
     return;
   }
+  // Something hit you from outside your cone: turning to face it outranks whatever you
+  // were watching, because everything else assumes you can see what is happening.
+  if (!focus && game.time < (u.alertUntil ?? 0) && u.alertBearing !== null) {
+    u.facing = turnToward(u.facing, u.alertBearing, dt);
+    if (angleDiff(u.facing, u.alertBearing) < 0.05) u.alertUntil = 0;
+    return;
+  }
   const want = gazeBearing(game, u, focus, dt);
   if (want !== null) u.facing = turnToward(u.facing, want, dt);
 }
@@ -1111,8 +1170,13 @@ function gazeBearing(game, u, focus, dt) {
       // Looking back down the way the squad came, which is where a flank arrives from.
       return angleTo(orderDestination(game, u), u);
     default:
-      // Travelling: the feet own the angle while moving, the last held angle when stopped.
-      return u.moving ? null : fallback;
+      if (!u.moving) return fallback; // stopped: keep the last angle you were holding
+      // Walking somewhere with nothing in sight: you check the angles as you go rather
+      // than staring at the floor ahead of you. Without this an advancing squad has a
+      // fixed forward stare and loses every fight to anyone already holding an angle,
+      // which is most of what a vision cone would otherwise cost the attacking side.
+      u.scanPhase += dt * SCAN_RATE * 0.8;
+      return (u.travelHeading ?? u.facing) + Math.sin(u.scanPhase) * 0.5;
   }
 }
 
@@ -1232,6 +1296,7 @@ function controlBot(game, u, dt) {
       u.botDodge = { grenadeId: bomb.id, point: evadePoint(game, u, bomb) };
     }
     moveToward(game, u, dist(u, u.botDodge.point) < 0.5 ? null : u.botDodge.point, dt);
+    turnBotToward(game, u, dt);
     if (focus) shoot(game, u, focus);
     return;
   }
@@ -1249,6 +1314,7 @@ function controlBot(game, u, dt) {
     // Spotting an enemy must not turn a withdrawal into another isolated fight.
     u.botFallback = null;
     moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    turnBotToward(game, u, dt);
     if (focus) shoot(game, u, focus);
     return;
   }
@@ -1275,6 +1341,7 @@ function controlBot(game, u, dt) {
       // into the same crossfire. Resume when support arrives or after a short recovery.
       const safe = u.botFallback.point;
       moveToward(game, u, dist(u, safe) < 0.8 ? null : safe, dt);
+      turnBotToward(game, u, dt);
       if (focus) shoot(game, u, focus);
       return;
     }
@@ -1284,6 +1351,7 @@ function controlBot(game, u, dt) {
     // Retakes and flanks must keep moving through contact to complete the maneuver.
     // Grenade avoidance and the survival reflex above still take priority.
     moveToward(game, u, dist(u, planned) < 1.2 ? null : planned, dt);
+    turnBotToward(game, u, dt);
     if (focus) shoot(game, u, focus);
     return;
   }
@@ -1292,8 +1360,10 @@ function controlBot(game, u, dt) {
     if (u.hp < u.maxHp / 2 && u.visible.length >= 2) {
       if (!u.coverPoint || hasLineOfSight(game.map, focus, u.coverPoint)) u.coverPoint = findCover(game, u);
       moveToward(game, u, u.coverPoint, dt);
+      turnBotToward(game, u, dt);
     } else {
       moveToward(game, u, null, dt);
+      turnBotToward(game, u, dt);
     }
     shoot(game, u, focus);
     return;
@@ -1321,6 +1391,7 @@ function controlBot(game, u, dt) {
   }
   if (dist(u, dest) < 1.2) dest = null;
   moveToward(game, u, dest, dt);
+  turnBotToward(game, u, dt);
 }
 
 // ---------- grenades ----------

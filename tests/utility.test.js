@@ -30,8 +30,17 @@ function duel({ utility = true } = {}) {
   for (const u of game.units) { u.reaction = Infinity; u.speed = 0; u.obeyUntil = Infinity; }
   // Everyone else is parked in a corner so only these two are ever in each other's way.
   for (const u of game.units) if (u !== a && u !== d) Object.assign(u, { x: 2, y: 2 });
-  Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2 });
+  Object.assign(a, { x: 40, y: 34 + 6, facing: -Math.PI / 2 });
   Object.assign(d, { x: 40, y: 34, facing: Math.PI / 2 });
+  // Each is holding where it stands and looking at the other. Without an order here they
+  // both try to walk back to spawn, and turn to face it, which is not what these tests
+  // are about.
+  for (const [u, at] of [[a, { x: a.x, y: a.y }], [d, { x: d.x, y: d.y }]]) {
+    setOrder(game, u, { type: 'hold', zone: 'Mid', point: at });
+    u.obeyUntil = Infinity;
+  }
+  Object.assign(a, { facing: -Math.PI / 2, gaze: 'hold_angle', holdBearing: -Math.PI / 2, occupying: true });
+  Object.assign(d, { facing: Math.PI / 2, gaze: 'hold_angle', holdBearing: Math.PI / 2, occupying: true });
   return { game, a, d };
 }
 

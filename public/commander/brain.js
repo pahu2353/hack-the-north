@@ -7,8 +7,8 @@
 import {
   UTILITY, UTILITY_LABEL, aliveTeam, blinded, directionPoint, enemyContact, grenadeSpot,
   heldCount, incomingGrenade, isDirection, noteCallout, obeying, orderAction, orderDestination,
-  orderLabel, orderUtility, pushFeed, relativePoint, roundStatus, setOrder, throwLanding,
-  unitById, utilitySpot,
+  orderLabel, orderUtility, pushFeed, relativePoint, roundStatus, setOrder, setWeapon,
+  throwLanding, unitById, utilitySpot,
 } from './sim.js';
 import { CALLOUTS, dist, zoneAt, zoneByName } from './world.js';
 
@@ -115,7 +115,11 @@ const SMOKE_ORDER = 'smoke / smoke off / smoke it / smoke the way in / help smok
 const PEEK_ORDER = 'peek: take a quick look and come straight back / jiggle peek / shoulder peek / '
   + 'bait a shot / check that angle without committing to it';
 const KNIFE_ORDER = 'knife: put the rifle away, run them down and stab them / go knife someone / '
-  + 'knife them / shank them / melee them';
+  + 'knife them / shank them / melee them. The knife stays out until you tell them otherwise.';
+// The way back. A knife stays drawn until the commander takes it back, so there has to be
+// something for them to say.
+const RIFLE_ORDER = 'put the knife away and get the rifle back out / guns out / gun up / '
+  + 'switch back / stop knifing. Changes nothing about where they are going.';
 // Peek and knife are always available — they need no equipment. The two throwables only
 // exist when the match has them, so an ordinary match offers exactly what it always did
 // plus the two moves the squad could always physically make and had no word for.
@@ -123,6 +127,7 @@ const ordersFor = (team, utility) => ({
   ...ORDERS[team],
   peek: PEEK_ORDER,
   knife: KNIFE_ORDER,
+  rifle: RIFLE_ORDER,
   ...(utility && { grenade: NADE_BASE, flash: FLASH_ORDER, smoke: SMOKE_ORDER }),
 });
 
@@ -243,6 +248,12 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       locations.spike = 'where the spike is planted: "on the bomb", "to the spike", "get to the bomb"';
     }
 
+    // Every place on the map is a possible node to route through, described by what people
+    // call it, so "through cat" and "via doors" resolve the same way a destination does.
+    const routeNodes = Object.fromEntries(game.map.zones.map(z => [
+      z.name, CALLOUTS[z.name] ? `through ${z.name} — called: ${CALLOUTS[z.name]}` : `through ${z.name}`,
+    ]));
+
     const questions = {};
     for (const { name } of squad) {
       const key = name.toLowerCase();
@@ -260,6 +271,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         type: 'choice',
         instructions: `What has the commander just told ${name} to do? Answer from what they said, not from the order ${name} already has. Telling them to stay somewhere once they get there ("camp b", "hold b", "watch b main", "lock down mid") is holding, not pushing, even though they have to walk there first. Only when the new words carry no instruction of their own: "keep going" / "same again" means carry on with ${name}'s own order in current_orders, and "you too" / "as well" / "same" means the order in the last of recent_commands, the one just given to someone else.`,
         criteria: ordersFor(team, game.utility),
+      };
+      // Which way, as opposed to where. "Mid to B through doors" and "take catwalk" name a
+      // node on the way, and until now there was nothing for that half of the sentence to
+      // land on — the agent pathfound straight there and the route was ignored. The options
+      // are the map's own places, so the squad knows the nodes without being taught them.
+      questions[`${key}_through`] = {
+        type: 'choice',
+        instructions: `Did the commander say which way ${name} should go — a place to go through on the way, rather than the place they are going to? "through doors", "via catwalk", "take long", "the back way past window". Answer direct unless they actually named a way through.`,
+        criteria: { direct: 'no way named: go the quickest way there', ...routeNodes },
       };
       questions[`${key}_target`] = {
         type: 'choice',
@@ -415,7 +435,24 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         } else {
           point = zoneByName(game.map, target.choice).center;
         }
-        setOrder(game, unit, { type: order.choice, zone, point, pace: tempo.pace, spread: tempo.spread });
+        // "Guns out" is not somewhere to be. It changes what is in their hands and leaves
+        // the job they are already doing exactly as it was.
+        if (order.choice === 'rifle') {
+          unit.knifeOrdered = false;
+          setWeapon(unit, 'rifle');
+          lastAppliedCommand.set(unit, commandId);
+          return {
+            name: unit.name, addressed, applied: true, order: order.choice,
+            orderP: order.probabilities?.[order.choice] ?? 1,
+            target: 'rifle out', targetP: 1,
+          };
+        }
+        setOrder(game, unit, {
+          type: order.choice, zone, point, pace: tempo.pace, spread: tempo.spread,
+          // Named nodes the commander asked them to go through, if any.
+          through: a[`${key}_through`]?.choice && a[`${key}_through`].choice !== 'direct'
+            ? [a[`${key}_through`].choice] : [],
+        });
         unit.obeyUntil = game.time + (COMMITMENT[ux?.certainty ?? 'normal'] ?? COMMITMENT.normal);
         lastAppliedCommand.set(unit, commandId);
         unit.action = orderAction(game, unit);

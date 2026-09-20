@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrains } from '../public/commander/brain.js';
 import {
-  KNIFE, MAX_HP, createGame, paceSpeed, relativePoint, setOrder, setWeapon,
-  slash, stepGame, teamUnits,
+  KNIFE, MAX_HP, createGame, inView, orderDestination, paceSpeed, relativePoint,
+  setOrder, setWeapon, slash, stepGame, teamUnits,
 } from '../public/commander/sim.js';
 import { CALLOUTS, MAPS, dist, zoneByName } from '../public/commander/world.js';
 
@@ -21,6 +21,16 @@ function pair() {
   for (const u of game.units) if (u !== a && u !== d) Object.assign(u, { x: 2, y: 2 });
   Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2 });
   Object.assign(d, { x: 40, y: 38.5, facing: Math.PI / 2 });
+  // Both holding where they stand. Without this they are still under their opening order
+  // to hold at spawn, so the first simulated frame turns them to face it and every test
+  // about where someone is looking measures the wrong thing.
+  for (const u of [a, d]) {
+    setOrder(game, u, { type: 'hold', zone: 'Mid', point: { x: u.x, y: u.y } });
+    u.obeyUntil = Infinity;
+    u.occupying = true;
+    u.gaze = 'hold_angle';
+    u.holdBearing = u.facing;
+  }
   return { game, a, d };
 }
 
@@ -102,13 +112,35 @@ test('swings have a cooldown, so a knife is not a chainsaw', () => {
   assert.ok(slash(game, a), 'and it comes back');
 });
 
-test('a knife order draws the knife; anything else puts it away', () => {
+test('an ordered knife stays out until the commander takes it back', () => {
   const { game, a } = pair();
   setOrder(game, a, { type: 'knife', zone: 'Mid', point: { x: 40, y: 34 } });
   run(game, 0.2);
   assert.equal(a.weapon, 'knife');
+
+  // Another order does not quietly holster it. Being told to knife someone is an
+  // instruction, not a suggestion the agent reconsiders as soon as it is moving again.
+  setOrder(game, a, { type: 'push', zone: 'A Site', point: { x: 12, y: 14 } });
+  run(game, 0.5);
+  assert.equal(a.weapon, 'knife', 'it is still out');
+
+  // Only taking it back does.
+  a.knifeOrdered = false;
+  run(game, 0.2);
+  assert.equal(a.weapon, 'rifle', 'guns out puts it away');
+});
+
+test("a knife the agent drew itself is dropped as soon as it stops using it", () => {
+  const { game, a, d } = pair();
   setOrder(game, a, { type: 'hold', zone: 'Mid', point: { x: a.x, y: a.y } });
-  assert.equal(a.weapon, 'rifle', 'a new order hands the rifle back');
+  a.obeyUntil = 0;
+  a.action = 'knife';
+  run(game, 0.1);
+  assert.equal(a.weapon, 'knife', 'Jev choosing to rush with it draws it');
+  a.action = 'hold';
+  run(game, 0.1);
+  assert.equal(a.weapon, 'rifle', 'and nobody is left holding one in a gunfight');
+  void d;
 });
 
 test('"move up" and "back up" resolve against where you stand, not the map', () => {
@@ -165,4 +197,107 @@ test('the order vocabulary grows with the kit and never shrinks below what it wa
   for (const p of ['forward', 'back', 'enemy', 'current', 'Mid', 'A Site']) {
     assert.ok(places.includes(p), `${p} must be somewhere you can be sent`);
   }
+});
+
+// ---------- you see what you are looking at ----------
+
+test('nobody sees what is behind them', () => {
+  const { game, a, d } = pair();
+  Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2, holdBearing: -Math.PI / 2 });
+  Object.assign(d, { x: 40, y: 46, facing: -Math.PI / 2, holdBearing: -Math.PI / 2 });
+  stepGame(game, STEP);
+  assert.equal(a.visible.length, 0, 'someone at your back is not visible');
+  assert.ok(d.visible.includes(a), 'and they can see you, because you are in front of them');
+
+  Object.assign(a, { facing: Math.PI / 2, holdBearing: Math.PI / 2 }); // turn round
+  stepGame(game, STEP);
+  assert.ok(a.visible.includes(d), 'turning finds them');
+});
+
+test('the cone is human-wide, so someone at your shoulder is still seen', () => {
+  const { game, a, d } = pair();
+  Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2, holdBearing: -Math.PI / 2 });
+  // Straight out to the side: 90 degrees off, well inside peripheral vision.
+  Object.assign(d, { x: 46, y: 40, facing: Math.PI });
+  stepGame(game, STEP);
+  assert.ok(inView(a, d), 'ninety degrees off is still seen');
+  // Behind the shoulder is not.
+  Object.assign(d, { x: 44, y: 45 });
+  assert.equal(inView(a, d), false, 'past the shoulder is not');
+});
+
+test('being shot from behind turns you toward it, and only then can you see', () => {
+  const { game, a, d } = pair();
+  Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2, holdBearing: -Math.PI / 2, reaction: Infinity });
+  Object.assign(d, { x: 40, y: 46, facing: -Math.PI / 2, holdBearing: -Math.PI / 2, reaction: 0, cooldown: 0, speed: 0 });
+  d.seen.set(a.id, 0);
+  stepGame(game, STEP);
+  assert.equal(a.visible.length, 0);
+
+  // Take a hit from behind: no order, nothing seen, but now something to turn toward.
+  const before = a.facing;
+  for (let f = 0; f < 60; f++) stepGame(game, STEP);
+  assert.ok(a.hp < 150, 'they are being shot');
+  assert.notEqual(a.facing, before, 'and they turn toward it');
+  assert.ok(a.visible.includes(d), 'having turned, they can see who it was');
+});
+
+test('a knifer coming from behind is not seen coming', () => {
+  const { game, a, d } = pair();
+  // The victim watches up the map; the knifer walks in from behind with a knife out.
+  Object.assign(a, { x: 40, y: 40, facing: -Math.PI / 2, holdBearing: -Math.PI / 2, reaction: 0 });
+  Object.assign(d, { x: 40, y: 41.6, facing: -Math.PI / 2, knifeOrdered: true });
+  setWeapon(d, 'knife');
+  Object.assign(d, { gaze: 'hold_angle', holdBearing: -Math.PI / 2 });
+  stepGame(game, STEP);
+  assert.equal(a.visible.length, 0, 'never saw them');
+  assert.ok(slash(game, d), 'and the swing lands');
+  assert.equal(a.alive, false, 'from behind, that is the whole fight');
+});
+
+// ---------- routes ----------
+
+test('an order can name the way, not just the destination', () => {
+  const { game, a } = pair();
+  a.speed = 5;
+  Object.assign(a, { x: 40, y: 50 });
+  // Sent to A Site the long way round, through B Link on the other side of the map.
+  setOrder(game, a, {
+    type: 'push', zone: 'A Site', point: { ...zoneByName(MAPS.tactical, 'A Site').center },
+    through: ['B Link'],
+  });
+  assert.equal(a.order.route.length, 1, 'the named node is the route');
+  const via = zoneByName(MAPS.tactical, 'B Link').center;
+  assert.ok(dist(a.order.route[0], via) < 0.01, 'and it is the node that was named');
+  // The first place it heads for is the node, not the destination.
+  const heading = orderDestination(game, a);
+  assert.ok(dist(heading, via) < 0.01, 'it goes there first');
+});
+
+test('a route node is finished with once it has been reached', () => {
+  const { game, a } = pair();
+  const via = zoneByName(MAPS.tactical, 'Mid').center;
+  setOrder(game, a, {
+    type: 'push', zone: 'A Site', point: { ...zoneByName(MAPS.tactical, 'A Site').center },
+    through: ['Mid'],
+  });
+  assert.ok(dist(orderDestination(game, a), via) < 0.01);
+  Object.assign(a, { x: via.x, y: via.y });
+  const next = orderDestination(game, a);
+  assert.ok(dist(next, via) > 3, 'standing on it, the agent moves on to the destination');
+  assert.equal(a.order.route.length, 0, 'and the node is spent');
+});
+
+test('naming the way overrides the route the map would have picked', () => {
+  const { game, a } = pair();
+  Object.assign(a, { x: 40, y: 50 });
+  const site = { ...zoneByName(MAPS.tactical, 'A Site').center };
+  setOrder(game, a, { type: 'push', zone: 'A Site', point: site });
+  const automatic = a.order.route[0];
+  assert.ok(automatic, 'a plain push still takes the map route into A Main');
+
+  setOrder(game, a, { type: 'push', zone: 'A Site', point: site, through: ['B Link'] });
+  const asked = zoneByName(MAPS.tactical, 'B Link').center;
+  assert.equal(a.order.route.length, 1, 'one node, the one that was asked for');
+  assert.ok(dist(a.order.route[0], asked) < 0.01, 'the commander outranks the map');
 });

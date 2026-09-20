@@ -101,7 +101,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   const scene = new THREE.Scene();
   // Haze should sit on the far end of a long sightline, not on the man in front of you.
   scene.fog = new THREE.Fog(FOG, 45, 165);
-  buildSky(scene);
+  const sky = buildSky(scene);
   const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 240);
   camera.rotation.order = 'YXZ';
   camera.layers.enable(FX_LAYER);
@@ -333,6 +333,10 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     if (wanted !== map) useMap(wanted);
 
     camera.position.set(cam.x, EYE, cam.y);
+    // Keep the sky centred on the viewer. Everything else in the scene is in world space;
+    // this one thing is not, because it is meant to be unreachably far away.
+    sky.dome.position.copy(camera.position);
+    sky.glow.position.copy(camera.position).add(sky.sunOffset);
     // YXZ order, so this reads as yaw then pitch the way a first-person camera should.
     camera.rotation.set(cam.pitch ?? 0, yawOf(cam.angle), 0);
 
@@ -583,6 +587,9 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     const light = blastLights[nextBlastLight++ % blastLights.length];
     light.position.set(x, 1.1, y);
     light.distance = r * 5;
+    // The pool is shared with flashes, which turn their light white. Set the colour every
+    // time rather than assuming nobody else has touched it.
+    light.color.setHex(0xffb066);
     group.add(core, ring);
 
     // A frag is a detonation, not a smoke bomb: a short bloom of fire and a lot of sparks,
@@ -751,7 +758,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       let m = nades.get(g.id);
       if (!m) {
         m = utilityModel(g.kind ?? 'frag');
-        m.castShadow = true;
+        // castShadow on a group does nothing: the meshes inside it have to carry it.
+        m.traverse(o => { if (o.isMesh) o.castShadow = true; });
         nades.set(g.id, m);
         scene.add(m);
       }
@@ -1234,21 +1242,32 @@ const sunVector = () => new THREE.Vector3().setFromSphericalCoords(
   1, THREE.MathUtils.degToRad(90 - SUN_ELEVATION), THREE.MathUtils.degToRad(SUN_AZIMUTH),
 );
 
+// The sky is infinitely far away, which means it belongs to the viewer and not to the
+// world. Sitting it at the world origin instead put the far side of the dome up to 294 m
+// from a camera whose far plane is 240 — so the back of the sky was clipped away and read
+// as a black disc that slid across the sky as you walked. It also made the sun parallax,
+// which a sun does not do. Both follow the camera now, so the dome is always exactly its
+// own radius away and can never be clipped.
+const SKY_RADIUS = 170;
 function buildSky(scene) {
   const dome = new THREE.Mesh(
-    new THREE.SphereGeometry(170, 32, 20),
+    new THREE.SphereGeometry(SKY_RADIUS, 48, 32),
     new THREE.MeshBasicMaterial({ map: texture(skyCanvas(), true), side: THREE.BackSide, fog: false, depthWrite: false }),
   );
+  // Drawn before everything else and never occluding it: the sky is a backdrop, so it must
+  // not win a depth test against distant scenery.
+  dome.renderOrder = -1;
+  dome.frustumCulled = false;
   markFx(dome);
   scene.add(dome);
   // A soft glow on the true sun vector, so the bright part of the sky and the direction the
   // shadows fall agree with each other.
   const glow = sprite(SPRITES.glow, 46);
-  glow.position.copy(sunVector().multiplyScalar(150));
   glow.material.opacity = 0.75;
+  glow.frustumCulled = false;
   markFx(glow);
   scene.add(glow);
-  return dome;
+  return { dome, glow, sunOffset: sunVector().multiplyScalar(SKY_RADIUS * 0.88) };
 }
 
 function buildLights(scene, vmScene) {
@@ -2524,12 +2543,15 @@ function setFigureHurt(f, amount) {
 // site at a glance and go and take the fight.
 const BLIND_GLOW = new THREE.Color(0xfff6dc);
 function setFigureBlind(f, amount) {
-  if (f.blindShown === amount) return;
+  // Hurt runs first and writes the same emissive on the same meshes, so this cannot cache
+  // "what it was before" — it has to work from the material's true original, and it has to
+  // run every frame it is lit rather than only when the amount changes.
+  if (f.blindShown === amount && amount === 0) return;
   f.blindShown = amount;
   for (const part of [f.parts.head, f.parts.helmet, f.parts.goggles]) {
     for (const m of [].concat(part.material)) {
-      if (m.userData.blindBase === undefined) m.userData.blindBase = m.emissive.getHex();
-      m.emissive.setHex(m.userData.blindBase).lerp(BLIND_GLOW, amount);
+      if (m.userData.baseEmissive === undefined) m.userData.baseEmissive = m.emissive.getHex();
+      m.emissive.setHex(m.userData.baseEmissive).lerp(BLIND_GLOW, amount);
     }
   }
   if (!f.halo) {
