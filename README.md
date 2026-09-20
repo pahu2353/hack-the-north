@@ -110,6 +110,11 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
 | Settings | From the menu or the pause screen: agent cards (off by default), kill feed, minimap, Jev numbers, control hints. Remembered per machine. |
 
+**Look.** The interface is squared and dark with a single teal accent, the way a tactical
+shooter's menus read; the first-person view and the radar follow CS instead — sand-and-stone
+geometry in the view, and a round, player-centred radar with grey geometry and yellow site
+letters.
+
 **First-person view.** The map is the default view. Switch to first-person to see one agent's
 view, with a minimap and the top bar showing who is alive on both sides. Shooting stays automatic;
 there is no fire button. Click the canvas once to enable mouse look, then move the mouse to put

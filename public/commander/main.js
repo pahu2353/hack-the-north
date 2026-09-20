@@ -479,7 +479,6 @@ function beginMatch() {
   $('log').replaceChildren();
   $('voiceSummary').textContent = 'Volume: — · Emphasis: —';
   $('feed').replaceChildren();
-  $('caption').textContent = '';
   updateTeamUi();
   buildSquadCards();
   watchedId = null; // picked from the first view that has your squad in it
@@ -652,7 +651,6 @@ function resetSpeech() {
 }
 
 function onInterimTranscript(text) {
-  $('caption').textContent = text;
   if (!text.trim()) return;
   utterance ??= { heardAt: performance.now(), actedAt: 0 };
   clearTimeout(speculateTimer);
@@ -756,8 +754,19 @@ function addLogEntry(source, text, gesture, voiceContext, early = false) {
     el('div', { className: 'ux', hidden: !details.length },
       details.map(detail => el('span', { textContent: detail }))),
   ]);
-  $('log').prepend(entry);
+  const log = $('log');
+  const following = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+  log.append(entry);
+  while (log.children.length > 30) log.firstChild.remove();
+  if (following) log.scrollTop = log.scrollHeight;
   return entry;
+}
+
+// Keep the newest entry in view as it fills in, unless you've scrolled back through the log.
+function followLog(entry) {
+  const log = $('log');
+  if (entry !== log.lastChild) return;
+  if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
 }
 
 function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux, paceMultiplier }, voiceContext, gesture, early = false) {
@@ -765,6 +774,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
   if (stale) {
     entry.querySelector('.plan').replaceChildren(el('span', { className: 'skip', textContent: 'Superseded by a newer order' }));
     entry.classList.add('ignored');
+    followLog(entry);
     return;
   }
   if (voiceContext && ux) {
@@ -782,6 +792,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
     entry.querySelector('.plan').replaceChildren(
       el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
     entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+    followLog(entry);
     entry.classList.add('ignored');
     return;
   }
@@ -801,6 +812,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
   });
   entry.querySelector('.plan').replaceChildren(...rows);
   entry.querySelector('.meta').textContent = `${early ? 'acting early · ' : ''}Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
+  followLog(entry);
 }
 
 const SQUAD_ONLY_SIGNALS = { Victory: '✌️ Split', ILoveYou: '🤟 Special' };
@@ -1177,17 +1189,25 @@ function syncListening() {
   if (voiceMode === 'ptt' && shouldListen && !voice.listening) voice.startTalking();
   else if (voiceMode === 'ptt' && !shouldListen && voice.listening) voice.stopTalking();
   else if (voiceMode === 'handsfree') voice.setListening(shouldListen);
-  const label = !voice.enabled ? '🎙 Mic off'
-    : micMuted ? '🔇 Muted: click to unmute'
-    : !inMatch ? '🎙 Mic on: listens during matches'
-      : voiceMode === 'ptt' ? pttHeld ? '🎙 Listening: release to send' : '🎙 Hold V or this button to talk'
-        : '🎙 Listening: just talk';
+  // The mic icon carries the state; the talk bar only appears in hold-to-talk.
+  const state = !voice.enabled ? 'off' : micMuted ? 'muted' : voice.listening ? 'live' : 'on';
+  const labels = { off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic' };
+  const mic = $('micBtn');
+  if (mic.dataset.state !== state) {
+    mic.dataset.state = state;
+    mic.title = labels[state];
+    mic.setAttribute('aria-label', labels[state]);
+  }
+  $('meter').classList.toggle('live', voice.listening);
+  $('listen').hidden = voiceMode !== 'ptt';
+  const label = !voice.enabled ? 'Mic off'
+    : micMuted ? 'Muted'
+    : !inMatch ? 'Waiting for a match'
+      : pttHeld ? 'Listening — release to send' : 'Hold V or this button to talk';
   if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
   $('listen').classList.toggle('live', voice.listening);
-  $('listen').title = voiceMode === 'ptt' ? 'Hold to talk' : 'Click to mute or unmute';
   $('voiceMode').textContent = voiceMode === 'ptt' ? 'Hold to talk' : 'Hands-free';
   $('voiceMode').setAttribute('aria-pressed', String(voiceMode === 'ptt'));
-  $('micBtn').textContent = !voice.enabled ? 'Turn on mic' : micMuted ? 'Unmute' : 'Mute';
 }
 
 async function toggleMic() {
@@ -1315,6 +1335,13 @@ document.addEventListener('keydown', e => {
   }
 });
 
+function setIconState(id, state, label) {
+  const button = $(id);
+  button.dataset.state = state;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
 let gestures = null;
 let gestureFeedback = { stage: 'none', name: null };
 
@@ -1332,7 +1359,7 @@ function renderGestureFeedback({ stage, name }) {
 $('previewBtn').onclick = () => {
   const showing = $('cam').hidden;
   $('cam').hidden = !showing;
-  $('previewBtn').textContent = showing ? 'Hide preview' : 'Show preview';
+  setIconState('previewBtn', showing ? 'on' : 'off', showing ? 'Hide preview' : 'Show preview');
 };
 $('camBtn').onclick = async () => {
   const wanted = !gestures;
@@ -1350,9 +1377,9 @@ function stopCamera() {
   gestureFeedback = { stage: 'none', name: null };
   clearTimeout(signTimer);
   signTimer = null;
-  $('camBtn').textContent = 'Camera on';
+  setIconState('camBtn', 'off', 'Turn on camera');
   $('camOff').hidden = false;
-  $('cam').hidden = true;
+  $('cam').hidden = false; // the frame stays, showing its placeholder
   $('previewBtn').hidden = true;
   $('sign').hidden = true;
   setStatus('camStatus', 'Camera off');
@@ -1395,9 +1422,9 @@ async function startCamera() {
         setView(!is3d);
       },
     });
-    $('camBtn').textContent = 'Camera off';
+    setIconState('camBtn', 'on', 'Turn off camera');
     $('previewBtn').hidden = false;
-    $('previewBtn').textContent = 'Hide preview';
+    setIconState('previewBtn', 'on', 'Hide preview');
     $('cam').hidden = false;
     return true;
   } catch (error) {
@@ -1419,13 +1446,13 @@ function showSign(text) {
   signTimer = setTimeout(() => { signTimer = null; renderGestureFeedback(gestureFeedback); }, 1200);
 }
 
+const signChip = (emoji, word, title) => el('span', { title }, [el('b', { textContent: emoji }), word]);
 $('signs').replaceChildren(
-  el('span', { textContent: '☝️ aim', title: 'Point straight up to mark a spot on the map' }),
-  el('span', { textContent: '🫱 agent', title: 'Hold your thumb out left or right to keep stepping through the squad' }),
-  el('span', { textContent: '🤏 view', title: 'Pinch to switch between the map and first-person' }),
-  ...Object.entries(SIGNALS).map(([name, s]) => el('span', {
-    textContent: `${s.emoji} ${name === 'ILoveYou' ? 'special' : s.label.toLowerCase()}`, title: s.meaning,
-  })),
+  signChip('☝️', 'aim', 'Point straight up to mark a spot on the map'),
+  signChip('🫱', 'agent', 'Hold your thumb out left or right to keep stepping through the squad'),
+  signChip('🤏', 'view', 'Pinch to switch between the map and first-person'),
+  ...Object.entries(SIGNALS).map(([name, s]) =>
+    signChip(s.emoji, name === 'ILoveYou' ? 'special' : s.label.toLowerCase(), s.meaning)),
 );
 
 // Mic and camera need a secure page (HTTPS or localhost); typed orders and map clicks always work.

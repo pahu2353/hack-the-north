@@ -3,12 +3,19 @@
 import { MAPS, zoneAt } from './world.js';
 
 const THEME = {
-  floor: '#161a21', wall: '#2d333f', wallEdge: '#414958', zone: 'rgba(255,255,255,0.13)',
-  site: 'rgba(255, 196, 64, 0.07)', siteLetter: 'rgba(255, 196, 64, 0.35)',
+  floor: '#0c1116', wall: '#1f2a33', wallEdge: '#3d4b56', zone: 'rgba(200, 225, 240, 0.13)',
+  site: 'rgba(242, 193, 78, 0.09)', siteLetter: 'rgba(242, 193, 78, 0.42)',
 };
-const OWN = '#4aa3ff';
-const ENEMY = '#ff5d5d';
-const POINTER = '#ffd24a';
+// The minimap is a CS-style radar: pale grey geometry on near-black, and the site letters in
+// yellow doing the labelling, since there's no room for callouts at that size.
+const RADAR = {
+  floor: '#0a0d10', wall: '#79848d', wallEdge: '#3c454d', zone: 'rgba(0, 0, 0, 0)',
+  site: 'rgba(242, 193, 78, 0.10)', siteLetter: 'rgba(242, 193, 78, 0.85)',
+};
+const RADAR_SPAN = 44; // metres across the radar, so it reads like a scope rather than a map
+const OWN = '#3d8bfd';
+const ENEMY = '#ff4655';
+const POINTER = '#f2c14e';
 
 // "#rrggbb" plus an alpha, as a colour the canvas understands.
 export function fade(hex, alpha) {
@@ -55,9 +62,16 @@ export function createRenderer(canvas) {
   // positions: optional Map of unit id → smoothed {x, y} (multiplayer interpolation).
   // focusId: the agent being watched, highlighted with a wide view cone. mini: minimap mode.
   function draw(teamView, { pointer, positions, focusId, mini } = {}) {
-    const { scale: s, ox, oy, dpr } = view;
+    const { dpr } = view;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // The radar is centred on the agent you're watching and zoomed in, like the scope it copies;
+    // the full map view stays fitted to its canvas.
+    const centre = mini && teamView?.units.find(u => u.id === focusId && u.alive);
+    const { width, height } = canvas.getBoundingClientRect();
+    const s = centre ? Math.min(width, height) / RADAR_SPAN : view.scale;
+    const ox = centre ? width / 2 - (positions?.get(centre.id) ?? centre).x * s : view.ox;
+    const oy = centre ? height / 2 - (positions?.get(centre.id) ?? centre).y * s : view.oy;
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
     flip = flippedFor(teamView?.team);
     if (flip) {
@@ -66,27 +80,28 @@ export function createRenderer(canvas) {
       ctx.translate(-map.width / 2, -map.height / 2);
     }
     const px = 1 / s; // one screen pixel in world units
+    const theme = mini ? RADAR : THEME;
 
-    ctx.fillStyle = THEME.floor;
+    ctx.fillStyle = theme.floor;
     ctx.fillRect(0, 0, map.width, map.height);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const z of map.zones) {
       if (!map.sites.includes(z.name)) continue;
-      ctx.fillStyle = THEME.site;
+      ctx.fillStyle = theme.site;
       ctx.fillRect(z.rect.x, z.rect.y, z.rect.w, z.rect.h);
-      ctx.fillStyle = THEME.siteLetter;
-      ctx.font = '700 7px system-ui, sans-serif';
+      ctx.fillStyle = theme.siteLetter;
+      ctx.font = `700 ${mini ? 9 : 7}px system-ui, sans-serif`;
       label(z.name[0], z.center.x, z.center.y - 3);
     }
     for (const w of map.walls) {
-      ctx.fillStyle = THEME.wall;
+      ctx.fillStyle = theme.wall;
       ctx.fillRect(w.x, w.y, w.w, w.h);
-      ctx.strokeStyle = THEME.wallEdge;
+      ctx.strokeStyle = theme.wallEdge;
       ctx.lineWidth = px;
       ctx.strokeRect(w.x, w.y, w.w, w.h);
     }
-    ctx.fillStyle = THEME.zone;
+    ctx.fillStyle = theme.zone;
     ctx.font = `600 ${12 * px}px system-ui, sans-serif`;
     for (const z of mini ? [] : map.zones) {
       label(z.name.toUpperCase(), z.center.x, z.name === 'Top Hall' ? z.center.y : z.rect.y + 2.2);

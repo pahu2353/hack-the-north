@@ -75,7 +75,7 @@ export function createVoice({ onInterim, onFinal, onStatus, onLevel }) {
 
   function reportReady() {
     if (ctx?.state === 'suspended') onStatus('Click anywhere to turn the mic on', 'pending');
-    else onStatus(listening ? 'Listening' : 'Mic ready', 'ok');
+    else onStatus(''); // the mic icon already says this; a line of green text was noise
   }
 
   async function enable(terms) {
