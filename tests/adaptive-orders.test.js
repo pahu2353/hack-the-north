@@ -25,6 +25,16 @@ const run = (game, seconds) => {
   for (let f = 0; f < Math.round(seconds / STEP); f++) stepGame(game, STEP);
 };
 
+// Rifle fire is a coin flip per shot, so "did anyone get hit" is only ever probably true.
+// A test about whether shooting happened at all pins the roll instead, or it fails for
+// nobody's reason a few runs in a hundred.
+function everyShotHits(body) {
+  const real = Math.random;
+  Math.random = () => 0;
+  try { return body(); } finally { Math.random = real; }
+}
+
+
 test('an order is looked at before it is walked, so it visibly lands', () => {
   const { game, agent } = alone();
   // Facing the wrong way entirely, and standing still: nothing used to move the angle at all
@@ -118,10 +128,12 @@ test('holding fire keeps a lurker hidden, but never gets them killed for it', ()
 
   // Being shot at is not a moment to stay polite. The enemy keeps firing, so the exemption
   // stays true rather than lapsing a second after one shot.
-  for (let f = 0; f < 60; f++) {
-    Object.assign(enemy, { targetId: agent.id, lastShotAt: game.time });
-    stepGame(game, STEP);
-  }
+  everyShotHits(() => {
+    for (let f = 0; f < 60; f++) {
+      Object.assign(enemy, { targetId: agent.id, lastShotAt: game.time });
+      stepGame(game, STEP);
+    }
+  });
   assert.ok(enemy.hp < hp, 'an agent under fire defends itself even while holding fire');
 });
 

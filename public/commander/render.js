@@ -231,6 +231,7 @@ export function createRenderer(canvas) {
 
   // In the air it's a small dark ball; on the ground, a shrinking ring shows the blast
   // and how long is left to get out of it.
+  const ARC = Math.PI / 3; // matches KNIFE.arc in the simulation
   const UTILITY_TINT = { flash: '#f2f0e4', smoke: '#c9ccd3' };
   function drawGrenade(g, team, px) {
     const mine = g.team === team;
@@ -249,6 +250,14 @@ export function createRenderer(canvas) {
       ctx.arc(g.x, g.y, 5 * (0.35 + 0.65 * left), 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+    // In the air it casts a mark on the floor beneath it, which is what makes an arc read
+    // as an arc from directly overhead rather than as a dot sliding along the ground.
+    if (!g.landed && g.z > 0.3) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.max(0.08, 0.3 - g.z * 0.05)})`;
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 0.3, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.fillStyle = UTILITY_TINT[g.kind] ?? '#20242c';
     ctx.strokeStyle = mine ? OWN : ENEMY;
@@ -286,12 +295,24 @@ export function createRenderer(canvas) {
   }
 
   function drawSoldier(u, color, px, own = false) {
-    ctx.fillStyle = fade(color, 0.14);
-    ctx.beginPath();
-    ctx.moveTo(u.x, u.y);
-    ctx.arc(u.x, u.y, 4, u.facing - 0.35, u.facing + 0.35);
-    ctx.closePath();
-    ctx.fill();
+    // Blinded: no vision cone, because they have no vision, and a white ring so you can see
+    // at a glance who is currently helpless.
+    if (u.blind > 0) {
+      ctx.fillStyle = `rgba(255,252,236,${Math.min(0.5, u.blind / 3)})`;
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.5 * px;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = fade(color, 0.14);
+      ctx.beginPath();
+      ctx.moveTo(u.x, u.y);
+      ctx.arc(u.x, u.y, 4, u.facing - 0.35, u.facing + 0.35);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     ctx.fillStyle = color;
     ctx.strokeStyle = '#0b0d11';
@@ -369,6 +390,22 @@ export function createRenderer(canvas) {
       ctx.fill();
       ctx.strokeStyle = `rgba(255, 120, 40, ${fade_})`;
       ctx.lineWidth = 2 * px;
+      ctx.stroke();
+    } else if (e.kind === 'slash') {
+      // The arc the knife actually swept, drawn as the hitbox it is rather than a generic
+      // spark: you can see who was inside it and who was a step outside.
+      const life = e.ttl / 0.22;
+      ctx.strokeStyle = `rgba(255,255,255,${0.9 * life})`;
+      ctx.lineWidth = 2.5 * px;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.r * (1.1 - 0.25 * life), e.facing - ARC, e.facing + ARC);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(190,220,255,${0.35 * life})`;
+      ctx.lineWidth = 1 * px;
+      ctx.beginPath();
+      ctx.moveTo(e.x, e.y);
+      ctx.arc(e.x, e.y, e.r, e.facing - ARC, e.facing + ARC);
+      ctx.closePath();
       ctx.stroke();
     } else if (e.kind === 'flash') {
       // A hard white ring that snaps outward. Nothing burns, so nothing is orange.

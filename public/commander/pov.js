@@ -131,14 +131,53 @@ export function createPovRenderer(canvas) {
     }
 
     for (const e of view.effects) if (e.kind === 'tracer') tracer(e, walls, view);
+    // Someone else's swing, seen from here: a bright arc where the blade went.
+    for (const e of view.effects) if (e.kind === 'slash' && e.team !== undefined) worldSlash(e);
     viewmodel(view, unit);
     crosshair(unit);
+    kitReadout(view, unit);
     // Flashed: everything goes, including the crosshair, because the agent genuinely has no
     // vision and the picture has to say the same thing the simulation does.
     if (unit.blind > 0) {
       ctx.fillStyle = `rgba(255,255,252,${(0.35 + 0.62 * Math.min(1, unit.blind / 1.4)).toFixed(3)})`;
       ctx.fillRect(0, 0, W, H);
     }
+  }
+
+  // The same kit readout the 3D view draws, so switching renderers with G does not change
+  // what the agent appears to be carrying.
+  const KIT_ROWS = [['grenades', 'grenade'], ['flashes', 'flash'], ['smokes', 'smoke']];
+  function kitReadout(view, unit) {
+    const rows = KIT_ROWS.filter(([field]) => field === 'grenades' || view.utility);
+    ctx.textAlign = 'right';
+    const right = W - 18;
+    let y = H - 18;
+    for (const [field, name] of rows.slice().reverse()) {
+      const left = unit[field] ?? 0;
+      const spent = left < 1;
+      ctx.font = '500 12px system-ui, sans-serif';
+      ctx.fillStyle = spent ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.62)';
+      ctx.fillText(name, right, y);
+      ctx.font = '700 13px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillStyle = spent ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.95)';
+      ctx.fillText(`${left}/1`, right - 52, y);
+      y -= 17;
+    }
+    ctx.textAlign = 'left';
+  }
+
+  // A swing that happened out in the world. Two projected points are enough: the arc is
+  // short-lived and the eye reads the streak, not the geometry.
+  function worldSlash(e) {
+    const a = project(e.x + Math.cos(e.facing - 0.5) * e.r, e.y + Math.sin(e.facing - 0.5) * e.r, 1.1);
+    const b = project(e.x + Math.cos(e.facing + 0.5) * e.r, e.y + Math.sin(e.facing + 0.5) * e.r, 1.1);
+    if (!a || !b) return;
+    ctx.strokeStyle = `rgba(255,255,255,${(e.ttl / 0.22) * 0.85})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
   }
 
   // A smoke is drawn as what it is: a soft wall of grey you cannot see past. Sized from the

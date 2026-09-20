@@ -7,6 +7,37 @@ const zone = (name, x, y, w, h, description, center) => ({
   rect: rect(x, y, w, h),
   center: center ?? { x: x + w / 2, y: y + h / 2 },
 });
+// What people actually call these places. A zone's description explains it to someone who
+// has never seen the map; these are the words a commander uses mid-round, and they are the
+// ones an order arrives in. Keyed by zone name, shared across maps where the name is.
+export const CALLOUTS = {
+  'A Site': 'a, a site, site a, the a bomb site',
+  'B Site': 'b, b site, site b, the b bomb site',
+  Mid: 'mid, middle, the middle',
+  'Mid Doors': 'doors, mid doors, the double doors',
+  Catwalk: 'cat, catwalk, the cat',
+  'A Short': 'short, a short, short a',
+  'Long A': 'long, long a, a long, the long corridor',
+  'Long Doors': 'long doors, the doors into long',
+  Pit: 'pit, the pit',
+  Window: 'window, the window room, b window',
+  'B Doors': 'b doors, the doors into b',
+  'Top Mid': 'top mid, the top of mid, the ct end of mid',
+  'CT Mid': 'ct mid, connector, the connector',
+  'B Tunnels': 'tunnels, tunns, upper tunnels, b tunnels',
+  'Lower Tunnels': 'lower tunnels, lower tunns, the tunnel mouth',
+  'Outside Long': 'outside long, outside, the open ground before long',
+  'A Main': 'a main, main, the a corridor',
+  'B Main': 'b main, the b corridor',
+  'A Link': 'a link, link, the a connector',
+  'B Link': 'b link, the b connector',
+  'Top Hall': 'top hall, ct hall, the rotation hall, behind the sites',
+  'T Spawn': 't spawn, t side, their side',
+  'CT Spawn': 'ct spawn, ct, ct side',
+  'Attacker Spawn': 'attacker spawn, t spawn, t side',
+  'Defender Spawn': 'defender spawn, ct spawn, ct side',
+};
+
 const BORDER = [rect(0, 0, 80, 1), rect(0, 55, 80, 1), rect(0, 0, 1, 56), rect(79, 0, 1, 56)];
 
 // A layout this size is unreadable written as a wall list, and the walls are not the
@@ -217,6 +248,39 @@ export const hasLineOfSight = (map, a, b) => !map.walls.some(w => segmentHitsRec
 // collision pass uses to push one back out, asked before the step instead of after it.
 export const blockedAt = (map, x, y, r) => map.walls.some(w =>
   Math.hypot(x - clamp(x, w.x, w.x + w.w), y - clamp(y, w.y, w.y + w.h)) < r);
+
+// How tall each wall is. This used to live in the 3D renderer alone, which was fine while
+// nothing could go over a wall; now that a grenade can be lobbed, the thing you throw over
+// has to be exactly the thing you can see is low, so both read it from here.
+export const COVER_SPAN = 5; // rects at or under this on both axes are cover, not architecture
+
+// A stable per-rect random, so a wall is the same height every time the map is built.
+export function seededFor(r) {
+  let s = Math.imul(r.x * 73856093 ^ r.y * 19349663 ^ r.w * 83492791 ^ r.h * 2971215073, 1) >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+export function wallHeight(map, r) {
+  const rnd = seededFor(r);
+  const cover = r.w <= COVER_SPAN && r.h <= COVER_SPAN;
+  const edge = r.x <= 0 || r.y <= 0 || r.x + r.w >= map.width || r.y + r.h >= map.height;
+  // Waist-high cover, the map's perimeter buildings, and head-height interior walls.
+  return cover ? 1.5 : edge ? 7 + rnd() * 6 : 2.8 + rnd() * 2.2;
+}
+
+// The tallest thing standing between a and b, or 0 if the line is clear. A throw clears the
+// gap only if its arc is above this where it crosses.
+export function tallestBetween(map, a, b) {
+  let tallest = 0;
+  for (const w of map.walls) {
+    if (!segmentHitsRect(a.x, a.y, b.x, b.y, w)) continue;
+    tallest = Math.max(tallest, wallHeight(map, w));
+  }
+  return tallest;
+}
 
 // Does the sight line a→b pass through a circle? Smoke is the only thing that blocks a view
 // without blocking a bullet or a grenade, so it is tested separately from the walls.

@@ -22,7 +22,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
-import { MAPS } from './world.js';
+import { MAPS, wallHeight } from './world.js';
 
 const FOV_H = (90 * Math.PI) / 180; // horizontal, matching the raycaster view
 const WALL_H = 3;
@@ -221,6 +221,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   const figures = new Map(); // unit id → { group, parts, lastPos, phase }
   const smokes = new Map(); // smoke id → { group, puffs, t }
+  const slashes = []; // short-lived knife arcs
   const corpses = new Map();
   const tracers = [];
   const nades = new Map();
@@ -263,6 +264,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     figures.clear();
     for (const cloud of smokes.values()) scene.remove(cloud.group);
     smokes.clear();
+    for (const sl of slashes) scene.remove(sl.mesh);
+    slashes.length = 0;
     for (const c of corpses.values()) scene.remove(c.f.group);
     corpses.clear();
     for (const t of tracers) scene.remove(t.group);
@@ -412,7 +415,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       const walking = u.moving ?? moved / Math.max(dt, 1e-3) > 0.6;
       // A walking agent is doing something deliberate — clearing an angle, holding fire —
       // and it has to read differently from a sprint or the pace channel is invisible.
-      stepGait(f, walking, Boolean(u.firing), dt, u.pace === 'walk' ? 0.5 : 1);
+      const knifeOut = u.weapon === 'knife';
+      f.parts.gun.visible = !knifeOut;
+      f.parts.knife.visible = knifeOut;
+      f.slash = Math.max(0, (f.slash ?? 0) - dt * 4.5);
+      if (u.slashing) f.slash = 1;
+      stepGait(f, walking, Boolean(u.firing), dt, u.pace === 'walk' ? 0.5 : 1, f.slash);
       // A squadmate who walks into the camera fills the whole screen and blinds the view.
       // Shooters fade teammates out as they close on the lens; without it, standing in a
       // stack makes first person unusable. Fully gone under 0.9 m, clear again past 2.0 m.
@@ -430,6 +438,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       f.lastHp = hp;
       f.hurt = Math.max(0, (f.hurt ?? 0) - dt * 2.8);
       setFigureHurt(f, f.hurt);
+      setFigureBlind(f, Math.min(1, (u.blind ?? 0) / 1.2));
 
       f.parts.flash.visible = Boolean(u.firing);
       if (u.firing) {
@@ -498,7 +507,9 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
 
   const effectKey = e => (e.kind === 'tracer'
     ? `t:${e.x1.toFixed(2)},${e.y1.toFixed(2)},${e.x2.toFixed(2)},${e.y2.toFixed(2)}`
-    : `${e.kind}:${e.x.toFixed(2)},${e.y.toFixed(2)}`);
+    // A slash carries its direction, so two swings from one spot are two effects rather
+    // than one that never re-fires.
+    : `${e.kind}:${e.x.toFixed(2)},${e.y.toFixed(2)}${e.facing === undefined ? '' : `,${e.facing.toFixed(2)}`}`);
 
   function markNewEffects(view) {
     const cur = new Set();
@@ -618,6 +629,26 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     });
   }
 
+  // The arc a knife swept, laid flat at chest height where the blade actually went. It is
+  // the hitbox drawn honestly: the wedge you see is the wedge the simulation tested.
+  function spawnSlash(e) {
+    const arc = Math.PI / 3; // matches KNIFE.arc
+    const mesh = new THREE.Mesh(
+      new THREE.RingGeometry(Math.max(0.05, (e.r ?? 2.2) * 0.45), e.r ?? 2.2, 20, 1, -arc, arc * 2),
+      new THREE.MeshBasicMaterial({
+        color: 0xeaf2ff, transparent: true, opacity: 1, side: THREE.DoubleSide,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    // Rings are built in the XY plane and laid flat, so the sweep is rotated about Z before
+    // the lay-down; yawOf converts the sim's heading into the scene's yaw.
+    mesh.rotation.z = -e.facing;
+    mesh.position.set(e.x, 1.15, e.y);
+    scene.add(markFx(mesh));
+    slashes.push({ mesh, t: 0 });
+  }
+
   // A smoke has to actually hide what is behind it, or the simulation blocking vision looks
   // like a bug. A cluster of soft billboards reads as volume from any angle and costs far
   // less than real volumetrics; they are wide enough to overlap so there are no gaps.
@@ -676,9 +707,13 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
         nades.set(g.id, m);
         scene.add(m);
       }
-      // In the air it arcs; once it lands it sits on the floor and blinks toward the fuse.
-      m.position.set(g.x, g.landed ? 0.18 : 1.1, g.y);
-      const blink = g.landed && Math.sin(view.time * 26) > 0 ? 0xff3b2f : 0x000000;
+      // The simulation flies it along a real arc and says how high it is, so the model
+      // follows that rather than sitting at one made-up height until it lands.
+      m.position.set(g.x, Math.max(0.18, g.z ?? 0.18), g.y);
+      // A frag blinks toward its fuse. A flash and a smoke glow steadily in their own
+      // colour instead, because a blinking white light would read as a frag about to go off.
+      const tint = { flash: 0xf2f0e4, smoke: 0x8fb0c8 }[g.kind];
+      const blink = tint ?? (g.landed && Math.sin(view.time * 26) > 0 ? 0xff3b2f : 0x000000);
       m.material.emissive.setHex(blink);
     }
     for (const [id, m] of nades) {
@@ -687,8 +722,22 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       nades.delete(id);
     }
     for (const e of view.effects) {
+      if (e.kind === 'slash' && newEffects.has(effectKey(e))) spawnSlash(e);
       if (e.kind !== 'blast' || !newEffects.has(effectKey(e))) continue;
       spawnBlast(e.x, e.y, e.r ?? 5, 1);
+    }
+    for (let i = slashes.length - 1; i >= 0; i--) {
+      const sl = slashes[i];
+      sl.t += dt;
+      const k = sl.t / 0.24;
+      sl.mesh.material.opacity = Math.max(0, 1 - k);
+      sl.mesh.scale.setScalar(0.85 + k * 0.35);
+      if (k >= 1) {
+        scene.remove(sl.mesh);
+        sl.mesh.geometry.dispose();
+        sl.mesh.material.dispose();
+        slashes.splice(i, 1);
+      }
     }
     for (let i = blasts.length - 1; i >= 0; i--) {
       const b = blasts[i];
@@ -838,6 +887,21 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     sway.kick = Math.max(0, sway.kick - dt * 9);
     if (unit.firing) sway.kick = 1;
 
+    // What is in your hands has to match what the simulation says you are holding, or the
+    // knife is a rule you cannot see. The swing is its recoil: a fast arc across the screen
+    // and a slower return, so the two weapons share one animation channel.
+    const knifeOut = unit.weapon === 'knife';
+    weapon.gun.visible = !knifeOut;
+    weapon.dot.visible = !knifeOut;
+    weapon.blade.visible = knifeOut;
+    sway.slash = Math.max(0, (sway.slash ?? 0) - dt * 4.5);
+    if (unit.slashing) sway.slash = 1;
+    if (knifeOut) {
+      const swing = Math.sin(Math.min(1, sway.slash) * Math.PI);
+      weapon.blade.position.set(-0.05 - swing * 0.16, 0.02 + swing * 0.05, 0.02 - swing * 0.13);
+      weapon.blade.rotation.set(-0.35 + swing * 0.5, 0.5 - swing * 1.5, swing * 1.25);
+    }
+
     weapon.group.position.set(
       0.15 + sway.x + Math.cos(bobPhase) * bob,
       -0.22 + sway.y + Math.abs(Math.sin(bobPhase)) * bob - sway.kick * 0.012,
@@ -846,12 +910,12 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     // Toed in slightly so the muzzle converges toward the crosshair instead of the gun sitting
     // square to the screen edge — the difference between "held" and "floating".
     weapon.group.rotation.set(sway.kick * 0.09, -0.07 + sway.x * 0.6, sway.y * 0.5);
-    muzzle.vm.visible = sway.kick > 0.55;
+    muzzle.vm.visible = sway.kick > 0.55 && unit.weapon !== 'knife';
     if (muzzle.vm.visible) {
       muzzle.vm.scale.setScalar(0.22 + Math.random() * 0.2);
       muzzle.vm.material.rotation = Math.random() * Math.PI * 2;
     }
-    muzzle.light.intensity = sway.kick > 0.55 ? 6 : 0;
+    muzzle.light.intensity = muzzle.vm.visible ? 6 : 0;
     muzzle.light.position.copy(camera.position);
   }
 
@@ -867,6 +931,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     vignette(ownHurt);
     // Being flashed covers everything, including the crosshair and the name tags: the whole
     // point is that this agent cannot see, and the overlay has to agree with the simulation.
+    kitReadout(view, unit);
     if (unit.blind > 0) {
       blindWash(unit.blind);
       return;
@@ -936,6 +1001,31 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     r.addColorStop(1, `rgba(190,20,10,${(0.66 * hurt).toFixed(3)})`);
     hud.fillStyle = r;
     hud.fillRect(0, 0, W, H);
+  }
+
+  // What this agent is still carrying, bottom right, where a shooter puts its ammunition.
+  // Spent items stay on the list greyed out rather than disappearing: "0/1 smoke" tells you
+  // why an order did nothing, and a row that vanishes tells you nothing at all.
+  const KIT_ROWS = [['grenades', 'grenade'], ['flashes', 'flash'], ['smokes', 'smoke']];
+  function kitReadout(view, unit) {
+    const rows = KIT_ROWS.filter(([field]) => field === 'grenades' || view.utility);
+    if (!rows.length) return;
+    hud.textAlign = 'right';
+    hud.textBaseline = 'alphabetic';
+    const right = W - 18;
+    let y = H - 18;
+    for (const [field, name] of rows.slice().reverse()) {
+      const left = unit[field] ?? 0;
+      const spent = left < 1;
+      hud.font = '500 12px system-ui, sans-serif';
+      hud.fillStyle = spent ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.62)';
+      hud.fillText(name, right, y);
+      hud.font = '700 13px ui-monospace, SFMono-Regular, Menlo, monospace';
+      hud.fillStyle = spent ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.95)';
+      hud.fillText(`${left}/1`, right - 52, y);
+      y -= 17;
+    }
+    hud.textAlign = 'left';
   }
 
   // Green only while the sim says this agent actually has someone under the crosshair, and a
@@ -1509,8 +1599,9 @@ function buildWalls(scene, map) {
     const cover = r.w <= COVER && r.h <= COVER;
     const edge = r.x <= 0 || r.y <= 0 || r.x + r.w >= map.width || r.y + r.h >= map.height;
     // Perimeter masses become buildings; interior walls vary around head height so the
-    // skyline has some rhythm instead of one flat band everywhere.
-    const height = cover ? 1.5 : edge ? 7 + rnd() * 6 : 2.8 + rnd() * 2.2;
+    // skyline has some rhythm instead of one flat band everywhere. The rule itself lives in
+    // world.js, because the simulation throws grenades over exactly these heights.
+    const height = wallHeight(map, r);
 
     const family = [SURFACES.stone, SURFACES.plaster, SURFACES.painted][Math.floor(rnd() * 3)];
     const solid = new THREE.Mesh(
@@ -1992,6 +2083,30 @@ function fist(mat, mirror = 1) {
   return h;
 }
 
+// A combat knife: a dark handle, a guard, and a blade with one bright bevel along it so it
+// catches the light and reads as steel rather than as a grey stick.
+function knifeModel(scale = 1) {
+  const g = new THREE.Group();
+  const steel = new THREE.MeshStandardMaterial({ color: 0xb8bec6, roughness: 0.22, metalness: 0.9 });
+  const edge = new THREE.MeshStandardMaterial({ color: 0xe8edf2, roughness: 0.1, metalness: 0.95 });
+  const grip = new THREE.MeshStandardMaterial({ color: 0x1b1e23, roughness: 0.85 });
+  const add = (geo, mat, x, y, z, rx = 0, rz = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.rotation.set(rx, 0, rz);
+    g.add(m);
+    return m;
+  };
+  add(new THREE.BoxGeometry(0.03, 0.03, 0.11), grip, 0, 0, 0.055);      // handle
+  add(new THREE.BoxGeometry(0.075, 0.016, 0.018), steel, 0, 0, -0.008); // guard
+  add(new THREE.BoxGeometry(0.026, 0.008, 0.2), steel, 0, 0, -0.11);    // blade
+  add(new THREE.BoxGeometry(0.008, 0.009, 0.19), edge, 0.011, 0, -0.112); // bevel
+  // A clipped point rather than a square end: a blunt blade reads as a toy.
+  add(new THREE.ConeGeometry(0.015, 0.05, 4), steel, 0, 0, -0.225, -Math.PI / 2, Math.PI / 4);
+  g.scale.setScalar(scale);
+  return g;
+}
+
 function buildWeapon(vmScene) {
   const group = new THREE.Group();
   // rifle() is modelled facing -z, the same way the camera looks, so the barrel already points
@@ -2009,9 +2124,11 @@ function buildWeapon(vmScene) {
     new THREE.MeshStandardMaterial({ color: 0x8a6a4e, roughness: 0.9 }),
   );
   hand.position.set(0, -0.075, 0.06);
-  group.add(gun, dot, hand);
+  const blade = knifeModel(1.15);
+  blade.visible = false;
+  group.add(gun, dot, hand, blade);
   vmScene.add(group);
-  return { group, gun };
+  return { group, gun, dot, blade };
 }
 
 function buildMuzzle(scene, vmScene) {
@@ -2156,11 +2273,18 @@ function buildFigure(color, outline) {
   rig.add(rigInner);
   body.add(rig);
   const gun = rifle(0.85);
+  // Every figure carries both and shows one, so switching costs nothing at the moment it
+  // happens and an enemy charging you is visibly holding a knife.
+  const heldKnife = knifeModel(1.5);
+  heldKnife.visible = false;
   // Shouldered on the right, not centred: on the centreline the trigger arm has to reach
   // across the chest and its forearm ends up inside the torso.
   gun.position.set(0.15, 1.22, -0.16);
   gun.rotation.set(-0.02, 0.13, 0.04);
   rigInner.add(gun);
+  heldKnife.position.set(0.17, 1.19, -0.3);
+  heldKnife.rotation.set(0.1, 0.25, 0);
+  rigInner.add(heldKnife);
   gun.updateMatrixWorld(true);
 
   const arms = {};
@@ -2215,7 +2339,7 @@ function buildFigure(color, outline) {
 
   return {
     group,
-    parts: { ...legs, ...arms, rig, body, flash },
+    parts: { ...legs, ...arms, rig, body, flash, gun, knife: heldKnife, head, helmet, goggles },
     phase: 0,
     lastPos: null,
   };
@@ -2268,6 +2392,31 @@ function setFigureHurt(f, amount) {
   });
 }
 
+// Someone who has been flashed is the most important thing on the screen for the next two
+// seconds, and nothing about a figure standing still says so. Their head burns out white —
+// the same read as the game this borrows from — so you can pick a blinded enemy out of a
+// site at a glance and go and take the fight.
+const BLIND_GLOW = new THREE.Color(0xfff6dc);
+function setFigureBlind(f, amount) {
+  if (f.blindShown === amount) return;
+  f.blindShown = amount;
+  for (const part of [f.parts.head, f.parts.helmet, f.parts.goggles]) {
+    for (const m of [].concat(part.material)) {
+      if (m.userData.blindBase === undefined) m.userData.blindBase = m.emissive.getHex();
+      m.emissive.setHex(m.userData.blindBase).lerp(BLIND_GLOW, amount);
+    }
+  }
+  if (!f.halo) {
+    f.halo = sprite(SPRITES.glow, 0.55, 0);
+    f.halo.position.y = 1.64;
+    markFx(f.halo);
+    f.group.add(f.halo);
+  }
+  f.halo.visible = amount > 0.02;
+  f.halo.material.opacity = amount * 0.85;
+  f.halo.scale.setScalar(0.5 + amount * 0.35);
+}
+
 function setFigureAlpha(f, alpha) {
   if (f.alpha === alpha) return;
   f.alpha = alpha;
@@ -2283,7 +2432,7 @@ function setFigureAlpha(f, alpha) {
   });
 }
 
-function stepGait(f, walking, firing, dt, effort = 1) {
+function stepGait(f, walking, firing, dt, effort = 1, slash = 0) {
   const p = f.parts;
   f.phase += dt * (walking ? 8.5 * effort : 1.6);
   const s = Math.sin(f.phase);
@@ -2310,6 +2459,14 @@ function stepGait(f, walking, firing, dt, effort = 1) {
   p.rig.position.z = f.kick * 0.035;
   // A walking figure swings the weapon side to side a little; a firing one is locked in.
   p.rig.rotation.y = walking && !firing ? s * 0.07 : 0;
+  // A slash is a whole-body swing, not a wrist flick: the rig rotates across the body and
+  // the shoulders come round with it, then it settles back into the carry.
+  if (slash > 0) {
+    const swing = Math.sin(slash * Math.PI);
+    p.rig.rotation.y += swing * 1.5;
+    p.rig.rotation.z += swing * 0.55;
+    p.rig.rotation.x -= swing * 0.35;
+  }
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));

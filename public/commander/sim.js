@@ -4,7 +4,7 @@
 import { defenderCombat, opponentDestination, updateOpponentTactics } from './opponent.js';
 import {
   MAPS, angleDiff, angleTo, blockedAt, buildGrid, castRay, clamp, dist, findPath, hasLineOfSight,
-  nearestOpenPoint, segmentHitsCircle, walkableLine, zoneAt, zoneByName,
+  nearestOpenPoint, segmentHitsCircle, tallestBetween, walkableLine, wallHeight, zoneAt, zoneByName,
 } from './world.js';
 
 export const TEAMS = {
@@ -34,6 +34,15 @@ export const MANUAL_AIM = {
   eye: 1.6, height: 1.8, halfWidth: 0.375, maxPitch: Math.PI / 4,
   accuracy: 0.7, movingAccuracy: 0.5, lease: 0.6,
 };
+// A knife is a real choice, not a joke: you move faster with it out and you die for being
+// caught holding it at range. Behind someone it is lethal outright, which is what makes
+// lurking and flanking worth doing rather than just slower.
+export const KNIFE = {
+  range: 2.2, arc: Math.PI / 3, damage: 55, backstab: MAX_HP, interval: 0.75,
+  speed: 1.18, backAngle: Math.PI / 2,
+};
+export const WEAPONS = ['rifle', 'knife'];
+
 const SIGHT = 45;
 const PLANT_SECONDS = 3;
 const DEFUSE_SECONDS = 6;
@@ -256,6 +265,8 @@ function makeUnit(game, props) {
     lastAimHitAt: -Infinity,
     stillSince: 0,
     pace: 'run',
+    weapon: 'rifle',
+    lastSlashAt: -Infinity,
     gaze: 'travel',
     holdBearing: null,
     scanPhase: Math.random() * Math.PI * 2,
@@ -264,6 +275,8 @@ function makeUnit(game, props) {
     occupying: false,
     ackUntil: 0,
     repositionPoint: null,
+    peek: null,
+    peekPoint: null,
     settleAt: 0,
     stats: { kills: 0, deaths: 0, damage: 0 },
     grenades: GRENADE.carried,
@@ -322,6 +335,36 @@ function gridFor(game) {
   return game.grids.get('agent');
 }
 
+// Places that are not on the map: a short step rather than a destination, and the spike
+// wherever it happens to be. A commander says "move up a bit" far more often than they name
+// a zone, and until now there was nothing for that to land on.
+export const NUDGE_METRES = 6;
+
+// Resolve a relative place into a point. Jev names the relation, this does the arithmetic,
+// because a model naming a bearing and a distance is exactly the thing they are worst at.
+export function relativePoint(game, u, place) {
+  if (place === 'forward') return stepFrom(game, u, u.facing, NUDGE_METRES);
+  if (place === 'back') return stepFrom(game, u, u.facing + Math.PI, NUDGE_METRES);
+  if (place === 'spike') {
+    const s = game.spike;
+    if (s.state === 'planted' || s.state === 'dropped') return { x: s.x, y: s.y };
+    const carrier = unitById(game, s.carrierId);
+    return carrier ? { x: carrier.x, y: carrier.y } : null;
+  }
+  return null;
+}
+
+// As far along a bearing as the agent can actually walk, so "move up" against a wall moves
+// them as far as there is room instead of failing silently or pathing the long way round.
+function stepFrom(game, u, bearing, metres) {
+  const g = gridFor(game);
+  for (const reach of [metres, metres * 0.66, metres * 0.33]) {
+    const p = { x: u.x + Math.cos(bearing) * reach, y: u.y + Math.sin(bearing) * reach };
+    if (p.x > 1 && p.y > 1 && p.x < game.map.width - 1 && p.y < game.map.height - 1 && walkableLine(g, u, p)) return p;
+  }
+  return null;
+}
+
 // ---------- orders ----------
 
 export function setOrder(game, u, order) {
@@ -366,6 +409,7 @@ export function setOrder(game, u, order) {
   u.repositionPoint = null;
   u.settleAt = 0;
   u.pace = o.pace ?? 'run';
+  if (o.type !== 'knife') setWeapon(u, 'rifle');
   if (o.role !== undefined) u.role = o.role;
   u.holdFire = u.role === 'lurk';
   // Look where you were sent, now, before a single step is taken. The order has visibly
@@ -406,6 +450,8 @@ export function utilitySpot(game, u, kind) {
 
 // What carrying out the current order looks like, as an action.
 export function orderAction(game, u) {
+  if (u.order.type === 'knife') return 'knife';
+  if (u.order.type === 'peek') return 'peek';
   if (orderUtility(u.order.type)) return u.order.type === 'grenade' ? 'nade' : u.order.type;
   if (u.order.type === 'hold' && dist(u, orderDestination(game, u)) <= 3) return 'hold';
   return 'advance';
@@ -564,6 +610,31 @@ function controlAgent(game, u, dt) {
       dest = bomb ? evadePoint(game, u, bomb) : objective;
       break;
     }
+    case 'knife': {
+      // Close the distance and swing. The target is whoever is nearest, seen or last known:
+      // a knife order is about going and finding someone, not about a firefight.
+      setWeapon(u, 'knife');
+      const mark = focus ?? u.visible[0] ?? null;
+      if (!mark) { dest = objective; break; }
+      dest = { x: mark.x, y: mark.y };
+      if (dist(u, mark) <= KNIFE.range + mark.r) {
+        dest = null;
+        // Only swing once lined up, so the arc is not wasted on someone off to the side.
+        if (angleDiff(u.facing, angleTo(u, mark)) < KNIFE.arc) slash(game, u);
+      }
+      break;
+    }
+    case 'peek': {
+      // Step out, look, step back. The commitment is the point: a peek is how you find out
+      // what is holding an angle without walking into it.
+      u.peek ??= { out: true, until: game.time + 0.9, from: { x: u.x, y: u.y } };
+      if (game.time > u.peek.until) {
+        u.peek = u.peek.out ? { out: false, until: game.time + 1.1, from: u.peek.from } : null;
+      }
+      if (!u.peek) { u.action = 'hold'; dest = null; break; }
+      dest = u.peek.out ? (u.peekPoint ??= peekPoint(game, u, focus)) : u.peek.from;
+      break;
+    }
     case 'reposition': {
       // Same ground, better spot. The relation is chosen here rather than asked for as a
       // coordinate, because a model naming "off the angle they are watching" is reliable and
@@ -596,6 +667,10 @@ function controlAgent(game, u, dt) {
     const nearest = aliveTeam(game, 'attack').reduce((a, b) => (dist(b, spike) < dist(a, spike) ? b : a));
     if (nearest === u) dest = { x: spike.x, y: spike.y };
   }
+  if (u.action !== 'peek') { u.peek = null; u.peekPoint = null; }
+  // The knife is only out while it is being used. Anything else hands the rifle back, so an
+  // agent never quietly keeps a knife into a gunfight it cannot win.
+  if (u.action !== 'knife' && orderUtility(u.order.type) !== 'knife' && u.order.type !== 'knife') setWeapon(u, 'rifle');
   if (dest && dist(u, dest) < 0.8) dest = null;
   // Somewhere to be and told to stand still is a contradiction: the order wins, at the
   // careful pace. Code resolves it rather than letting a stuck agent look like a bug.
@@ -607,6 +682,20 @@ function controlAgent(game, u, dt) {
   moveToward(game, u, dest, dt);
   aimAgent(game, u, focus, dt);
   if (focus) shoot(game, u, focus);
+}
+
+// Where a peek steps out to: a couple of metres sideways, across the angle rather than into
+// it, so the agent shows itself briefly and can step straight back.
+function peekPoint(game, u, focus) {
+  const g = gridFor(game);
+  const bearing = focus ? angleTo(u, focus) : u.holdBearing ?? u.facing;
+  for (const side of [1, -1]) {
+    for (const reach of [2.4, 1.6]) {
+      const p = { x: u.x + Math.cos(bearing + side * Math.PI / 2) * reach, y: u.y + Math.sin(bearing + side * Math.PI / 2) * reach };
+      if (p.x > 1 && p.y > 1 && p.x < game.map.width - 1 && p.y < game.map.height - 1 && walkableLine(g, u, p)) return p;
+    }
+  }
+  return { x: u.x, y: u.y };
 }
 
 // A better place to stand than this one, expressed as a relation rather than a coordinate.
@@ -732,7 +821,39 @@ export function rifleAccuracy(game, u, target) {
   return p;
 }
 
+// A slash is a swing through an arc in front of you, not a shot at one person: everyone
+// caught in it is cut. Hitting someone from behind kills them outright, which is the whole
+// reason to take the risk of closing that distance.
+export function slash(game, u) {
+  if (u.weapon !== 'knife' || preparing(game)) return false;
+  if (game.time - u.lastSlashAt < KNIFE.interval) return false;
+  u.lastSlashAt = game.time;
+  game.effects.push({ kind: 'slash', x: u.x, y: u.y, facing: u.facing, r: KNIFE.range, team: u.team, ttl: 0.22 });
+  let hit = false;
+  for (const target of game.units) {
+    if (!target.alive || target.team === u.team) continue;
+    if (dist(u, target) > KNIFE.range + target.r) continue;
+    // Inside the swing, and not through a wall.
+    if (angleDiff(u.facing, angleTo(u, target)) > KNIFE.arc) continue;
+    if (!hasLineOfSight(game.map, u, target)) continue;
+    // From behind: their back is to you if they are facing roughly the way you are.
+    const behind = angleDiff(target.facing, angleTo(target, u)) > Math.PI - KNIFE.backAngle;
+    damage(game, target, behind ? KNIFE.backstab : KNIFE.damage, u);
+    hit = true;
+  }
+  return hit;
+}
+
+// Drawing a knife and putting it away are the same decision made twice, so they live in one
+// place: a new order always hands the rifle back unless the order itself is about knifing.
+export function setWeapon(u, weapon) {
+  if (!WEAPONS.includes(weapon) || u.weapon === weapon) return;
+  u.weapon = weapon;
+  u.lastSlashAt = -Infinity;
+}
+
 function shoot(game, u, target) {
+  if (u.weapon === 'knife') return; // you cannot shoot a knife
   if (u.cooldown > 0 || !target.alive || preparing(game)) return;
   // Holding fire is what makes an ambush, a lurk and letting someone walk past possible at
   // all. It is never suicide: an agent already being shot at, or about to be walked into,
@@ -956,7 +1077,7 @@ function occupy(game, u, focus) {
 // Walking is a real tactical choice, not a slower run: it keeps the agent accurate and is
 // what clearing an angle looks like. A pace of 'still' with somewhere to be is a contradiction
 // the caller resolves before we get here, so it never freezes anyone mid-order.
-export const paceSpeed = u => u.speed * (PACE[u.pace] ?? 1);
+export const paceSpeed = u => u.speed * (PACE[u.pace] ?? 1) * (u.weapon === 'knife' ? KNIFE.speed : 1);
 
 function turnToward(from, to, dt) {
   const step = TURN_RATE * dt;
@@ -1204,17 +1325,59 @@ function predictGrenadeTarget(game, mark, horizon) {
 const HELD = { frag: 'grenades', flash: 'flashes', smoke: 'smokes' };
 export const heldCount = (u, kind) => u[HELD[kind]] ?? 0;
 
+// Everything is thrown on an arc, from the shoulder. That is what lets a smoke go over the
+// low cover in front of you and what stops a flash being posted across the whole map: the
+// throw has a reach, and anything it cannot get over it hits.
+const THROW_HEIGHT = 1.5; // it leaves the hand at about shoulder height
+const APEX = 3.6;         // how high a full-range lob gets
+
+// Height of the throw at a fraction along its flight, as a plain parabola through the apex.
+const arcHeight = (t, reach) => {
+  // You lob harder for distance, but even a short toss goes up and over: the floor on this
+  // is what lets someone drop a smoke over the crate they are standing behind.
+  const lift = APEX * clamp(reach / 18, 0.45, 1);
+  return THROW_HEIGHT * (1 - t) + lift * 4 * t * (1 - t);
+};
+
+// Where a throw actually ends up. It walks the line looking for the first wall it is not
+// high enough to clear, and stops in front of it.
+export function throwLanding(map, from, to) {
+  const reach = dist(from, to);
+  if (reach < 0.01) return { x: to.x, y: to.y, blocked: false };
+  const steps = Math.max(4, Math.ceil(reach * 2));
+  let last = { x: from.x, y: from.y };
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const p = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+    const wall = tallestBetween(map, last, p);
+    if (wall > 0 && arcHeight(t, reach) < wall) return { ...last, blocked: true };
+    last = p;
+  }
+  return { x: to.x, y: to.y, blocked: false };
+}
+
 export function throwGrenade(game, u, point, kind = 'frag') {
   const spec = UTILITY[kind];
   if (!spec || heldCount(u, kind) < 1 || game.time < u.throwReadyAt || preparing(game)) return false;
-  if (dist(u, point) > spec.range || !hasLineOfSight(game.map, u, point)) return false;
+  if (dist(u, point) > spec.range) return false;
+  // No line of sight needed any more: you can lob one over a low wall, and if the wall is
+  // too tall the throw comes up short against it instead of being refused. A throw that
+  // would land at your own feet is a fumble nobody would make, so it is not allowed.
+  const landing = throwLanding(game.map, u, point);
+  if (landing.blocked && dist(u, landing) < 2) return false;
   u[HELD[kind]]--;
   u.throwReadyAt = game.time + spec.cooldown;
   u.facing = angleTo(u, point);
+  const travel = Math.max(0.35, dist(u, landing) / spec.speed);
   game.grenades.push({
     id: game.nextId++, kind, team: u.team, throwerId: u.id,
-    x: u.x, y: u.y, fromX: u.x, fromY: u.y, tx: point.x, ty: point.y,
-    thrownAt: game.time, landAt: game.time + Math.max(0.35, dist(u, point) / spec.speed), explodeAt: 0,
+    x: u.x, y: u.y, z: THROW_HEIGHT, fromX: u.x, fromY: u.y, tx: landing.x, ty: landing.y,
+    reach: dist(u, landing), short: landing.blocked,
+    thrownAt: game.time, landAt: game.time + travel,
+    // A flash goes off on a timer from the moment it leaves the hand, wherever it has got
+    // to. That is what lets one be thrown around a corner and pop in the air on the far
+    // side. The other two have to come to rest first.
+    explodeAt: kind === 'flash' ? game.time + spec.fuse : 0,
   });
   pushFeed(game, `${u.name} threw a ${UTILITY_LABEL[kind]}`, u.team, u.team);
   return true;
@@ -1289,17 +1452,24 @@ export function incomingGrenade(game, u) {
 
 function updateGrenades(game) {
   for (const g of game.grenades) {
-    if (!g.explodeAt) {
+    // Something placed directly rather than thrown — a test fixture, or anything that
+    // reports a grenade already on the ground — has no flight plan and is already where
+    // it is. Only a real throw gets integrated along its arc.
+    if (g.landAt !== undefined) {
       const flight = (game.time - g.thrownAt) / Math.max(0.001, g.landAt - g.thrownAt);
-      if (flight >= 1) {
-        g.x = g.tx;
-        g.y = g.ty;
-        g.explodeAt = game.time + (UTILITY[g.kind ?? 'frag'] ?? GRENADE).fuse;
-      } else {
+      if (flight < 1) {
         g.x = g.fromX + (g.tx - g.fromX) * flight;
         g.y = g.fromY + (g.ty - g.fromY) * flight;
+        g.z = arcHeight(flight, g.reach ?? dist({ x: g.fromX, y: g.fromY }, { x: g.tx, y: g.ty }));
+      } else {
+        g.x = g.tx;
+        g.y = g.ty;
+        g.z = 0.18;
+        // A frag or a smoke starts counting only once it has come to rest.
+        if (!g.explodeAt) g.explodeAt = game.time + (UTILITY[g.kind ?? 'frag'] ?? GRENADE).fuse;
       }
-    } else if (game.time >= g.explodeAt) {
+    }
+    if (g.explodeAt && game.time >= g.explodeAt) {
       if (g.kind === 'flash') popFlash(game, g);
       else if (g.kind === 'smoke') popSmoke(game, g);
       else explode(game, g);
@@ -1424,6 +1594,7 @@ export function teamView(game, team) {
         // it leaks nothing the agent watching them cannot already see. Nor does the fact
         // that they are stood there blinded.
         moving: u.moving, pace: u.pace, blind: Math.max(0, (u.blindUntil ?? 0) - game.time),
+        weapon: u.weapon, slashing: game.time - u.lastSlashAt < 0.22,
         // Which of your agents can see them right now: the first-person view shows only what
         // the agent you're watching sees, and the team map shows everything anyone sees.
         seenBy: watchers.filter(w => w.visible.includes(u)).map(w => w.id),
@@ -1472,7 +1643,13 @@ export function teamView(game, team) {
     ghosts,
     effects: game.effects.map(e => ({ ...e })),
     // Grenades are loud and visible, so both sides see them.
-    grenades: game.grenades.map(g => ({ id: g.id, kind: g.kind ?? 'frag', x: g.x, y: g.y, team: g.team, landed: Boolean(g.explodeAt), fuse: g.explodeAt ? Math.max(0, g.explodeAt - game.time) : 0 })),
+    grenades: game.grenades.map(g => ({
+      id: g.id, kind: g.kind ?? 'frag', x: g.x, y: g.y, z: g.z ?? 0.18, team: g.team,
+      // A flash is counting down from the moment it is thrown, so "landed" for drawing
+      // purposes means "on the ground", not "armed".
+      landed: (g.landAt ?? -Infinity) <= game.time,
+      fuse: g.explodeAt ? Math.max(0, g.explodeAt - game.time) : 0,
+    })),
     // A smoke cloud is a physical thing in the world: both sides see it, the same way both
     // sides see a grenade in flight.
     smokes: game.smokes.map(s => ({ id: s.id, x: s.x, y: s.y, radius: s.radius, density: s.density, team: s.team })),
@@ -1489,6 +1666,7 @@ function ownUnit(game, u) {
     color: OWN_COLORS[(u.slot ?? 0) % OWN_COLORS.length],
     hp: u.hp, maxHp: u.maxHp, r: u.r, alive: u.alive, moving: u.moving, action: u.action, grenades: u.grenades,
     pace: u.pace, gaze: u.gaze, role: u.role, holdFire: u.holdFire, occupying: u.occupying,
+    weapon: u.weapon, slashing: game.time - u.lastSlashAt < 0.22,
     flashes: u.flashes, smokes: u.smokes,
     blind: Math.max(0, (u.blindUntil ?? 0) - game.time),
     obeying: obeying(game, u),

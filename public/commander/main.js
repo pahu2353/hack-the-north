@@ -1007,6 +1007,16 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
         el('span', { className: 'p', textContent: pct(p.addressed), title: 'P(addressed)' }),
       ];
     }
+    // An agent who was told to throw but is not the one throwing is not a failure and not
+    // a refusal: it went to whoever could make it. Saying which is the difference between
+    // the squad looking broken and the squad looking organised.
+    if (p.standDown) {
+      return [
+        el('span', { className: 'skip', textContent: p.name }),
+        el('span', { className: 'skip', textContent: `${p.order}: ${p.standDown}` }),
+        el('span', { className: 'p', textContent: pct(p.orderP), title: 'P(order)' }),
+      ];
+    }
     return [
       el('span', { textContent: p.name }),
       el('span', { textContent: `${p.order} → ${p.target}`, title: `addressed ${pct(p.addressed)} · order ${pct(p.orderP)} · target ${pct(p.targetP)}` }),

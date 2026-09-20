@@ -5,11 +5,12 @@
 //      its local situation in, a choice of action (and who to shoot) out, about twice a second.
 // Works for either team, in the browser (bot games) or on the server (multiplayer).
 import {
-  aliveTeam, blinded, directionPoint, enemyContact, grenadeSpot, heldCount, incomingGrenade,
-  isDirection, noteCallout, obeying, orderAction, orderDestination, orderLabel, roundStatus,
-  setOrder, unitById, utilitySpot,
+  UTILITY, UTILITY_LABEL, aliveTeam, blinded, directionPoint, enemyContact, grenadeSpot,
+  heldCount, incomingGrenade, isDirection, noteCallout, obeying, orderAction, orderDestination,
+  orderLabel, orderUtility, pushFeed, relativePoint, roundStatus, setOrder, throwLanding,
+  unitById, utilitySpot,
 } from './sim.js';
-import { dist, zoneAt, zoneByName } from './world.js';
+import { CALLOUTS, dist, zoneAt, zoneByName } from './world.js';
 
 const THINK_MS = 450;
 const VOICE_PACE = { mild: 1.08, strong: 1.18 };
@@ -85,23 +86,45 @@ const orderGate = names => ({
 
 // The words people actually shout, not the tidy ones. Each list was grown from phrasings that
 // came back wrong: "rotate to a" was read as a flank, "camp b" as a push, "on me" as a push.
-const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / peek / shift / collapse on';
-const STAY = 'stay put where told: hold / stop / wait / defend / watch / camp / anchor / sit on / lock down / play ("play b site" is holding it), without advancing';
-const AROUND = 'flank: swing around / go around / lurk / take the long way to hit them from the side';
-const BACK = 'fall back / retreat / pull out / get out / back off / reset';
-const TOGETHER = 'group up / regroup / stack up / on me / come together with the squad';
-// A match without the kit has no flash to throw, so asking for one is asking for the
-// closest thing that exists. With the kit on there is a real flash order and the word
-// belongs to it, or "flash B" would come back as a grenade on B.
-const NADE_BASE = 'throw a grenade / nade / frag / util / molly / incendiary at the location';
-const NADE = `${NADE_BASE.replace('nade / frag', 'nade / frag / flash')}`;
-const FLASH_ORDER = 'flash / pop a flash / blind them at the location';
-const SMOKE_ORDER = 'smoke / smoke off / block the sightline at the location';
-// The extra two only exist when the match has them, so an ordinary match offers Jev exactly
-// the vocabulary it always did.
-const ordersFor = (team, utility) => (utility
-  ? { ...ORDERS[team], grenade: NADE_BASE, flash: FLASH_ORDER, smoke: SMOKE_ORDER }
-  : ORDERS[team]);
+// The words people actually shout. Every one of these maps onto a move the game already
+// has: the vocabulary is wide so that a commander never has to think about which word the
+// system knows, but the set of things that can happen stays small and composable.
+const MOVE = 'go / move / push / rush / run it down / head to / get to / take / hit / rotate to / '
+  + 'move up / push up / creep up / advance / get up there / work your way up / get going / '
+  + 'get off your ass / go go go / shift / collapse on / take the fight to them';
+const STAY = 'stay put where told: hold / hold position / hold your position / hold that angle / '
+  + 'watch that angle / stop / wait / don\'t move / sit tight / freeze / defend / watch / camp / '
+  + 'anchor / sit on / post up / lock down / play ("play b site" is holding it), without advancing';
+const AROUND = 'flank: swing around / go around / wrap around / come from the side / take the long way / '
+  + 'lurk / go the back way / hit them from behind / get behind them';
+const BACK = 'fall back / retreat / pull out / pull back / get out / get out of there / back off / '
+  + 'disengage / reset / bail';
+const TOGETHER = 'group up / regroup / stack up / stack / on me / rally / come together with the squad';
+// All three can be aimed at a place, at what the commander is pointing at ("nade here",
+// "flash there"), or at a job ("help smoke for A", "smoke the way in from their spawn").
+const NADE_BASE = 'throw a grenade / nade / frag / util / molly / incendiary at the location, '
+  + 'or "nade here" / "frag there" at the spot being pointed at';
+// A match without the kit has no flash to throw, so asking for one is asking for the closest
+// thing that exists. With the kit on there is a real flash order and the word belongs to it,
+// or "flash B" comes back as a grenade on B.
+const NADE = NADE_BASE.replace('nade / frag', 'nade / frag / flash');
+const FLASH_ORDER = 'flash / pop a flash / flash them / flash for us / blind them at the location, '
+  + 'or "flash here" / "flash there" at the spot being pointed at';
+const SMOKE_ORDER = 'smoke / smoke off / smoke it / smoke the way in / help smoke for a site / '
+  + 'block the sightline at the location, or "smoke here" / "smoke there" at the spot being pointed at';
+const PEEK_ORDER = 'peek: take a quick look and come straight back / jiggle peek / shoulder peek / '
+  + 'bait a shot / check that angle without committing to it';
+const KNIFE_ORDER = 'knife: put the rifle away, run them down and stab them / go knife someone / '
+  + 'knife them / shank them / melee them';
+// Peek and knife are always available — they need no equipment. The two throwables only
+// exist when the match has them, so an ordinary match offers exactly what it always did
+// plus the two moves the squad could always physically make and had no word for.
+const ordersFor = (team, utility) => ({
+  ...ORDERS[team],
+  peek: PEEK_ORDER,
+  knife: KNIFE_ORDER,
+  ...(utility && { grenade: NADE_BASE, flash: FLASH_ORDER, smoke: SMOKE_ORDER }),
+});
 
 const ORDERS = {
   attack: {
@@ -185,12 +208,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     const pointerZone = pointer ? zoneAt(game.map, pointer).name : null;
     // "Fall back to spawn" means your own spawn, so describe the two relative to this team.
     const ownSpawn = game.map.home[team];
-    const locations = Object.fromEntries(game.map.zones.map(z => [
-      z.name,
-      z.name.endsWith('Spawn')
+    // Each place is described twice over: what it is, for an order that reasons about the
+    // map, and what people call it, for one that just says "cat" or "tunnels" or "long".
+    const locations = Object.fromEntries(game.map.zones.map(z => {
+      const what = z.name.endsWith('Spawn')
         ? (z.name === ownSpawn ? 'your own spawn, where your squad started' : "the enemy's spawn, on their side of the map")
-        : z.description,
-    ]));
+        : z.description;
+      return [z.name, CALLOUTS[z.name] ? `${what}; called: ${CALLOUTS[z.name]}` : what];
+    }));
     if (pointer) locations.pointed = `exactly where the commander is pointing (in ${pointerZone})`;
     // "At them" is a place too: wherever the enemy was last seen. Without it, an order about
     // the enemy rather than the map has nowhere to land.
@@ -209,6 +234,14 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       left: 'a short step to the left of where they are standing, from the commander\'s point of view',
       right: 'a short step to the right of where they are standing, from the commander\'s point of view',
     });
+    // The spike is a place too, and the only one whose position depends on who is asking.
+    // Defenders can only be sent to a spike they can see, which means a planted one:
+    // offering it earlier would be offering them the carrier's position.
+    if (team === 'attack') {
+      locations.spike = 'wherever the spike is right now: "on the bomb", "to the spike", "get the bomb"';
+    } else if (game.spike.state === 'planted') {
+      locations.spike = 'where the spike is planted: "on the bomb", "to the spike", "get to the bomb"';
+    }
 
     const questions = {};
     for (const { name } of squad) {
@@ -246,6 +279,21 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
       };
     }
     questions.is_order = orderGate(squad.map(u => u.name));
+    // One smoke is a smoke; five smokes on one doorway is the squad's whole round spent at
+    // once. A bare "smoke main" is one agent doing it, and only a command that actually
+    // asks for more gets more. Score rather than a yes/no, because "three people" is a
+    // number the commander said out loud and should be obeyed as one.
+    questions.throw_headcount = {
+      type: 'score',
+      instructions: 'If this order is to throw something — a grenade, a flash or a smoke — how many of the squad should each throw one? Judge only from what the commander actually asked for.',
+      criteria: [
+        'one of them: the default, and what a plain "smoke main", "flash B" or "nade here" means',
+        'two of them, because the commander asked for two',
+        'three of them, because the commander asked for three',
+        'four of them, because the commander asked for four',
+        'all five of them, because the commander explicitly said everyone / all of you / all five should throw',
+      ],
+    };
     // Most of what a hands-free mic hears is not an order, and until now all of it was
     // thrown away. Plenty of it is information: "two on B", "they're pushing mid", "one
     // down long". That moves nobody, but it is what the squad should be watching.
@@ -326,6 +374,9 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     // each unit's original value, so cues never stack.
     const pace = source === 'voice' ? voicePaceMultiplier(voiceContext) : 1;
     const tempo = TEMPO[ux?.urgency ?? 'normal'] ?? TEMPO.normal;
+    // Captured before anything is overwritten: a thrower who is stood down goes back to
+    // the job it had rather than to nothing.
+    const wasDoing = new Map(squad.map(unit => [unit, unit.order && { ...unit.order }]));
     const plan = squad.map(unit => {
       const key = unit.name.toLowerCase();
       const a = result.answers;
@@ -346,6 +397,11 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         if (target.choice === 'pointed' && pointer) {
           point = { x: pointer.x, y: pointer.y };
           zone = pointerZone;
+        } else if (['forward', 'back', 'spike'].includes(target.choice)) {
+          // A relation, not a coordinate: the simulation works out where that actually is,
+          // and falls back to standing still if there is nowhere to go.
+          point = relativePoint(game, unit, target.choice) ?? { x: unit.x, y: unit.y };
+          zone = zoneAt(game.map, point).name;
         } else if (target.choice === 'enemy') {
           point = { x: contact.x, y: contact.y };
           zone = zoneAt(game.map, contact).name;
@@ -375,6 +431,13 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         targetP: target.probabilities?.[target.choice] ?? 1,
       };
     });
+    // Levels are scored from zero, so the first one is a headcount of one.
+    const headcount = clampCount(Math.round(result.answers.throw_headcount?.score ?? 0) + 1);
+    const stoodDown = limitThrowers(game, squad.filter((unit, i) => plan[i].applied), wasDoing, headcount);
+    for (const entry of stoodDown) {
+      const row = plan.find(p => p.name === entry.name);
+      if (row) row.standDown = entry.reason;
+    }
     assignRoles(game, squad.filter((unit, i) => plan[i].applied));
     // Roles are settled after the whole plan is known, so the log reports what was actually
     // decided rather than what each agent looked like on its own.
@@ -392,6 +455,62 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     }
     const stale = plan.some(p => p.skipReason === 'newer order already applied') && !plan.some(p => p.applied);
     return { plan, isOrder, stale, callout, latency: result.latency, tokens: result.usage?.inputTokens, ux, paceMultiplier: pace };
+  }
+
+  const clampCount = n => Math.max(1, Math.min(5, Number.isFinite(n) ? n : 1));
+
+  // "Smoke A" is one smoke, not five. A throw order addressed to a group is carried out by
+  // however many the commander actually asked for — one unless they said otherwise — and
+  // by whichever of them are in a position to make the throw: still holding one, in range,
+  // with an arc that gets there. Everyone else goes back to what they were doing. Five
+  // agents each spending their only smoke on one doorway is the worst thing the squad could
+  // do with an order, and it is not a judgement five separate agents can make, because none
+  // of them can see the other four.
+  function limitThrowers(game, units, previous, headcount) {
+    const throwers = units.filter(u => orderUtility(u.order.type));
+    if (!throwers.length) return [];
+    const groups = new Map();
+    for (const u of throwers) {
+      const key = `${u.order.type}:${u.order.zone}`;
+      groups.set(key, [...(groups.get(key) ?? []), u]);
+    }
+    const standDown = (u, reason) => {
+      const was = previous.get(u);
+      if (was) setOrder(game, u, { ...was, pace: u.pace, spread: u.order.spread });
+      else setOrder(game, u, { type: 'hold', zone: zoneAt(game.map, u).name, point: { x: u.x, y: u.y } });
+      return { name: u.name, reason };
+    };
+
+    const stood = [];
+    for (const group of groups.values()) {
+      const kind = orderUtility(group[0].order.type);
+      const label = UTILITY_LABEL[kind];
+      const armed = group.filter(u => heldCount(u, kind) > 0);
+      // Nobody has one left. The order cannot be carried out by anyone, and saying so is
+      // far better than four agents standing in the open waiting to throw nothing.
+      if (!armed.length) {
+        for (const u of group) stood.push(standDown(u, `no ${label} left`));
+        pushFeed(game, `No ${label}s left`, group[0].team, group[0].team);
+        continue;
+      }
+      const scored = armed.map(u => {
+        const reach = dist(u, u.order.point);
+        const landing = throwLanding(game.map, u, u.order.point);
+        return { u, inRange: reach <= UTILITY[kind].range, short: dist(landing, u.order.point), reach };
+      // In range at all first, then whose throw actually lands closest to the spot, then
+      // whoever is nearest to it.
+      }).sort((a, b) => Number(b.inRange) - Number(a.inRange) || a.short - b.short || a.reach - b.reach);
+
+      const able = scored.filter(t => t.inRange);
+      if (!able.length) {
+        for (const u of group) stood.push(standDown(u, 'too far to throw it'));
+        continue;
+      }
+      const taking = able.slice(0, headcount);
+      const keep = new Set(taking.map(t => t.u));
+      for (const u of group) if (!keep.has(u)) stood.push(standDown(u, keep.size >= headcount ? 'someone else has it' : 'too far to throw it'));
+    }
+    return stood;
   }
 
   // Two agents sent to the same place should not be two copies of one agent. Whoever is
@@ -570,11 +689,15 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         ? 'stop and shoot one of them: only hurts the one you aim at'
         : 'stop and shoot the enemy in sight: standing still makes you far more accurate, but it puts your order on hold';
     }
+    const nearest = enemies[0]?.distance_m ?? Infinity;
     if (clump?.caught >= 2 && !bomb) actions.nade = `${carriesOut('nade')}throw your one grenade at the ${clump.caught} enemies bunched together: it hurts all of them at once, so it beats shooting at one`;
     // A flash and a smoke do no damage. They are the answer to an angle you cannot cross,
     // which is a different problem from an enemy you cannot kill — so they are offered when
     // there is someone holding a line on you, not when you are simply winning a fight.
-    if (game.utility && heldCount(u, 'flash') > 0 && enemies.length && !bomb && !blindEnemies.length) {
+    // A flash pops just past whoever you are throwing it at, and its reach is far wider than
+    // that, so throwing one at someone in your face blinds you and not them. It is only a
+    // choice when there is room for it to be one.
+    if (game.utility && heldCount(u, 'flash') > 0 && nearest >= 10 && !bomb && !blindEnemies.length) {
       actions.flash = `${carriesOut('flash')}pop your one flash at them: it does no damage, but for a few seconds they cannot see at all, which is how you take an angle someone is holding`;
     }
     if (game.utility && heldCount(u, 'smoke') > 0 && enemies.length && !bomb && utilitySpot(game, u, 'smoke')) {
@@ -583,6 +706,20 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
     if (bomb) actions.scatter = 'run clear of the grenade about to go off beside you: staying there costs most of your health';
     if (fightingMate && !enemies.length) actions.support = `go help ${fightingMate.name}, who is in a fight: when no enemy is in sight`;
     if (toObjective <= 3) actions.reposition = 'you are already where you were sent: move to a better spot on this same ground, off the angle you are being watched from and away from your teammates, without leaving';
+    // Peek is for an angle you cannot see down, or one you can see down from far enough
+    // away to step back out of. In a close fight it is not a choice, it is a way to die,
+    // so it is not offered as one.
+    if (!bomb && nearest > 12) {
+      actions.peek = enemies.length
+        ? `lean out across the angle for a moment and step straight back: you make ${enemies[0].id} show you where they are without standing there while they shoot`
+        : 'lean out across the angle you are holding for a moment and step straight back: you find out whether anyone is watching it, and you are not there if they are';
+    }
+    // The knife is faster than the rifle and lethal from behind, and suicide in front of
+    // anyone who can see you coming. Only worth putting to a decision when they are already
+    // close enough to reach in about a second.
+    if (nearest <= 6 && !bomb) {
+      actions.knife = `put the rifle away and rush ${enemies[0].id} with the knife: you move faster with it out and it kills outright from behind, but you cannot shoot while you are holding it`;
+    }
     const questions = {
       action: {
         type: 'choice',

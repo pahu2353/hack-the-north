@@ -1,15 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createBrains } from '../public/commander/brain.js';
 import {
-  FLASH, GRENADE, SMOKE, blinded, canSee, createGame, smokeBlocks,
-  setOrder, stepGame, teamUnits, throwGrenade,
+  FLASH, GRENADE, SMOKE, UTILITY, blinded, canSee, createGame, smokeBlocks,
+  setOrder, stepGame, teamUnits, throwGrenade, throwLanding,
 } from '../public/commander/sim.js';
-import { dist } from '../public/commander/world.js';
+import { MAPS, dist } from '../public/commander/world.js';
 
 const STEP = 1 / 30;
 const run = (game, seconds) => {
   for (let f = 0; f < Math.round(seconds / STEP); f++) stepGame(game, STEP);
 };
+
+// Rifle fire is a coin flip per shot, so "did anyone get hit" is only ever probably true.
+// A test about whether shooting happened at all pins the roll instead, or it fails for
+// nobody's reason a few runs in a hundred.
+function everyShotHits(body) {
+  const real = Math.random;
+  Math.random = () => 0;
+  try { return body(); } finally { Math.random = real; }
+}
+
 
 // Two agents in open ground in Mid, facing each other, nobody else able to interfere.
 function duel({ utility = true } = {}) {
@@ -122,9 +133,9 @@ test('a blinded agent cannot shoot, and recovers when it wears off', () => {
   run(game, 0.2);
   a.blindUntil = game.time + 1.5;
   const hp = enemy.hp;
-  run(game, 1.4);
+  everyShotHits(() => run(game, 1.4));
   assert.equal(enemy.hp, hp, 'no vision means no automatic fire');
-  run(game, 1.5);
+  everyShotHits(() => run(game, 1.5));
   assert.ok(enemy.hp < hp, 'and it comes back');
   assert.equal(blinded(game, a), false);
   void d;
@@ -154,4 +165,163 @@ test('the whole kit survives a full round on both maps', () => {
     assert.doesNotThrow(() => run(game, 30), `${map} should survive a round with the full kit`);
     assert.ok(dist(squad[0], squad[0]) === 0);
   }
+});
+
+// ---------- throwing: reach, arcs, and who actually throws ----------
+
+test('a throw has a reach, and it is nowhere near the size of the map', () => {
+  const { game, a } = duel();
+  for (const kind of ['frag', 'flash', 'smoke']) {
+    a.throwReadyAt = 0;
+    const far = { x: a.x, y: a.y - (UTILITY[kind].range + 6) };
+    assert.equal(throwGrenade(game, a, far, kind), false, `${kind} cannot cross the map`);
+  }
+  // Well inside reach, it goes.
+  a.throwReadyAt = 0;
+  assert.ok(throwGrenade(game, a, { x: a.x, y: a.y - 8 }, 'smoke'));
+});
+
+test('a lob clears low cover and comes up short against a building', () => {
+  const map = MAPS.tactical;
+  // Lobby cover is 4×2 — small enough on both axes to be waist-high cover, which is the
+  // thing a lob is supposed to clear.
+  const overCover = throwLanding(map, { x: 22, y: 52 }, { x: 22, y: 46 });
+  assert.equal(overCover.blocked, false, 'a waist-high block is something you throw over');
+  assert.ok(dist(overCover, { x: 22, y: 46 }) < 0.01);
+
+  // A full-height interior wall is not, even though it is only two metres deep.
+  const intoMidBlock = throwLanding(map, { x: 40, y: 34 }, { x: 40, y: 25 });
+  assert.ok(intoMidBlock.blocked, 'a head-height wall stops a lob');
+
+  // The mass between Mid and B Main is interior architecture, and taller than a lob.
+  const intoWall = throwLanding(map, { x: 46, y: 32 }, { x: 68, y: 32 });
+  assert.ok(intoWall.blocked, 'you cannot lob through a building');
+  assert.ok(dist(intoWall, { x: 68, y: 32 }) > 5, 'it lands short, on your side of it');
+});
+
+test('a throw no longer needs line of sight, but a fumble at your own feet is refused', () => {
+  const { game, a } = duel();
+  // Straight into the side of the block it is standing against: nowhere for it to go.
+  Object.assign(a, { x: 47, y: 32 });
+  a.throwReadyAt = 0;
+  assert.equal(throwGrenade(game, a, { x: 60, y: 32 }, 'smoke'), false, 'not into a wall at arm\'s length');
+  assert.equal(a.smokes, SMOKE.carried, 'and it is not spent on the attempt');
+});
+
+test('a flash goes off on its own timer, so it can pop past a corner', () => {
+  const { game, a } = duel();
+  assert.ok(throwGrenade(game, a, { x: a.x, y: a.y - 20 }, 'flash'));
+  const shell = game.grenades.at(-1);
+  assert.ok(shell.explodeAt > 0, 'a flash is armed the moment it leaves the hand');
+  assert.ok(shell.explodeAt < shell.landAt + 0.01 || FLASH.fuse < 2, 'it does not wait to land');
+  run(game, 0.5);
+  assert.ok(shell.z > 0.5, 'and it is still in the air on the way');
+});
+
+test('a squad told to smoke one place spends one smoke, not five', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const squad = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  const brains = createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        if (q.type === 'boolean') return [id, { probability: id === 'is_order' ? 1 : 0 }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Mid' : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+  await brains.interpretCommand(game, 'attack', { source: 'text', text: 'everyone smoke mid' });
+  const throwing = squad.filter(u => u.order.type === 'smoke');
+  assert.equal(throwing.length, 1, `exactly one agent throws it, got ${throwing.length}`);
+  // And the rest are still doing something, not standing idle with a cancelled order.
+  for (const u of squad) assert.ok(u.order, `${u.name} still has a job`);
+});
+
+test('the kit comes back each round and never stacks up', () => {
+  const first = createGame({ defenders: 'players', utility: true });
+  const u = teamUnits(first, 'attack')[0];
+  u.throwReadyAt = 0;
+  throwGrenade(first, u, { x: u.x, y: u.y - 6 }, 'smoke');
+  assert.equal(u.smokes, 0, 'spent');
+  // A round is a fresh game with the same match, which is how the real loop does it.
+  const next = createGame({ defenders: 'players', utility: true, match: first.match });
+  for (const fresh of teamUnits(next, 'attack')) {
+    assert.equal(fresh.smokes, SMOKE.carried);
+    assert.equal(fresh.flashes, FLASH.carried);
+    assert.equal(fresh.grenades, GRENADE.carried);
+  }
+});
+
+// ---------- how many throw, and what happens when nobody can ----------
+
+// Drives a real interpretCommand with a stubbed Jev that answers a smoke order for everyone
+// and whatever headcount the test asks for. Levels are scored from zero, so one agent is 0.
+async function smokeOrder({ headcount = 0, stock = 1 } = {}) {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const squad = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  for (const u of squad) u.smokes = stock;
+  const brains = createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        // Every agent is addressed and it is a real order; everything else answers no.
+        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id.endsWith('_addressed') ? 1 : 0 }];
+        if (q.type === 'score') return [id, { score: headcount }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Mid' : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+  const res = await brains.interpretCommand(game, 'attack', { source: 'text', text: 'smoke mid' });
+  return { game, squad, res, throwing: squad.filter(u => u.order.type === 'smoke') };
+}
+
+test('a bare throw order is one agent, and an explicit "everyone" is all of them', async () => {
+  assert.equal((await smokeOrder({ headcount: 0 })).throwing.length, 1, 'the default is one');
+  assert.equal((await smokeOrder({ headcount: 2 })).throwing.length, 3, 'three means three');
+  assert.equal((await smokeOrder({ headcount: 4 })).throwing.length, 5, 'everyone means everyone');
+});
+
+test('the ones who are not throwing are given back a job, not left with nothing', async () => {
+  const { squad, res } = await smokeOrder({ headcount: 0 });
+  for (const u of squad) assert.ok(u.order, `${u.name} still has an order`);
+  const stood = res.plan.filter(p => p.standDown);
+  assert.equal(stood.length, 4);
+  for (const p of stood) assert.equal(p.standDown, 'someone else has it');
+});
+
+test('an order to throw what nobody is carrying fails, and says so', async () => {
+  const { game, squad, res } = await smokeOrder({ headcount: 0, stock: 0 });
+  assert.equal(squad.filter(u => u.order.type === 'smoke').length, 0, 'nobody is left holding the order');
+  assert.ok(res.plan.every(p => p.standDown === 'no smoke left'));
+  assert.ok(game.feed.some(f => /No smokes left/.test(f.text)), 'and the commander is told');
+});
+
+test('whoever actually has one is the one who throws it', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const squad = teamUnits(game, 'attack');
+  for (const u of game.units) u.reaction = Infinity;
+  // Only the agent standing furthest away still has a smoke.
+  const holder = squad[4];
+  for (const u of squad) u.smokes = u === holder ? 1 : 0;
+  const brains = createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        if (q.type === 'boolean') return [id, { probability: id === 'is_order' || id.endsWith('_addressed') ? 1 : 0 }];
+        if (q.type === 'score') return [id, { score: 0 }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? 'smoke' : id.endsWith('_target') ? 'Attacker Spawn' : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+  await brains.interpretCommand(game, 'attack', { source: 'text', text: 'smoke spawn' });
+  const throwing = squad.filter(u => u.order.type === 'smoke');
+  assert.deepEqual(throwing.map(u => u.name), [holder.name], 'an empty agent is never picked');
 });
