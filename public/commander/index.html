@@ -9,17 +9,26 @@
 <style>
   :root {
     color-scheme: dark;
-    --page: #0b0d11;
-    --panel: #12151b;
-    --panel-2: #181c24;
-    --border: rgba(255, 255, 255, 0.09);
-    --ink: #e8eaf0;
-    --ink-2: #b4b9c6;
-    --muted: #7c8395;
-    --squad: #4aa3ff;
-    --enemy: #ff5d5d;
-    --gold: #ffd24a;
+    /* Cool near-black, one teal accent for the interface, team colour kept for the teams. */
+    --page: #0b0f13;
+    --panel: #10161b;
+    --panel-2: #161f26;
+    --raised: #1c272f;
+    --border: rgba(150, 185, 200, 0.14);
+    --border-strong: rgba(150, 185, 200, 0.3);
+    --ink: #eef4f7;
+    --ink-2: #a9bcc6;
+    --muted: #6d818d;
+    --accent: #2ed3c6;
+    --accent-ink: #04211f;
+    --squad: #3d8bfd;
+    --enemy: #ff4655;
+    --gold: #f2c14e;
     --ok: #5bd17a;
+    /* Layered shadow: ambient plus a directional drop, per the guidelines. */
+    --lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 2px 4px rgba(0, 0, 0, 0.4), 0 10px 24px rgba(0, 0, 0, 0.35);
+    /* Clipped top-left and bottom-right corners: square, but not a plain rectangle. */
+    --cut: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
   }
   * { box-sizing: border-box; }
   /* Available to screen readers, out of the way of the game. */
@@ -44,9 +53,12 @@
   }
   button:hover:not(:disabled) { border-color: var(--ink-2); color: var(--ink); }
   button:disabled { opacity: 0.4; cursor: default; }
-  button.primary { background: var(--squad); border-color: var(--squad); color: #051222; }
-  button.primary:hover:not(:disabled) { background: #6fb6ff; border-color: #6fb6ff; color: #051222; }
-  button.big { padding: 14px 18px; font-size: 13px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary:hover:not(:disabled) { background: #55e6da; border-color: #55e6da; }
+  button.big { padding: 15px 20px; font-size: 13px; clip-path: var(--cut); border: 0; background: var(--raised); }
+  button.big:hover:not(:disabled) { background: #253440; color: var(--ink); }
+  button.big.primary { background: var(--accent); }
+  button.big.primary:hover:not(:disabled) { background: #55e6da; color: var(--accent-ink); }
   button.link { background: none; border: 0; color: var(--muted); padding: 6px 8px; letter-spacing: 0.05em; }
   button.link:hover { color: var(--ink); }
   button.toggle[aria-pressed="true"] { border-color: var(--squad); color: var(--squad); }
@@ -78,12 +90,20 @@
 
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0; }
   .arena { position: relative; min-height: 0; }
+  /* A soft vignette gives the playfield depth and pulls the eye to the middle. */
+  .arena::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 140px rgba(0, 0, 0, 0.6);
+  }
   #map { width: 100%; height: 100%; display: block; cursor: crosshair; }
   /* Below the scoreboard, which now spans both rosters. */
   /* Bottom left, oldest on top, so the newest line sits closest to the eye. */
   /* Clear of notches and rounded corners on phones. */
   .feed { position: absolute; left: max(12px, env(safe-area-inset-left)); bottom: max(34px, env(safe-area-inset-bottom)); display: grid; gap: 3px; justify-items: start; pointer-events: none; }
-  .feed div { background: rgba(10, 12, 16, 0.85); border: 1px solid var(--border); padding: 3px 8px; font-size: 12px; }
+  .feed div {
+    background: rgba(6, 9, 12, 0.88); border: 1px solid rgba(150, 185, 200, 0.1); padding: 4px 10px; font-size: 12px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  }
   .feed .own { border-left: 3px solid var(--squad); }
   .feed .other { border-left: 3px solid var(--enemy); }
   .feed b { font-weight: 700; }
@@ -94,8 +114,8 @@
 
   .overlay { z-index: 2; }
   .overlay {
-    position: absolute; inset: 0; display: grid; place-items: center; background: rgba(8, 10, 14, 0.88);
-    overflow: auto; padding: 16px;
+    position: absolute; inset: 0; display: grid; place-items: center; overflow: auto; padding: 16px;
+    background: radial-gradient(circle at 50% 38%, rgba(18, 30, 38, 0.86), rgba(6, 9, 12, 0.96) 70%);
   }
   .overlay[hidden], .overlay section[hidden] { display: none; }
   .overlay section {
@@ -104,7 +124,14 @@
   }
   /* Reserved, so screens with no line under the heading don't shift everything up. */
   .overlay p { min-height: 18px; }
-  .overlay h2 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+  .overlay h2 {
+    margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
+    padding-bottom: 12px; position: relative;
+  }
+  .overlay h2::after {
+    content: ""; position: absolute; left: 50%; bottom: 0; width: 34px; height: 2px; margin-left: -17px;
+    background: var(--accent);
+  }
   .overlay p { margin: 0; color: var(--ink-2); }
   .overlay .win { color: var(--ok); }
   .overlay .lose { color: var(--enemy); }
@@ -139,13 +166,19 @@
     overscroll-behavior: contain;
   }
   .card {
-    padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; min-height: 0;
+    padding: 11px 13px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; min-height: 0;
     justify-items: stretch; align-content: start;
   }
   .card.grow { flex: 1; min-height: 120px; }
+  /* A short accent rule marks each section, the way a game HUD labels its panels. It sits
+     outside the flow so the heading and its controls keep their usual places. */
   .card-head {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted);
-    font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.09em; text-transform: uppercase;
+    position: relative; padding-left: 10px; display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; color: var(--ink-2); font: 700 11px/1.2 system-ui, sans-serif; letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+  .card-head::before {
+    content: ""; position: absolute; left: 0; top: 1px; bottom: 1px; width: 3px; background: var(--accent); opacity: 0.85;
   }
   .status { font-size: 12px; color: var(--muted); }
   .status.ok { color: var(--ok); }
@@ -229,22 +262,25 @@
   #pov { width: 100%; height: 100%; display: block; cursor: crosshair; }
   /* One strip, Valorant-style: your squad, the clock, then theirs. Same height end to end. */
   .scorebar {
-    position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: stretch;
-    height: 46px; pointer-events: none; z-index: 1; font-variant-numeric: tabular-nums;
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: stretch;
+    height: 46px; pointer-events: none; z-index: 1; font-variant-numeric: tabular-nums; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
   }
   .scorebar[hidden] { display: none; }
   .scorebar .team {
-    display: flex; align-items: center; gap: 5px; padding: 0 12px;
-    background: linear-gradient(180deg, rgba(20, 52, 74, 0.9), rgba(12, 32, 48, 0.9));
-    border: 1px solid rgba(120, 190, 255, 0.18); border-right: 0;
+    display: flex; align-items: center; gap: 5px; padding: 0 14px;
+    background: linear-gradient(180deg, rgba(18, 44, 62, 0.92), rgba(9, 22, 32, 0.92));
+    border: 1px solid rgba(120, 190, 255, 0.16); border-right: 0;
+    clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
   }
   .scorebar .team.enemy {
-    background: linear-gradient(180deg, rgba(74, 24, 26, 0.9), rgba(44, 14, 16, 0.9));
-    border: 1px solid rgba(255, 140, 130, 0.18); border-left: 0;
+    background: linear-gradient(180deg, rgba(70, 20, 28, 0.92), rgba(36, 10, 14, 0.92));
+    border: 1px solid rgba(255, 110, 120, 0.16); border-left: 0;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
   }
   .scorebar .score-clock {
-    display: grid; place-items: center; min-width: 76px; padding: 0 12px; font: 700 20px system-ui, sans-serif;
-    background: rgba(8, 10, 14, 0.92); border: 1px solid var(--border); border-left: 0; border-right: 0;
+    display: grid; place-items: center; min-width: 82px; padding: 0 14px;
+    font: 800 21px/1 system-ui, sans-serif; letter-spacing: 0.02em;
+    background: rgba(6, 9, 12, 0.94); border: 1px solid var(--border); border-left: 0; border-right: 0;
   }
   /* Initials only: names are drawn under the dots in the game, where you need them. */
   .portrait {
@@ -274,22 +310,28 @@
   /* Dimmed while nobody on your team can see them: their health is unknown. */
   .portrait.unseen { opacity: 0.5; }
   .portrait.unseen .bar i { background: rgba(255, 255, 255, 0.25); }
-  /* Under the scoreboard, not beside it. */
+  /* A round radar under the scoreboard, like the CS scope it's modelled on. */
   #minimap {
-    position: absolute; top: 62px; left: max(12px, env(safe-area-inset-left)); width: clamp(140px, 20vw, 250px); aspect-ratio: 80 / 56;
-    background: rgba(10, 12, 16, 0.6); border: 1px solid var(--border);
+    position: absolute; top: 66px; left: max(12px, env(safe-area-inset-left));
+    width: clamp(150px, 19vw, 230px); aspect-ratio: 1; border-radius: 50%;
+    background: #07090b; border: 2px solid rgba(160, 190, 205, 0.22);
+    box-shadow: 0 0 0 4px rgba(6, 9, 12, 0.55), 0 8px 22px rgba(0, 0, 0, 0.55), inset 0 0 26px rgba(0, 0, 0, 0.8);
   }
+  /* The callout, printed under the radar in CS's pale blue. */
   .pov-zone {
-    position: absolute; top: calc(70px + clamp(140px, 20vw, 250px) * 0.7); left: 12px; font-weight: 700;
-    letter-spacing: 0.04em; text-shadow: 0 1px 3px #000;
+    position: absolute; top: calc(78px + clamp(150px, 19vw, 230px)); left: max(12px, env(safe-area-inset-left));
+    width: clamp(150px, 19vw, 230px); text-align: center; color: #7fb4d8;
+    font: 700 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-shadow: 0 1px 3px #000;
   }
   .pov-hud {
-    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
-    background: rgba(10, 12, 16, 0.72); padding: 6px 14px; pointer-events: none;
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center;
+    gap: 14px; padding: 8px 18px 8px 16px; pointer-events: none;
+    background: linear-gradient(180deg, rgba(10, 16, 20, 0.5), rgba(6, 9, 12, 0.82));
+    border-top: 2px solid var(--accent); clip-path: var(--cut);
   }
-  .pov-hud .hp { font: 800 26px system-ui, sans-serif; font-variant-numeric: tabular-nums; }
-  .pov-hud .who { display: grid; font-size: 12px; color: var(--ink-2); }
-  .pov-hud .who b { color: var(--squad); font-size: 14px; }
+  .pov-hud .hp { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .pov-hud .who { display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
+  .pov-hud .who b { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
   .toast {
     position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); font: 800 28px system-ui, sans-serif;
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
