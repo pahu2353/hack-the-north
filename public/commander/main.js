@@ -140,9 +140,6 @@ function setView(next) {
   is3d = next;
   $('arena').dataset.view = is3d ? 'pov' : 'map';
   $('arena').dataset.engine = using3d() ? '3d' : 'classic';
-  $('hint').textContent = is3d
-    ? 'Auto fire. A fist aims (or click for mouse look); four fingers, ←/→ or 1–5 changes agent. G: 2D/3D. Tab: map.'
-    : 'Point up or click to mark a spot, then say what to do there. Orders are spoken or typed. Tab or pinch: first person.';
   if (is3d) {
     if (!watched()) watchedId = ownUnits().find(u => u.alive)?.id ?? null;
     minimap.resize();
@@ -1249,6 +1246,53 @@ function updateScorebar() {
   }
 }
 
+// Two readings of the same match. The log answers "what did I say and what came back"; this
+// answers "where is everyone and how sure was Jev", which the log can only tell you by being
+// read backwards. Switching is a click, so neither has to carry the other's job.
+let jevTab = 'log';
+for (const [id, tab] of [['tabLog', 'log'], ['tabAgents', 'agents']]) {
+  $(id).onclick = () => {
+    jevTab = tab;
+    $('tabLog').setAttribute('aria-selected', String(tab === 'log'));
+    $('tabAgents').setAttribute('aria-selected', String(tab === 'agents'));
+    $('log').hidden = tab !== 'log';
+    $('decisions').hidden = tab !== 'agents';
+    if (tab === 'agents') renderDecisions();
+  };
+}
+
+// What Jev weighed, not just what it picked. A 62/24/14 spread and a 96/2/2 spread both read as
+// the same order in words; side by side the bars say which one was nearly something else.
+function renderDecisions() {
+  if (jevTab !== 'agents') return;
+  const units = ownUnits();
+  const cards = TEAMS[session?.team ?? 'attack'].names.map((name, i) => {
+    const u = units.find(unit => unit.name === name);
+    const colour = OWN_COLORS[i % OWN_COLORS.length];
+    if (!u) return el('div', { className: 'decision dead', style: `--agent:${colour}` }, [el('span', { className: 'name', textContent: name })]);
+    const d = u.decision;
+    const source = !u.alive ? 'down'
+      : d?.obeying ? 'your order'
+      : !d ? 'thinking…'
+      : d.local ? 'no contact'
+      : `Jev ${Math.round(d.latency)} ms`;
+    const spread = Object.entries(d?.probabilities ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    return el('div', { className: `decision${u.alive ? '' : ' dead'}`, style: `--agent:${colour}` }, [
+      el('div', { className: 'top' }, [
+        el('span', { className: 'name', textContent: u.name }),
+        el('span', { className: 'src', textContent: source }),
+      ]),
+      el('div', { className: 'doing', textContent: u.orderLabel ?? actionLabel(u, enemyName(u)) }),
+      ...(u.alive ? spread.map(([option, p], rank) => el('div', { className: `prob${rank ? '' : ' top'}` }, [
+        el('span', { textContent: option }),
+        el('span', { className: 'bar' }, [el('i', { style: `width:${Math.max(2, p * 100)}%` })]),
+        el('span', { className: 'p', textContent: `${Math.round(p * 100)}%` }),
+      ])) : []),
+    ]);
+  });
+  $('decisions').replaceChildren(...cards);
+}
+
 function buildSquadCards() {
   $('squad').replaceChildren(...TEAMS[session.team].names.map((name, i) => el('div', {
     className: 'agent', style: `--agent:${OWN_COLORS[i]}`, onclick: () => {
@@ -1396,6 +1440,7 @@ function updateHud() {
 
   $('feed').replaceChildren(...view.feed.map(f =>
     el('div', { className: f.team === session.team ? 'own' : 'other' }, colorizeNames(f.text))));
+  renderDecisions(); // a no-op unless the squad tab is the one showing
 
   updateScorebar();
   const watching = watched();

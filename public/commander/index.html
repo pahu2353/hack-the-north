@@ -104,10 +104,6 @@
   .feed .own { border-left: 3px solid var(--squad); }
   .feed .other { border-left: 3px solid var(--enemy); }
   .feed b { font-weight: 700; }
-  .hint {
-    position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom));
-    color: var(--muted); font-size: 12px; pointer-events: none;
-  }
 
   .overlay { z-index: 2; }
   /* Centring meant every screen's own height decided where the heading sat, so switching
@@ -316,6 +312,29 @@
   form.order button { flex: none; }
 
   /* Scrolls instantly: a smooth animation makes "am I at the bottom?" unanswerable while it runs. */
+  /* Two readings of the same match: the log is what was said and what came back, the squad view
+     is where each agent has got to and how sure Jev was of it. */
+  .tabs { display: flex; gap: 2px; }
+  .tab {
+    font: 700 10px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 4px 8px; min-height: 0; color: var(--muted);
+  }
+  .tab[aria-selected="true"] { color: var(--ink); border-color: var(--border-strong); background: var(--raised); }
+  .decisions { overflow: auto; overscroll-behavior: contain; display: grid; gap: 8px; align-content: start; padding-right: 4px; }
+  .decision { background: var(--panel); border: 1px solid var(--border); padding: 7px 9px; display: grid; gap: 4px; }
+  .decision.dead { opacity: 0.45; }
+  .decision .top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .decision .name { font: 800 12px/1 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--agent); }
+  .decision .src { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+  .decision .doing { font-size: 12px; color: var(--ink-2); }
+  /* One row per option Jev weighed, longest bar first: the gap between the top two is the
+     thing worth seeing, and a number alone never shows it. */
+  .decision .prob { display: grid; grid-template-columns: 62px 1fr 32px; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
+  .decision .prob.top { color: var(--ink); font-weight: 600; }
+  .decision .bar { height: 5px; background: var(--panel-2); overflow: hidden; }
+  .decision .bar i { display: block; height: 100%; background: #2b5c8f; }
+  .decision .prob.top .bar i { background: var(--agent); }
+  .decision .p { text-align: right; font-variant-numeric: tabular-nums; }
   .log { overflow: auto; overscroll-behavior: contain; padding-right: 4px; display: grid; gap: 7px; align-content: start; }
   .entry { background: var(--panel); border: 1px solid var(--border); padding: 8px 9px; display: grid; gap: 5px; }
   .entry .said { font-weight: 600; line-height: 1.35; }
@@ -345,7 +364,6 @@
   /* Optional HUD pieces, switched in Settings. */
   body:not([data-cards="on"]) footer.squad { display: none; }
   body:not([data-feed="on"]) .feed { display: none; }
-  body:not([data-hints="on"]) .hint { display: none; }
   body:not([data-stats="on"]) .agent .probs { display: none; }
   body:not([data-minimap="on"]) #minimap, body:not([data-minimap="on"]) .pov-zone { display: none; }
   .agent {
@@ -467,9 +485,9 @@
   /* Health the way a shooter shows it: a mark saying what the number counts, then the number,
      both changing colour together as it falls. Colour is what gets read mid-fight; the digits
      are for when you have a moment. */
-  .pov-hud .hp { display: flex; align-items: center; gap: 7px; color: var(--ink); }
-  .pov-hud .hp svg { width: 17px; height: 17px; fill: currentColor; }
+  .pov-hud .hp { display: flex; align-items: baseline; gap: 5px; color: var(--ink); }
   .pov-hud .hp b { font: 800 30px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .pov-hud .hp i { font: 700 11px/1 system-ui, sans-serif; letter-spacing: 0.1em; font-style: normal; opacity: 0.7; }
   .pov-hud[data-hp="low"] .hp { color: var(--gold); }
   .pov-hud[data-hp="critical"] .hp { color: var(--enemy); }
   .pov-hud .who { font: 800 13px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }
@@ -489,7 +507,6 @@
     letter-spacing: 0.08em; text-shadow: 0 2px 8px #000; pointer-events: none;
   }
   /* Clear of the agent HUD, which sits bottom centre. */
-  .arena[data-view="pov"] .hint { bottom: 84px; color: var(--ink-2); background: rgba(10, 12, 16, 0.6); padding: 2px 8px; }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto auto auto; }
     .layout { grid-template-columns: 1fr; }
@@ -510,7 +527,7 @@
     <canvas id="minimap" class="pov-only" aria-label="Minimap"></canvas>
     <div class="pov-zone pov-only" id="povZone"></div>
     <div class="pov-hud pov-only" id="povHud">
-      <span class="hp" id="povHp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 3h5v6.5H21v5h-6.5V21h-5v-6.5H3v-5h6.5z"/></svg><b id="povHpNum">–</b></span>
+      <span class="hp" id="povHp"><b id="povHpNum">–</b><i>HP</i></span>
       <b class="who" id="povName"></b>
     </div>
     <div class="scorebar" id="scorebar" hidden>
@@ -526,7 +543,6 @@
     </div>
     <div class="toast" id="toast" hidden></div>
     <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Match events"></div>
-    <div class="hint" id="hint"></div>
 
     <div class="overlay" id="overlay">
       <!-- One heading for every screen, in the same place on every screen. Each section names
@@ -692,8 +708,14 @@
       <div class="status" id="permsStatus" role="status">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
-      <div class="card-head">Orders → Jev <span class="voice-summary" id="voiceSummary">Volume: — · Emphasis: —</span></div>
-      <div class="log" id="log"></div>
+      <div class="card-head">Jev
+        <span class="tabs" role="tablist" aria-label="How to read Jev">
+          <button id="tabLog" class="tab" type="button" role="tab" aria-selected="true" aria-controls="log">Log</button>
+          <button id="tabAgents" class="tab" type="button" role="tab" aria-selected="false" aria-controls="decisions">Squad</button>
+        </span>
+      </div>
+      <div class="log" id="log" role="tabpanel" aria-labelledby="tabLog"></div>
+      <div class="decisions" id="decisions" role="tabpanel" aria-labelledby="tabAgents" hidden></div>
     </div>
   </aside>
 </main>
