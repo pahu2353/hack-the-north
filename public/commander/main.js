@@ -654,13 +654,16 @@ const utterances = [];
 const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() ===
   b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
 
+// How you said it, but only where you said it some way in particular. Printing "normal" three
+// times under every order buries the one reading that meant something — a shout, a hesitation —
+// among labels that are true of nearly every sentence anyone speaks.
 function voiceLabels(context) {
+  const notable = (name, value) => (value && value !== 'normal' ? [`${name}: ${String(value).replaceAll('_', ' ')}`] : []);
   return [
-    `Volume: ${context.volumeLevel.replaceAll('_', ' ')}`,
-    `Emphasis: ${context.emphasisLevel}`,
-    `Rate: ${context.speechRate}`,
-    ...(context.profanityLevel && context.profanityLevel !== 'none'
-      ? [`Profanity cue: ${context.profanityLevel}`] : []),
+    ...notable('Volume', context.volumeLevel),
+    ...notable('Emphasis', context.emphasisLevel),
+    ...notable('Rate', context.speechRate),
+    ...notable('Profanity cue', context.profanityLevel === 'none' ? null : context.profanityLevel),
   ];
 }
 
@@ -863,7 +866,7 @@ function renderPlan(entry, { plan, latency, tokens, ignored, isOrder, stale, ux,
   }
   if (ignored) {
     entry.querySelector('.plan').replaceChildren(
-      el('span', { className: 'skip', textContent: `Ignored: Jev read this as chatter, not an order (${pct(isOrder)} order)` }));
+      el('span', { className: 'skip', textContent: `Chatter, not an order · ${pct(isOrder)}` }));
     entry.querySelector('.meta').textContent = `Jev ${Math.round(latency)} ms · ${tokens ?? '?'} tokens`;
     followLog(entry);
     entry.classList.add('ignored');

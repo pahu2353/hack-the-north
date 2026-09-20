@@ -25,6 +25,10 @@
     --enemy: #ff4655;
     --gold: #f2c14e;
     --ok: #5bd17a;
+    /* The built-in CSS easings are too gentle to read at these durations: the movement starts
+       so softly that a 160ms press looks like nothing happened. This one leaves immediately
+       and settles late, which is what makes a press feel answered. */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
     /* Layered shadow: ambient plus a directional drop, per the guidelines. */
     --lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 2px 4px rgba(0, 0, 0, 0.4), 0 10px 24px rgba(0, 0, 0, 0.35);
     /* Clipped top-left and bottom-right corners: square, but not a plain rectangle. */
@@ -217,12 +221,17 @@
   }
   .cam .off svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
   .card-head .head-actions { display: flex; gap: 6px; }
-  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 5px; }
+  /* This is a legend: it says which hand shapes the camera knows, and none of it is clickable.
+     Panels and borders made nine of them look like a keypad, so people tried to press them. */
+  .signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 3px 10px; }
   .signs span {
-    display: flex; align-items: center; gap: 7px; background: var(--panel-2); border: 1px solid var(--border);
-    padding: 5px 8px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+    display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 12px;
+    color: var(--muted); white-space: nowrap;
   }
-  .signs b { font-size: 15px; line-height: 1; font-weight: 400; }
+  /* The glyphs carry real information — they are the shape your hand has to make — but full
+     colour emoji read as stickers dropped on a dark panel. Drained of colour they sit in the
+     same palette as the rest of the icons. */
+  .signs b { font-size: 15px; line-height: 1; font-weight: 400; filter: grayscale(1); opacity: 0.85; }
   /* The transcript and its voice summary are kept for the code that writes them, but the order
      log says the same thing a moment later, so they stay out of the panel. */
   .caption, .voice-summary { display: none; }
@@ -251,10 +260,20 @@
   .icon-btn[data-state="muted"] { color: var(--gold); border-color: rgba(242, 193, 78, 0.45); }
   /* Mic level: a hairline that only moves while the mic is live. */
   .meter { height: 2px; background: var(--panel-2); }
-  .meter i { display: block; height: 100%; width: 0; background: var(--muted); transition: width 80ms; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--muted); transition: width 80ms linear; }
+  /* Every pressable thing should say it felt the press. The built-in easings are too soft to
+     read at this duration, so the curve is an explicit one. */
+  button { transition: transform 160ms var(--ease-out); }
+  button:active { transform: scale(0.97); }
   .meter.live i { background: var(--enemy); }
   @media (prefers-reduced-motion: reduce) {
     .meter i { transition: none; }
+    /* Reduced motion means gentler, not none: the press still answers and a new order still
+       fades in, but nothing travels across the screen. */
+    button { transition: none; }
+    button:active { transform: none; }
+    .entry { transition: opacity 180ms var(--ease-out); }
+    .entry { @starting-style { transform: none; } }
   }
   form.order { display: flex; gap: 0; }
   form.order input { flex: 1; min-width: 0; border-right: 0; }
@@ -262,7 +281,15 @@
 
   /* Scrolls instantly: a smooth animation makes "am I at the bottom?" unanswerable while it runs. */
   .log { overflow: auto; overscroll-behavior: contain; padding-right: 4px; display: grid; gap: 7px; align-content: start; }
-  .entry { background: var(--panel); border: 1px solid var(--border); border-left: 2px solid var(--accent); padding: 8px 9px; display: grid; gap: 5px; }
+  .entry {
+    background: var(--panel); border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    padding: 8px 9px; display: grid; gap: 5px;
+    /* An order appears every few seconds at most, so easing it in is worth it: without this a
+       new card replaces the view under your eyes with no hint of where it came from. Short
+       enough that reading is never delayed. */
+    transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+    @starting-style { opacity: 0; transform: translateY(6px); }
+  }
   .entry.early { border-left-color: var(--gold); }
   .entry .said { font-weight: 600; line-height: 1.35; }
   .entry.ignored { opacity: 0.55; }
@@ -621,7 +648,7 @@
       <div class="status" id="permsStatus" role="status">Voice orders and hand signals need access.</div>
     </div>
     <div class="card grow">
-      <div class="card-head">Orders → Jev <span class="voice-summary" id="voiceSummary">Volume: — · Emphasis: —</span></div>
+      <div class="card-head">Orders to Jev</div>
       <div class="log" id="log"></div>
     </div>
   </aside>
