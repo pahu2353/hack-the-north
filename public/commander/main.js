@@ -418,7 +418,6 @@ function beginMatch() {
   positions.clear();
   $('log').replaceChildren();
   $('feed').replaceChildren();
-  $('caption').textContent = '';
   updateTeamUi();
   buildSquadCards();
   watchedId = null; // picked from the first view that has your squad in it
@@ -470,7 +469,6 @@ const utterances = [];
 const sameWords = (a, b) => a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim() === b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
 
 function onInterimTranscript(text) {
-  $('caption').textContent = text;
   if (!text.trim()) return;
   utterance ??= { heardAt: performance.now(), actedAt: 0 };
   clearTimeout(speculateTimer);
@@ -501,7 +499,6 @@ function speculate(text) {
 // The finished sentence. If we already acted on exactly these words, keep those orders.
 async function onFinalTranscript(text) {
   clearTimeout(speculateTimer);
-  $('caption').textContent = text;
   const u = utterance ?? { heardAt: performance.now(), actedAt: 0 };
   utterance = null;
   u.finalAt = performance.now();
@@ -959,13 +956,17 @@ async function ensureMic() {
 function syncListening() {
   const inMatch = Boolean(session && view && !view.result);
   voice.setListening(inMatch && !micMuted);
-  const label = !voice.enabled ? 'Mic off'
-    : micMuted ? 'Muted'
-    : inMatch ? 'Listening'
-    : 'Mic on';
-  if ($('listenLabel').textContent !== label) $('listenLabel').textContent = label;
-  $('listen').classList.toggle('live', voice.listening);
-  $('micBtn').textContent = !voice.enabled ? 'Mic on' : micMuted ? 'Unmute' : 'Mute';
+  const state = !voice.enabled ? 'off' : micMuted ? 'muted' : voice.listening ? 'live' : 'on';
+  const labels = {
+    off: 'Turn on mic', muted: 'Unmute mic', live: 'Mute mic — listening', on: 'Mute mic',
+  };
+  const mic = $('micBtn');
+  if (mic.dataset.state !== state) {
+    mic.dataset.state = state;
+    mic.title = labels[state];
+    mic.setAttribute('aria-label', labels[state]);
+  }
+  $('meter').classList.toggle('live', voice.listening);
 }
 
 async function toggleMic() {
@@ -980,7 +981,6 @@ async function toggleMic() {
   syncListening();
 }
 $('micBtn').onclick = toggleMic;
-$('listen').onclick = toggleMic;
 
 $('textForm').onsubmit = e => {
   e.preventDefault();
@@ -1022,11 +1022,21 @@ document.addEventListener('keydown', e => {
   }
 });
 
+function setIconState(id, state, label) {
+  const button = $(id);
+  button.dataset.state = state;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
 let gestures = null;
 $('previewBtn').onclick = () => {
   const showing = $('cam').hidden;
   $('cam').hidden = !showing;
-  $('previewBtn').textContent = showing ? 'Hide preview' : 'Show preview';
+  $('previewBtn').dataset.state = showing ? 'on' : '';
+  const label = showing ? 'Hide preview' : 'Show preview';
+  $('previewBtn').title = label;
+  $('previewBtn').setAttribute('aria-label', label);
 };
 $('camBtn').onclick = async () => {
   const wanted = !gestures;
@@ -1040,7 +1050,7 @@ function stopCamera() {
   {
     gestures.stop();
     gestures = null;
-    $('camBtn').textContent = 'Camera on';
+    setIconState('camBtn', '', 'Turn on camera');
     $('camOff').hidden = false;
     $('cam').hidden = true;
     $('previewBtn').hidden = true;
@@ -1087,9 +1097,9 @@ async function startCamera() {
         setView(!is3d);
       },
     });
-    $('camBtn').textContent = 'Camera off';
+    setIconState('camBtn', 'on', 'Turn off camera');
     $('previewBtn').hidden = false;
-    $('previewBtn').textContent = 'Hide preview';
+    setIconState('previewBtn', 'on', 'Hide preview');
     $('cam').hidden = false;
     return true;
   } catch (error) {
@@ -1122,7 +1132,6 @@ if (!window.isSecureContext) {
   setStatus('micStatus', `Voice ${why}`, 'error');
   setStatus('camStatus', `Camera ${why}`, 'error');
   $('micBtn').disabled = true;
-  $('listen').disabled = true;
   $('camBtn').disabled = true;
 }
 
