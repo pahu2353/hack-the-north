@@ -393,3 +393,81 @@ test('a flash lights the screen of everyone who sees it, blind or not', () => {
   run(game, 1.2);
   assert.equal(glareOf(game, d), 0, 'and it clears on its own');
 });
+
+// ---------- a throw order with no place named ----------
+
+// The commander says "throw your grenades" and names nowhere. The place question answers
+// that with "current", which means stay where you are — right as a destination, and the
+// agent's own feet as a throw target.
+async function throwWithoutAPlace(kind, { enemiesAhead = true } = {}) {
+  const orderType = kind === 'frag' ? 'grenade' : kind;
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const a = teamUnits(game, 'attack')[0];
+  for (const u of game.units) u.reaction = Infinity;
+  Object.assign(a, { x: 40, y: 44, speed: 0, facing: -Math.PI / 2 });
+  teamUnits(game, 'defend').forEach((e, i) => Object.assign(e,
+    enemiesAhead ? { x: 39 + i * 1.2, y: 34, speed: 0 } : { x: 5, y: 5, speed: 0 }));
+  run(game, 0.1);
+  const brains = createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        if (q.type === 'boolean') {
+          return [id, { probability: ['is_order', 'addresses_everyone'].includes(id) || id.endsWith('_addressed') ? 1 : 0 }];
+        }
+        if (q.type === 'score') return [id, { score: 0 }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? orderType : id.endsWith('_target') ? 'current' : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+  const result = await brains.interpretCommand(game, 'attack', { source: 'voice', text: `throw your ${kind}` });
+  run(game, 0.2);
+  return { game, a, result, thrown: game.grenades[0] };
+}
+
+for (const kind of ['frag', 'flash', 'smoke']) {
+  test(`a ${kind} ordered with no place named is aimed, not dropped underfoot`, async () => {
+    const { a, thrown } = await throwWithoutAPlace(kind);
+    assert.ok(thrown, 'it should still be thrown');
+    const underfoot = dist({ x: thrown.tx, y: thrown.ty }, a);
+    assert.ok(underfoot > 3, `it landed ${underfoot.toFixed(1)}m away, which is at their own feet`);
+    // And toward the enemy, who are up the map from the thrower.
+    assert.ok(thrown.ty < a.y, 'and in the direction of the people it is meant for');
+  });
+}
+
+test('a throw with nothing worth throwing at is refused, not wasted on the floor', async () => {
+  const { a, result, thrown } = await throwWithoutAPlace('frag', { enemiesAhead: false });
+  assert.equal(thrown, undefined, 'nothing is thrown');
+  assert.equal(a.grenades, GRENADE.carried, 'and the grenade is still in hand');
+  assert.ok(result.plan.some(p => p.skipReason === 'nowhere to throw it'), 'the log says why');
+});
+
+test('naming a place still throws exactly there', async () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const a = teamUnits(game, 'attack')[0];
+  for (const u of game.units) u.reaction = Infinity;
+  Object.assign(a, { x: 40, y: 44, speed: 0 });
+  const aim = { x: 40, y: 32 };
+  const brains = createBrains({
+    evaluate: async (state, questions) => ({
+      answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
+        if (q.type === 'boolean') {
+          return [id, { probability: ['is_order', 'addresses_everyone'].includes(id) || id.endsWith('_addressed') ? 1 : 0 }];
+        }
+        if (q.type === 'score') return [id, { score: 0 }];
+        const keys = Object.keys(q.criteria);
+        const want = id.endsWith('_order') ? 'grenade' : id.endsWith('_target') ? 'pointed' : keys[0];
+        return [id, { choice: keys.includes(want) ? want : keys[0], probabilities: { [want]: 1 } }];
+      })),
+      latency: 1,
+    }),
+  });
+  await brains.interpretCommand(game, 'attack', { source: 'voice', text: 'nade there', pointer: aim });
+  run(game, 0.2);
+  const thrown = game.grenades[0];
+  assert.ok(thrown, 'thrown');
+  assert.ok(dist({ x: thrown.tx, y: thrown.ty }, aim) < 0.01, 'at the spot that was pointed at');
+});

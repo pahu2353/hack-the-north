@@ -1376,7 +1376,11 @@ function renderDecisions() {
   if (jevTab !== 'agents') return;
   const names = TEAMS[session?.team ?? 'attack'].names;
   const roster = names.join(',');
-  if (decisionRoster !== roster) {
+  // The cache is only a claim about what is in the panel, and leaving a match empties it
+  // without going through here. Ask the panel too: on a rematch the roster string is
+  // identical, so the names alone would say "already built" about cards that are gone, and
+  // every lookup below would find nothing for the rest of the session.
+  if (decisionRoster !== roster || $('decisions').childElementCount !== names.length) {
     buildDecisionCards(names);
     decisionRoster = roster;
   }

@@ -455,6 +455,26 @@ export function createBrains({ evaluate = evaluateOverHttp, thinkMs = THINK_MS }
         } else {
           point = zoneByName(game.map, target.choice).center;
         }
+        // "Throw your grenades" names no place, and the place question answers that with
+        // "current" — which means stay where you are. As a destination that is right; as a
+        // throw target it is the agent's own feet, so the grenade was being dropped where
+        // it stood. A throw with nowhere named is aimed the same way the agent would aim it
+        // for itself: a frag at a group, a flash past the angle, a smoke on the choke. If
+        // there is nothing worth throwing at, it is not thrown at all — far better than
+        // spending the one they have on the floor beneath them.
+        const throwKind = orderUtility(order.choice);
+        if (throwKind && dist(unit, point) < 3) {
+          const aimed = utilitySpot(game, unit, throwKind);
+          if (!aimed) {
+            return {
+              name: unit.name, addressed, applied: false, skipReason: 'nowhere to throw it',
+              order: order.choice, orderP: order.probabilities?.[order.choice] ?? 1,
+              target: target.choice, targetP: target.probabilities?.[target.choice] ?? 1,
+            };
+          }
+          point = aimed;
+          zone = zoneAt(game.map, point).name;
+        }
         // "Knife out" with nowhere named is a weapon switch and nothing else: it must not
         // silently send them somewhere. With a place or a target named it is both.
         if (order.choice === 'knife' && target.choice === 'current') {
