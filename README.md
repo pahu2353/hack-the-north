@@ -62,7 +62,12 @@ Pricing is $0.042 per 1M input tokens, with no charge for output. A request can 
 npm run dev    # then open http://localhost:3000/commander/ in Chrome
 ```
 
-A Valorant-style match (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your five agents. Shooting is always automatic; in first-person, keeping your crosshair on an enemy improves that agent's accuracy while it follows your movement orders. Attackers (Alpha, Bravo, Charlie, Delta, Echo) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders — a planted spike wins the round even if every attacker dies. Defenders (Foxtrot, Golf, Hotel, India, Juliett) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers before the plant. Standing still makes automatic shots far more accurate, so good fight-or-move decisions matter.
+A Valorant-style match (Spike Rush) where you're the commander. You don't play a unit yourself: you give orders, and Jev runs your five agents. Shooting is always automatic; in first-person, keeping your crosshair on an enemy improves that agent's accuracy while it follows your movement orders. Attackers (Alpha, Bravo, Charlie, Delta, Echo) win by planting the spike on A or B (stand on site for 3s) and keeping it alive for 35s, or by wiping the defenders. Defenders (Foxtrot, Golf, Hotel, India, Juliett) win by stopping the plant for 100s, defusing the spike (stand on it for 6s with no attacker in sight), or wiping the attackers before the plant. Standing still makes automatic shots far more accurate, so good fight-or-move decisions matter.
+
+If all attackers die after planting, the round continues: surviving defenders can still defuse,
+and neither side gets a point until the round is decided. If both squads die with the spike
+planted, attackers win because nobody can defuse. Losing your whole squad in first-person returns
+you to the map so you can follow the remaining spike timer.
 
 **A match is a best of three.** Each round opens with **ten seconds of setup**: you can move and give orders, but neither squad may cross into more than its own third of the map (a dashed line shows how far), and nobody can shoot or throw until the round goes live. Between rounds you get the score and a scoreboard of everyone's kills, deaths and damage for the match so far. The map is always drawn with your own side at the bottom, so commanding the defence turns it around.
 
@@ -84,7 +89,7 @@ first-person view, with a minimap. Orders in first-person address only the watch
 2. The other player opens the link, or enters the code, and joins the opposite side. Changing the host's side updates both players before the match.
 3. The host clicks **Start match**. Rounds of the best-of-three run one after another, with a short break on the scoreboard between them. Once the match is decided, **Rematch** keeps the sides; **Swap sides for rematch** returns both players to the lobby with their sides reversed. Sides are locked during a match, and the room creator remains the host on either side.
 
-The server runs the match, including both teams' Jev brains, and sends each player only what their own agents can see. Enemies show up in red while they're in sight, then fade to a dashed "last seen" marker. Your orders and Jev's decisions are never sent to your opponent. If a player leaves mid-round, the other wins by forfeit; if the host leaves, the room closes.
+The server runs the match, including both teams' Jev brains, and sends each player only what their own agents can see. Enemies show up in red while they're in sight, then fade to a dashed "last seen" marker. Your orders and Jev's decisions are never sent to your opponent. If a player leaves during an unfinished match, including the break between rounds, the other wins the match by forfeit. An active round is scored once; completed rounds and their stats stay unchanged. The result explains the forfeit even if the winner was behind on points. If the host leaves, the room closes.
 
 **Play online with one command.** To give friends anywhere a link:
 
@@ -104,7 +109,7 @@ This opens a free Cloudflare tunnel (install it once with `brew install cloudfla
 | Text | Type in the order box and press Enter. |
 | Pointing | Click the map, or point your index finger **straight up** at the camera, to mark a spot. Then say or type "push there." A finger held sideways or down does nothing. |
 | Hand signals | Turn on the camera in the side panel, then hold a sign for about half a second: 👍 go (push to the marked spot), ✋ hold, ✊ regroup, 👎 fall back, ✌️ split into pairs, 🤟 special (attackers plant, defenders retake). |
-| Switching agents | Hold your thumb out left or right, hitchhiker style. Keep holding and it keeps stepping through the squad, faster the longer you hold. Or swipe your hand, press ←/→ or 1–4, or click an agent on the top bar. |
+| Switching agents | Hold your thumb out left or right, hitchhiker style. Keep holding and it keeps stepping through the squad, faster the longer you hold. Or swipe your hand, press ←/→ or 1–5, or click an agent on the top bar. |
 | Switching views | Pinch your thumb and index finger, or press <kbd>Tab</kbd>. |
 | First-person aiming | Shooting stays automatic. Click the 3D canvas once for mouse look, then keep your crosshair on an enemy for better accuracy. Green crosshair = aim bonus active. Esc releases the cursor. |
 | Pausing | <kbd>Esc</kbd> opens the menu and holds a bot match until you resume. |
@@ -120,7 +125,7 @@ view gives no bonus. Walls, range and the enemy's on-screen height still matter.
 headshot bonus or friendly fire. The agent still follows orders, moves and dodges; you do not
 steer it with WASD. Other agents stay autonomous.
 
-Switch agents with ←/→, 1–4, or hand signals; only the watched agent can get the aim bonus. Esc
+Switch agents with ←/→, 1–5, or hand signals; only the watched agent can get the aim bonus. Esc
 releases the mouse, then Esc again opens the menu. Map view, menus, leaving the tab or ending the
 round stop the aim assistance. In multiplayer the server validates ownership and alignment and
 removes the bonus if aim updates stop for 0.6s. No AI call or click is needed to fire.
@@ -141,7 +146,21 @@ attackers rush the nearer site and shoot what they meet; defenders hold their po
 **How Jev is used.** Two layers, both plain typed questions:
 
 1. **Order interpretation.** Each order (voice transcript, text, or a hand signal's meaning, plus where you're pointing) goes to Jev in one call. One question asks whether it's an order at all, which matters with a hands-free mic: on labelled examples, chatter like "nice shot" scores 5–14% while real orders score 89–97%, so chatter is ignored and shown greyed out in the log. Three more questions per agent ask whether the order applies to them (boolean), what order (choice: push, hold, flank, retreat, regroup, plant or defuse), and which location (choice of map zones, or the pointed spot). The log shows what Jev decided and how confident it was. If replies arrive out of order, an older reply cannot replace a newer accepted order for the same agent; chatter and orders for other agents don't cancel it.
-2. **Agent brains.** Like Jev playing Doom, each agent in a fight sends its situation to Jev about twice a second: health, order, enemies in sight, teammates in fights, and the spike. It gets back an action (fight, take cover, advance, hold, support) and which enemy to shoot. Each card at the bottom shows an agent's current action probabilities. Out of contact, agents just follow orders without calling Jev.
+2. **Agent brains.** Like Jev playing Doom, each agent in a fight sends its situation to Jev about twice a second: health, order, enemies in sight, teammates in fights, and the spike. It gets back an action (fight, take cover, advance, hold, support, throw or dodge a grenade) and which enemy to shoot. Each card at the bottom shows an agent's current action probabilities. Out of contact, agents just follow orders without calling Jev, unless a nearby hostile grenade needs a decision. A late tactical reply for a replaced order is discarded.
+
+**Command memory.** Each agent keeps one current objective in game state, and every Jev tactical
+request includes it. New commands replace only the addressed agents' orders. Every input type
+(text, partial or final voice, and hand signals) gets the squad's current orders and the last three
+accepted commands to help resolve follow-ups such as "Bravo do the same." Chatter, failed requests
+and replies that apply to nobody do not enter that history. Requests are remembered in submission
+order even when their replies arrive out of order. Memory resets each round; there is no queue for
+multi-step instructions such as "push A, then rotate B."
+
+Fresh orders have three seconds of enforced priority, except for grenade danger. The objective
+does **not** expire afterward: Jev can temporarily choose combat or cover, and agents resume their
+saved destination when contact ends. "Hold B" means move to B first, then hold there. A completed
+grenade order becomes "hold here." Turn on agent cards in Settings to compare **Order** with the
+current action; first-person also shows both. First-person commands address only the watched agent.
 
 **Spoken orders act early.** Waiting for a finished sentence makes the squad feel sluggish: a five-second order used to take about 5.2s to move anyone. So the partial transcript is interpreted while you're still speaking, those orders are applied straight away (shown with a ⚡ in the log), and the finished sentence corrects them. Measured on the same recorded order, the squad starts moving after about 1.4s instead of 5.2s, with the final orders landing at the same moment as before. A guess that arrives late can't overwrite newer orders: every interpretation carries a sequence number, and the server drops stale ones.
 

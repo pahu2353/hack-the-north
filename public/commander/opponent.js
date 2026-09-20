@@ -1,6 +1,6 @@
 // OpenAI commands the opposing squad; ordinary game code executes these bounded orders.
 // This module has no DOM or Jev dependency so either renderer can use it.
-import { GRENADE, grenadeSpot, incomingGrenade, ROUND_SECONDS } from './sim.js';
+import { GRENADE, grenadeSpot, incomingGrenade, roundClock, ROUND_SECONDS } from './sim.js';
 import { buildGrid, dist, findPath, hasLineOfSight, nearestOpenPoint, zoneAt, zoneByName } from './world.js';
 
 export const OPPONENT_ACTIONS = ['hold', 'rotate', 'flank', 'retreat', 'regroup', 'retake'];
@@ -36,7 +36,7 @@ export function opponentSnapshot(game) {
   return {
     time: Math.round(game.time * 10) / 10,
     team,
-    secondsLeft: Math.max(0, Math.round(ROUND_SECONDS - game.time)),
+    secondsLeft: Math.max(0, Math.round(ROUND_SECONDS - roundClock(game))),
     squad: bots.map(u => {
       const target = u.grenades > 0 ? grenadeSpot(game, u) : null;
       const dodging = incomingGrenade(game, u) ?? game.grenades.find(g =>

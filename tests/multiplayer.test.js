@@ -87,8 +87,20 @@ test('a defending host owns start controls; guest commands and forfeits follow t
   await guest.take(m => m.type === 'plan' && m.id === 3);
   assert(calls.some(s => s.talking_to === 'Alpha'));
   guest.ws.close();
-  assert.equal((await host.take(m => m.type === 'state' && m.view.result)).view.result.winner, 'defend');
+  const final = (await host.take(m => m.type === 'state' && m.view.result)).view;
+  assert.equal(final.result.winner, 'defend');
+  assert.equal(final.match.over, true);
+  assert.equal(final.match.winner, 'defend');
+  assert.deepEqual(final.match.score, { attack: 0, defend: 1 });
+  assert.equal(final.match.round, 1);
+  assert.match(final.match.reason, /forfeit/);
   assert.equal(host.ws.readyState, WebSocket.OPEN);
+  const replacement = await connect(host.joined.code);
+  host.send({ type: 'start' }); // no side swap needed to restart after a forfeit
+  await replacement.take(m => m.type === 'started');
+  const rematch = (await replacement.take(m => m.type === 'state')).view;
+  assert.equal(rematch.match.over, false);
+  assert.deepEqual(rematch.match.score, { attack: 0, defend: 0 });
 });
 
 test('both clients update when sides swap, and a swapped host can start a rematch or close the room', async t => {
@@ -132,6 +144,36 @@ test('a match runs in rounds: each one starts in setup and carries the score to 
   assert.equal(defenders.prep.line, prepLine(MAPS.tactical, 'defend'));
   assert.equal(defenders.match.scoreboard.defend.length, 5);
   assert.equal(defenders.match.scoreboard.attack[0].kills, 0);
+});
+
+test('disconnecting on the scoreboard ends the match, sends a fresh result, and keeps completed scores', async t => {
+  const { connect } = await multiplayer(t);
+  const host = await connect();
+  const guest = await connect(host.joined.code);
+  let now = performance.now();
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(Math, 'random', () => 0.999); // no gunfire casualties while advancing the clock
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  host.send({ type: 'start' });
+  await host.take(m => m.type === 'started');
+  for (let i = 0; i < 1200 && !host.messages.some(m => m.type === 'state' && m.view.result); i++) {
+    now += 100;
+    t.mock.timers.tick(16);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const round = (await host.take(m => m.type === 'state' && m.view.result)).view;
+  assert.equal(round.match.over, false);
+  host.send({ type: 'side', team: 'defend' }); // the break is still part of the active match
+  host.send({ type: 'command', id: 99, text: 'Hold' });
+  await host.take(m => m.type === 'plan' && m.id === 99);
+  assert(!host.messages.some(m => m.type === 'sides'));
+  guest.ws.close();
+  const final = (await host.take(m => m.type === 'state' && m.view.match.over)).view;
+  assert.equal(final.match.winner, 'attack');
+  assert.match(final.match.reason, /forfeit/);
+  assert.deepEqual(final.match.score, round.match.score);
+  assert.deepEqual(final.match.rounds, round.match.rounds);
+  assert.deepEqual(final.match.scoreboard, round.match.scoreboard);
 });
 
 for (const side of ['attack', 'defend']) test(`${side}: multiplayer aim assistance stays with its owner and does not fire without contact`, async t => {

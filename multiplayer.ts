@@ -4,7 +4,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { TEAMS, createGame, createMatch, otherTeam, setManualAim, stepGame, teamView } from './public/commander/sim.js';
+import { TEAMS, createGame, createMatch, forfeitMatch, otherTeam, setManualAim, stepGame, teamView } from './public/commander/sim.js';
 import { createBrains } from './public/commander/brain.js';
 
 type Team = 'attack' | 'defend';
@@ -91,7 +91,7 @@ export function createRooms(evaluate: Evaluate) {
   }
 
   function chooseSide(room: Room, team: Team) {
-    if (!TEAM_LIST.includes(team) || (room.game && !room.game.result) || room.players[team] === room.host) return;
+    if (!TEAM_LIST.includes(team) || (room.match && !room.match.over) || room.players[team] === room.host) return;
     stopLoop(room);
     const other = room.players[team];
     room.players = { [team]: room.host, ...(other && { [otherTeam(team)]: other }) };
@@ -202,14 +202,14 @@ export function createRooms(evaluate: Evaluate) {
   function leave(room: Room, team: Team, ws: WebSocket) {
     if (room.players[team] !== ws) return;
     delete room.players[team];
-    // Nobody to play the next round against.
-    if (room.next) clearTimeout(room.next);
-    room.next = null;
+    stopLoop(room);
     const other = room.players[otherTeam(team) as Team];
     const game = room.game;
-    if (game && !game.result) {
-      // Forfeit: the loop sends the final state to whoever is still here, then stops.
-      game.result = { winner: otherTeam(team), reason: `The ${TEAMS[team].label.toLowerCase()}' commander left`, time: game.time };
+    if (game && !game.match.over) {
+      const winner = otherTeam(team) as Team;
+      forfeitMatch(game, winner, `Won by forfeit: the ${TEAMS[team].label.toLowerCase()}' commander left`);
+      // The loop may already be stopped for the scoreboard, so publish the result directly.
+      send(other, { type: 'state', view: teamView(game, winner), jev: room.brains[winner].summary() });
     }
     if (ws === room.host || !other) {
       // Without the host there's nobody to start matches, so the room closes.
