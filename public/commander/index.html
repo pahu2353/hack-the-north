@@ -169,18 +169,19 @@
   .toggle-row button { min-width: 54px; }
   /* Shared fixed columns keep both squads and totals aligned. */
   #screenResult { width: min(720px, 100%); gap: 18px; min-width: 0; }
-  /* Side and map sit on one row until the screen is too narrow for both. */
-  .pickers { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
-  .picker { display: grid; gap: 5px; justify-items: center; }
+  /* One row per choice, label beside it. `display: contents` puts both pickers' labels and
+     segments into the same two columns, so the rows line up however wide either one gets. */
+  .pickers { display: grid; grid-template-columns: auto auto; gap: 8px 12px; justify-content: center; align-items: center; }
+  .picker { display: contents; }
   .picker-label {
     font: 700 10px/1 system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--muted);
+    color: var(--muted); text-align: right;
   }
   /* A segmented control rather than a dropdown: two or three options each, all visible, one
      click to change, and it matches the host's side buttons in the lobby. */
   .segment { display: flex; border: 1px solid var(--border); background: var(--panel); }
   .segment button {
-    border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px;
+    border: 0; border-left: 1px solid var(--border); background: transparent; min-width: 96px; flex: 1;
   }
   .segment button:first-child { border-left: 0; }
   .segment button[aria-checked="true"] { background: var(--raised); color: var(--accent); }
@@ -597,7 +598,7 @@
           <button id="pauseMenu" class="big" type="button">Main menu</button>
         </div>
         <button id="pauseSettings" class="link" type="button">Settings</button>
-        <div class="note">Esc closes this.</div>
+        <div class="note">Esc closes this menu</div>
       </section>
 
       <section id="screenSettings" data-title="Settings" hidden>
