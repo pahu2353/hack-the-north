@@ -229,3 +229,29 @@ test('the host chooses the map, both commanders are told, and the match is playe
     assert.ok(u.x >= 0 && u.x <= MAPS.dust2.width && u.y >= 0 && u.y <= MAPS.dust2.height, `${u.name} is off the map`);
   }
 });
+
+test('the host chooses the kit, every lobby message carries it, and the match is played with it', async t => {
+  const { connect } = await multiplayer(t);
+  const host = await connect();
+  const guest = await connect(host.joined.code);
+  // Every lobby message says what the room is set to, because that is the only thing the
+  // picker can draw itself from: a client that isn't told cannot show the choice, and its
+  // button looks broken however well the room takes the change.
+  assert.equal((await host.take(m => m.type === 'lobby')).utility, true, 'full kit by default');
+  host.send({ type: 'utility', utility: false });
+  assert.equal((await host.take(m => m.type === 'lobby' && m.utility === false)).utility, false);
+  assert.equal((await guest.take(m => m.type === 'lobby' && m.utility === false)).utility, false);
+  // The kit is the host's to pick, like the map.
+  guest.send({ type: 'utility', utility: true });
+  host.send({ type: 'utility', utility: 'yes please' });
+  host.send({ type: 'start' });
+  await host.take(m => m.type === 'started');
+  const view = (await host.take(m => m.type === 'state')).view;
+  const squad = view.units.filter(u => u.team === view.team);
+  assert.equal(squad.length, 5);
+  for (const u of squad) {
+    assert.equal(u.grenades, 1, `${u.name} keeps a grenade`);
+    assert.equal(u.flashes, 0, `${u.name} has no flash without the kit`);
+    assert.equal(u.smokes, 0, `${u.name} has no smoke without the kit`);
+  }
+});

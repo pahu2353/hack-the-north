@@ -513,6 +513,10 @@ function handleServer(connection, message) {
       connection.players = message.players;
       connection.running = message.running;
       connection.map = message.map;
+      // Without this the kit picker had nothing to read: it drew "Grenades" as the choice
+      // whatever the room was set to, and the host's click on "Full kit" changed the room but
+      // never the highlight, so the button looked dead while the match quietly went either way.
+      connection.utility = message.utility;
       renderLobby();
       if (resultShown) updateResultActions();
       break;
