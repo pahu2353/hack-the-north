@@ -138,8 +138,12 @@ export function createPovRenderer(canvas) {
     kitReadout(view, unit);
     // Flashed: everything goes, including the crosshair, because the agent genuinely has no
     // vision and the picture has to say the same thing the simulation does.
-    if (unit.blind > 0) {
-      ctx.fillStyle = `rgba(255,255,252,${(0.35 + 0.62 * Math.min(1, unit.blind / 1.4)).toFixed(3)})`;
+    // Blind takes the picture away; glare is the same white-out for a flash that went off
+    // in view without costing you your sight. Both renderers agree on this.
+    const blind = unit.blind > 0 ? 0.35 + 0.62 * Math.min(1, unit.blind / 1.4) : 0;
+    const wash = Math.max(blind, Math.min(0.97, unit.glare ?? 0));
+    if (wash > 0.01) {
+      ctx.fillStyle = `rgba(255,255,252,${wash.toFixed(3)})`;
       ctx.fillRect(0, 0, W, H);
     }
   }

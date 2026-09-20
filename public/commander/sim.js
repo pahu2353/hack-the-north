@@ -283,6 +283,8 @@ function makeUnit(game, props) {
     flashes: game.utility ? FLASH.carried : 0,
     smokes: game.utility ? SMOKE.carried : 0,
     blindUntil: 0,
+    glare: 0,
+    glareAt: -99,
     throwReadyAt: 0,
     ...props,
   };
@@ -434,6 +436,32 @@ export const actionUtility = action => THROW_ACTION[action] ?? null;
 // Where a throw of this kind wants to land. A frag goes on a group; a flash goes past the
 // angle it is meant to take away, so it pops behind the people holding it; a smoke goes on
 // the sightline itself, close enough to cut it and far enough not to blind your own squad.
+// How wide the gap is across a point, measured at right angles to the line being cut. A
+// doorway measures a few metres; the middle of a site measures tens. This is what makes a
+// smoke land on the way in rather than flat against the nearest wall.
+function gapAcross(map, p, bearing) {
+  const nx = Math.cos(bearing + Math.PI / 2);
+  const ny = Math.sin(bearing + Math.PI / 2);
+  const left = Math.min(25, castRay(map.walls, p.x, p.y, nx, ny)?.t ?? 25);
+  const right = Math.min(25, castRay(map.walls, p.x, p.y, -nx, -ny)?.t ?? 25);
+  return left + right;
+}
+
+// Candidate landing spots along the line toward a threat, at the distances a throw can
+// actually reach, skipping any the throw cannot get to.
+function spotsToward(game, u, bearing, from, to) {
+  const spots = [];
+  for (let reach = from; reach <= to; reach += 1.5) {
+    const p = { x: u.x + Math.cos(bearing) * reach, y: u.y + Math.sin(bearing) * reach };
+    if (p.x < 1 || p.y < 1 || p.x > game.map.width - 1 || p.y > game.map.height - 1) continue;
+    if (blockedAt(game.map, p.x, p.y, 0.4)) continue;
+    const landing = throwLanding(game.map, u, p);
+    if (landing.blocked) continue;
+    spots.push({ p, reach });
+  }
+  return spots;
+}
+
 export function utilitySpot(game, u, kind) {
   if (kind === 'frag') return grenadeSpot(game, u)?.spot ?? null;
   const spec = UTILITY[kind];
@@ -441,11 +469,42 @@ export function utilitySpot(game, u, kind) {
   if (!threat) return null;
   const bearing = angleTo(u, threat);
   const away = dist(u, threat);
-  const reach = kind === 'smoke'
-    ? clamp(away * 0.6, 4, spec.range) // between the two of you, cutting the angle
-    : Math.min(away + 2, spec.range); // just past them, so the pop is in their eyes
-  const spot = { x: u.x + Math.cos(bearing) * reach, y: u.y + Math.sin(bearing) * reach };
-  return hasLineOfSight(game.map, u, spot) ? spot : null;
+  const mates = aliveTeam(game, u.team);
+  const enemies = game.units.filter(e => e.alive && e.team !== u.team);
+
+  if (kind === 'smoke') {
+    // A smoke is for the way in, not for the wall at the end of it. Candidates are scored on
+    // how narrow the gap is where they land — a doorway or a connector cuts the angle with
+    // one cloud, the middle of a site barely cuts it at all — and on whether the cloud would
+    // actually sit between the two of you rather than on top of either.
+    const spots = spotsToward(game, u, bearing, 4, Math.min(spec.range, Math.max(6, away)));
+    let best = null;
+    for (const { p, reach } of spots) {
+      if (dist(p, threat) < SMOKE.radius * 0.8) continue; // not in their lap
+      if (reach < SMOKE.radius * 0.8) continue;           // nor in your own
+      const gap = gapAcross(game.map, p, bearing);
+      // Narrow is the whole point; a spot roughly two thirds of the way over is the tie-break.
+      const score = -gap - Math.abs(reach - away * 0.66) * 0.5;
+      if (!best || score > best.score) best = { p, score };
+    }
+    return best?.p ?? null;
+  }
+
+  // A flash wants to go off where they can see it and you cannot: past the corner, in their
+  // eyes, with your own squad behind the wall it pops on the far side of. Scoring it by the
+  // same exposure rule that does the blinding means an agent aims by the rule it is judged by.
+  const spots = spotsToward(game, u, bearing, 4, Math.min(spec.range, away + 6));
+  let best = null;
+  for (const { p } of spots) {
+    const them = enemies.reduce((sum, e) => sum + flashExposure(game, p, e), 0);
+    const us = mates.reduce((sum, m) => sum + flashExposure(game, p, m), 0);
+    if (them <= 0) continue;
+    // Blinding your own squad is worth more against you than blinding them is worth for you,
+    // so a throw that catches both is only taken when it catches far more of them.
+    const score = them - us * 2.2;
+    if (score > 0 && (!best || score > best.score)) best = { p, score };
+  }
+  return best?.p ?? null;
 }
 
 // What carrying out the current order looks like, as an action.
@@ -1417,22 +1476,40 @@ function updateSmokes(game, dt) {
 // A flash reaches everyone who can actually see the pop — walls stop it, and so does a smoke,
 // because you cannot be blinded by a light you cannot see. Looking away is most of the
 // defence: facing it costs the full duration, turning your back costs a fraction.
+// How hard this flash lands on one unit, 0 to 1, from distance and which way they were
+// looking. Shared by the blinding itself and by picking somewhere to throw it, so an agent
+// aims a flash by the same rule that decides whether it worked.
+export function flashExposure(game, at, target) {
+  const d = dist(at, target);
+  if (d > FLASH.radius || !canSee(game, at, target)) return 0;
+  const near = 1 - d / FLASH.radius;
+  // 1 looking straight at it, 0 facing directly away.
+  const facing = 1 - angleDiff(target.facing, angleTo(target, at)) / Math.PI;
+  return near * (0.25 + 0.75 * facing);
+}
+
 function popFlash(game, g) {
   game.effects.push({ kind: 'flash', x: g.x, y: g.y, r: FLASH.radius, team: g.team, ttl: 0.5 });
   for (const target of game.units) {
     if (!target.alive) continue;
-    const d = dist(g, target);
-    if (d > FLASH.radius || !canSee(game, g, target)) continue;
-    const near = 1 - d / FLASH.radius;
-    // 1 looking straight at it, 0 facing directly away.
-    const facing = 1 - angleDiff(target.facing, angleTo(target, g)) / Math.PI;
-    const seconds = FLASH.blind * near * (0.25 + 0.75 * facing);
+    const exposure = flashExposure(game, g, target);
+    if (exposure <= 0) continue;
+    // Glare is what the screen does; blind is what happens to you. Anyone who could see the
+    // pop gets the white-out, even from across a site where it costs them nothing — that is
+    // what a flash going off actually looks like, and it is not a gameplay effect.
+    target.glare = Math.max(target.glare ?? 0, Math.max(0.35, exposure));
+    target.glareAt = game.time;
+    const seconds = FLASH.blind * exposure;
     if (seconds < FLASH.minBlind) continue;
     // A second flash while still blind extends rather than restarting, so two never stack
     // into something longer than the worse of them.
     target.blindUntil = Math.max(target.blindUntil ?? 0, game.time + seconds);
   }
 }
+
+// Glare decays on its own, fast: it is a camera reacting, not a condition.
+const GLARE_SECONDS = 0.9;
+export const glareOf = (game, u) => Math.max(0, (u.glare ?? 0) * (1 - (game.time - (u.glareAt ?? -99)) / GLARE_SECONDS));
 
 function popSmoke(game, g) {
   game.smokes.push({
@@ -1669,6 +1746,7 @@ function ownUnit(game, u) {
     weapon: u.weapon, slashing: game.time - u.lastSlashAt < 0.22,
     flashes: u.flashes, smokes: u.smokes,
     blind: Math.max(0, (u.blindUntil ?? 0) - game.time),
+    glare: glareOf(game, u),
     obeying: obeying(game, u),
     manualAim: Boolean(manualAimFor(game, u)),
     aimTargetId: crosshairTarget(game, u)?.id ?? null,

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrains } from '../public/commander/brain.js';
 import {
-  FLASH, GRENADE, SMOKE, UTILITY, blinded, canSee, createGame, smokeBlocks,
-  setOrder, stepGame, teamUnits, throwGrenade, throwLanding,
+  FLASH, GRENADE, SMOKE, UTILITY, blinded, canSee, createGame, flashExposure, glareOf,
+  smokeBlocks, setOrder, stepGame, teamUnits, throwGrenade, throwLanding, utilitySpot,
 } from '../public/commander/sim.js';
 import { MAPS, dist } from '../public/commander/world.js';
 
@@ -324,4 +324,63 @@ test('whoever actually has one is the one who throws it', async () => {
   await brains.interpretCommand(game, 'attack', { source: 'text', text: 'smoke spawn' });
   const throwing = squad.filter(u => u.order.type === 'smoke');
   assert.deepEqual(throwing.map(u => u.name), [holder.name], 'an empty agent is never picked');
+});
+
+// ---------- where a flash and a smoke actually want to go ----------
+
+test('a flash is aimed where it blinds them and not your own squad', () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const squad = teamUnits(game, 'attack');
+  const foes = teamUnits(game, 'defend');
+  for (const u of game.units) u.reaction = Infinity;
+  // Both lines down the east side of Mid, clear of the cover block at x 37-43, so they can
+  // actually see each other — a flash is aimed at a threat, and an unseen one is not a threat.
+  squad.forEach((u, i) => Object.assign(u, { x: 45 + i * 0.6, y: 42, facing: -Math.PI / 2 }));
+  foes.forEach((u, i) => Object.assign(u, { x: 45 + i * 0.6, y: 26, facing: Math.PI / 2 }));
+  for (let f = 0; f < 4; f++) stepGame(game, 1 / 60);
+
+  const spot = utilitySpot(game, squad[0], 'flash');
+  assert.ok(spot, 'there should be somewhere worth flashing');
+  const onThem = foes.reduce((n, e) => n + flashExposure(game, spot, e), 0);
+  const onUs = squad.reduce((n, m) => n + flashExposure(game, spot, m), 0);
+  assert.ok(onThem > 0, 'it has to reach at least one of them');
+  assert.ok(onThem > onUs, `it should catch them harder than us: ${onThem.toFixed(2)} vs ${onUs.toFixed(2)}`);
+});
+
+test('a flash with nothing to gain is not thrown at all', () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const a = teamUnits(game, 'attack')[0];
+  for (const u of game.units) u.reaction = Infinity;
+  // Nobody seen, no intel: there is nothing to aim at.
+  assert.equal(utilitySpot(game, a, 'flash'), null);
+});
+
+test('a smoke goes on the way in, not flat against the far wall', () => {
+  const game = createGame({ defenders: 'players', playerTeam: 'attack', utility: true });
+  const a = teamUnits(game, 'attack')[0];
+  const e = teamUnits(game, 'defend')[0];
+  for (const u of game.units) u.reaction = Infinity;
+  // Down A Main toward A Site: the choke at the top of the corridor is the thing to cut.
+  Object.assign(a, { x: 10, y: 34 });
+  Object.assign(e, { x: 10, y: 22 });
+  for (let f = 0; f < 4; f++) stepGame(game, 1 / 60);
+
+  const spot = utilitySpot(game, a, 'smoke');
+  assert.ok(spot, 'a corridor is exactly what a smoke is for');
+  // Between the two of them, and clear of both.
+  assert.ok(dist(a, spot) >= SMOKE.radius * 0.8, 'not dropped at your own feet');
+  assert.ok(dist(e, spot) >= SMOKE.radius * 0.8, 'nor in their lap');
+  assert.ok(dist(a, spot) < dist(a, e) + 1, 'and not thrown past them');
+});
+
+test('a flash lights the screen of everyone who sees it, blind or not', () => {
+  const { game, a, d } = duel();
+  // Thrown behind the thrower, so it goes off 13 m from the defender — inside the reach of
+  // a flash, but at the very edge of it, and on a clear line.
+  assert.ok(throwGrenade(game, a, { x: 40, y: 47 }, 'flash'));
+  run(game, 1.4);
+  assert.equal(blinded(game, d), false, 'at the edge of it, their sight survives');
+  assert.ok(glareOf(game, d) > 0, 'but they still saw it go off');
+  run(game, 1.2);
+  assert.equal(glareOf(game, d), 0, 'and it clears on its own');
 });

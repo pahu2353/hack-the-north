@@ -222,6 +222,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   const figures = new Map(); // unit id → { group, parts, lastPos, phase }
   const smokes = new Map(); // smoke id → { group, puffs, t }
   const slashes = []; // short-lived knife arcs
+  const pops = []; // flash detonations
   const corpses = new Map();
   const tracers = [];
   const nades = new Map();
@@ -266,6 +267,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     smokes.clear();
     for (const sl of slashes) scene.remove(sl.mesh);
     slashes.length = 0;
+    for (const f of pops) { f.light.intensity = 0; scene.remove(f.group); }
+    pops.length = 0;
     for (const c of corpses.values()) scene.remove(c.f.group);
     corpses.clear();
     for (const t of tracers) scene.remove(t.group);
@@ -339,6 +342,7 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     syncTracers(view, dt);
     syncGrenades(view, dt);
     syncSmoke(view, dt);
+    updateFlashPops(dt);
     syncSpike(view, dt);
     syncBeacon();
     aimWeapon(view, unit, cam, dt);
@@ -629,6 +633,50 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     });
   }
 
+  // A flash going off. Nothing in the 3D view used to draw this at all, so a flash was an
+  // invisible event that took your sight away for no reason you could see. It is a very
+  // bright, very short bloom: a white core that opens in a tenth of a second, an expanding
+  // shell, and a light that throws the whole room into white before it is gone.
+  function spawnFlashPop(e) {
+    const group = new THREE.Group();
+    group.position.set(e.x, 1.4, e.y);
+    const core = sprite(SPRITES.flash, 1, 1);
+    core.material.color.setHex(0xffffff);
+    const shell = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 20, 14),
+      new THREE.MeshBasicMaterial({
+        color: 0xfffdf2, transparent: true, opacity: 0.9,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+    );
+    group.add(core, shell);
+    const light = blastLights[nextBlastLight++ % blastLights.length];
+    light.position.set(e.x, 1.6, e.y);
+    light.distance = 40;
+    light.color.setHex(0xffffff);
+    scene.add(markFx(group));
+    pops.push({ group, core, shell, light, t: 0 });
+  }
+
+  function updateFlashPops(dt) {
+    for (let i = pops.length - 1; i >= 0; i--) {
+      const f = pops[i];
+      f.t += dt;
+      const k = f.t / 0.45;
+      f.core.scale.setScalar(2.2 + k * 5);
+      f.core.material.opacity = Math.max(0, 1 - k * 1.6);
+      f.shell.scale.setScalar(0.4 + k * 7);
+      f.shell.material.opacity = Math.max(0, 0.85 * (1 - k) ** 1.4);
+      f.light.intensity = Math.max(0, 120 * (1 - f.t / 0.3));
+      if (k >= 1) {
+        f.light.intensity = 0;
+        scene.remove(f.group);
+        f.group.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+        pops.splice(i, 1);
+      }
+    }
+  }
+
   // The arc a knife swept, laid flat at chest height where the blade actually went. It is
   // the hitbox drawn honestly: the wedge you see is the wedge the simulation tested.
   function spawnSlash(e) {
@@ -660,8 +708,8 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       if (!cloud) {
         const group = new THREE.Group();
         const puffs = [];
-        for (let i = 0; i < 14; i++) {
-          const a = (i / 14) * Math.PI * 2 + Math.random();
+        for (let i = 0; i < 22; i++) {
+          const a = (i / 22) * Math.PI * 2 + Math.random();
           const rise = Math.random();
           const puff = sprite(SPRITES.smoke, 1, 0.85);
           puff.material.blending = THREE.NormalBlending;
@@ -679,10 +727,13 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       cloud.group.position.set(s.x, 0, s.y);
       for (const { puff, spin, base } of cloud.puffs) {
         // A slow churn, so a standing cloud is never a frozen decal.
-        puff.position.set(base.x * s.radius * 0.55, base.y * (0.7 + s.density * 0.5), base.z * s.radius * 0.55);
+        // Wide enough to overlap its neighbours and tall enough to be a wall rather than a
+        // puddle: a cloud with gaps in it is worse than no cloud, because the simulation
+        // says you cannot see through it.
+        puff.position.set(base.x * s.radius * 0.6, base.y * (0.85 + s.density * 0.6), base.z * s.radius * 0.6);
         puff.material.rotation += spin * dt;
         puff.scale.setScalar(Math.max(0.01, s.radius * 1.25));
-        puff.material.opacity = 0.34 * s.density;
+        puff.material.opacity = 0.46 * s.density;
       }
     }
     for (const [id, cloud] of smokes) {
@@ -699,30 +750,37 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
       live.add(g.id);
       let m = nades.get(g.id);
       if (!m) {
-        m = new THREE.Mesh(
-          new THREE.SphereGeometry(0.16, 12, 10),
-          new THREE.MeshStandardMaterial({ color: 0x2f3a2a, emissive: 0x000000, roughness: 0.7 }),
-        );
+        m = utilityModel(g.kind ?? 'frag');
         m.castShadow = true;
         nades.set(g.id, m);
         scene.add(m);
       }
+      // Tumbling end over end while it flies, which is most of what tells you something was
+      // thrown rather than slid along the floor.
+      if (!g.landed) {
+        m.rotation.x += dt * 9;
+        m.rotation.z += dt * 5;
+      }
       // The simulation flies it along a real arc and says how high it is, so the model
       // follows that rather than sitting at one made-up height until it lands.
       m.position.set(g.x, Math.max(0.18, g.z ?? 0.18), g.y);
-      // A frag blinks toward its fuse. A flash and a smoke glow steadily in their own
-      // colour instead, because a blinking white light would read as a frag about to go off.
-      const tint = { flash: 0xf2f0e4, smoke: 0x8fb0c8 }[g.kind];
-      const blink = tint ?? (g.landed && Math.sin(view.time * 26) > 0 ? 0xff3b2f : 0x000000);
-      m.material.emissive.setHex(blink);
+      // A frag blinks toward its fuse. A flash pulses faster the closer it is to going off,
+      // which is the only warning anyone gets; a smoke just sits there.
+      const blink = g.kind === 'smoke' ? 0x000000
+        : g.kind === 'flash' ? (Math.sin(view.time * 40) > 0 ? 0xfff4c0 : 0x201c08)
+        : (g.landed && Math.sin(view.time * 26) > 0 ? 0xff3b2f : 0x000000);
+      m.traverse(o => { if (o.isMesh && o.material.emissive) o.material.emissive.setHex(blink); });
     }
     for (const [id, m] of nades) {
       if (live.has(id)) continue;
       scene.remove(m);
+      // These are built per projectile now, so they have to be given back.
+      m.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
       nades.delete(id);
     }
     for (const e of view.effects) {
       if (e.kind === 'slash' && newEffects.has(effectKey(e))) spawnSlash(e);
+      if (e.kind === 'flash' && newEffects.has(effectKey(e))) spawnFlashPop(e);
       if (e.kind !== 'blast' || !newEffects.has(effectKey(e))) continue;
       spawnBlast(e.x, e.y, e.r ?? 5, 1);
     }
@@ -933,9 +991,14 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
     // point is that this agent cannot see, and the overlay has to agree with the simulation.
     kitReadout(view, unit);
     if (unit.blind > 0) {
-      blindWash(unit.blind);
+      blindWash(unit.blind, 1);
       return;
     }
+    // A flash that went off where you could see it whites the screen even when it was too
+    // far or too far off to your side to actually take your sight. This is most of what a
+    // flash looks like from the outside, and without it one going off across a site is
+    // invisible from here.
+    if (unit.glare > 0.01) blindWash(0, unit.glare);
     // Name tags and health bars sit on the 2D overlay: crisper than sprites and no depth fighting.
     for (const [id, f] of figures) {
       if (!f.group.visible) continue;
@@ -981,9 +1044,13 @@ export function createPov3dRenderer(canvas, hudCanvas, { onLost } = {}) {
   // post-processing. Two pixels of cost, drawn on the overlay rather than in WebGL.
   // Full white at the moment it pops, then thinning to a haze as it wears off. The last
   // second is translucent rather than opaque, so vision comes back before control does.
-  function blindWash(left) {
-    const strength = Math.min(1, left / 1.4);
-    hud.fillStyle = `rgba(255,255,252,${(0.35 + 0.62 * strength).toFixed(3)})`;
+  function blindWash(left, glare = 0) {
+    // Blind is the floor: even the last moments of it leave the screen milky. Glare on its
+    // own is a camera recovering, so it can be anything from a tint to a total white-out.
+    const blind = left > 0 ? 0.35 + 0.62 * Math.min(1, left / 1.4) : 0;
+    const alpha = Math.max(blind, Math.min(0.97, glare));
+    if (alpha <= 0.01) return;
+    hud.fillStyle = `rgba(255,255,252,${alpha.toFixed(3)})`;
     hud.fillRect(0, 0, W, H);
   }
 
@@ -2081,6 +2148,65 @@ function fist(mat, mirror = 1) {
   h.add(thumb);
   h.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
   return h;
+}
+
+// Each thing you can throw looks like the thing it is. They were all one grey sphere, which
+// is why a flash in the air was indistinguishable from a grenade and from a smoke: a
+// fragmentation body, a slotted flashbang can, and a smoke canister with a coloured band.
+function utilityModel(kind) {
+  const g = new THREE.Group();
+  if (kind === 'flash') {
+    const shell = new THREE.MeshStandardMaterial({ color: 0xd8d2c0, roughness: 0.3, metalness: 0.8 });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.2, 10), shell);
+    g.add(body);
+    // The slots a flashbang vents through: dark bands that catch the light as it turns.
+    for (const y of [-0.05, 0, 0.05]) {
+      const band = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.078, 0.078, 0.018, 10),
+        new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.4 }),
+      );
+      band.position.y = y;
+      g.add(band);
+    }
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 0.05, 8),
+      new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.35, metalness: 0.85, emissive: 0x332b00 }),
+    );
+    cap.position.y = 0.12;
+    g.add(cap);
+    return g;
+  }
+  if (kind === 'smoke') {
+    const can = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 0.22, 10),
+      new THREE.MeshStandardMaterial({ color: 0x4a5560, roughness: 0.5, metalness: 0.5 }),
+    );
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.073, 0.073, 0.06, 10),
+      new THREE.MeshStandardMaterial({ color: 0xcfd6dd, roughness: 0.7, emissive: 0x0b1116 }),
+    );
+    band.position.y = 0.04;
+    const spout = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.04, 0.05, 8),
+      new THREE.MeshStandardMaterial({ color: 0x2b3238, roughness: 0.8 }),
+    );
+    spout.position.y = 0.13;
+    g.add(can, band, spout);
+    return g;
+  }
+  // A fragmentation body: a squat ribbed egg with a spoon, not a ball bearing.
+  const olive = new THREE.MeshStandardMaterial({ color: 0x2f3a2a, roughness: 0.7, metalness: 0.2 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.115, 12, 10), olive);
+  body.scale.y = 1.25;
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.05, 8), olive);
+  neck.position.y = 0.13;
+  const spoon = new THREE.Mesh(
+    new THREE.BoxGeometry(0.018, 0.1, 0.03),
+    new THREE.MeshStandardMaterial({ color: 0x8b8f93, roughness: 0.4, metalness: 0.7 }),
+  );
+  spoon.position.set(0.055, 0.1, 0);
+  g.add(body, neck, spoon);
+  return g;
 }
 
 // A combat knife: a dark handle, a guard, and a blade with one bright bevel along it so it
